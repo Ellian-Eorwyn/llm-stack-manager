@@ -1,0 +1,40 @@
+# Runtime configuration and local state
+/config/llm-stack.env
+/config/honcho.env
+/config/custom-models.json
+/config/custom-model-arg-presets.json
+/config/saved/
+/config/chat-templates/
+/config/*-state.json
+/config/tts-*.json
+
+# Large or generated dependencies
+/deps/
+/models/
+/downloads/
+/exports/
+/logs/
+/backups/
+/hermes/
+
+# Python/runtime artifacts
+.venv/
+*/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# llama.cpp and build output
+/build/
+/CMakeCache.txt
+/CMakeFiles/
+
+# Local editor/system files
+.DS_Store
+._*
+*.swp
+*.swo
+
+# Generated local config/state
+/config/default-saved-config
+/config/glmocr-sdk.json

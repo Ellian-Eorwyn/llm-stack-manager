@@ -1,0 +1,3226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Stack Manager</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #0b0f1a;
+  --surface:  #141928;
+  --surface2: #1c2237;
+  --border:   #252d45;
+  --accent:   #6366f1;
+  --accent-h: #818cf8;
+  --success:  #10b981;
+  --warning:  #f59e0b;
+  --danger:   #ef4444;
+  --muted:    #475569;
+  --dim:      #94a3b8;
+  --text:     #e2e8f0;
+  --radius:   8px;
+  --mono:     'JetBrains Mono', 'Fira Code', Consolas, monospace;
+}
+
+body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.6; min-height: 100vh; }
+
+/* -- Header -- */
+header {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 0 24px; display: flex; align-items: center; gap: 20px;
+  height: 58px; position: sticky; top: 0; z-index: 100;
+}
+.hdr-title { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.hdr-title span { color: var(--accent); }
+.hdr-gpus  { display: flex; gap: 18px; flex: 1; overflow: hidden; }
+.gpu-chip  { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--dim); flex-shrink: 0; }
+.gpu-label { font-weight: 600; color: var(--text); }
+.bar-wrap  { width: 72px; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.bar-fill  { height: 100%; border-radius: 3px; transition: width .5s; background: var(--accent); }
+.bar-fill.hi { background: var(--warning); }
+.bar-fill.max { background: var(--danger); }
+.hdr-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* -- Buttons -- */
+.btn { padding: 6px 14px; border: none; border-radius: var(--radius); cursor: pointer; font-size: 13px; font-weight: 500; transition: filter .15s, opacity .15s; line-height: 1; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { filter: brightness(1.15); }
+.btn-success { background: var(--success); color: #fff; }
+.btn-success:hover { filter: brightness(1.1); }
+.btn-danger  { background: var(--danger);  color: #fff; }
+.btn-danger:hover  { filter: brightness(1.1); }
+.btn-ghost   { background: transparent; color: var(--dim); border: 1px solid var(--border); }
+.btn-ghost:hover { border-color: var(--accent); color: var(--text); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; filter: none !important; }
+.btn-active-model { background: var(--success); color: #fff; border-color: var(--success); }
+
+/* -- Tab nav -- */
+.tab-nav { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; gap: 2px; }
+.tab-btn { background: none; border: none; color: var(--dim); padding: 10px 16px; cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s, border-color .15s; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* -- Layout -- */
+main { padding: 24px; max-width: 1300px; margin: 0 auto; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* -- Quick actions bar -- */
+.quick-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 24px;
+}
+.quick-bar .qlabel { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-right: 2px; }
+.qdivider { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+.active-indicator { font-size: 11px; color: var(--success); font-weight: 600; }
+
+/* -- Service groups -- */
+.svc-group { margin-bottom: 28px; }
+.group-hdr {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .1em; color: var(--muted); margin-bottom: 10px;
+  display: flex; align-items: center; gap: 10px;
+}
+.group-hdr::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.collapsible-trigger { cursor: pointer; user-select: none; }
+.group-hdr .collapse-indicator,
+.panel-collapse-indicator {
+  font-size: 11px;
+  color: var(--dim);
+  transition: transform .15s ease;
+}
+.svc-group.collapsed .collapse-indicator,
+.cfg-shell.collapsed .panel-collapse-indicator,
+.add-model-panel.collapsed .panel-collapse-indicator {
+  transform: rotate(-90deg);
+}
+.collapsible-body {
+  overflow: hidden;
+}
+.collapsed > .collapsible-body {
+  display: none;
+}
+.svc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
+.tts-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; margin-bottom: 24px; }
+.tts-panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+}
+.tts-summary { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:12px; color: var(--dim); font-size:12px; }
+.tts-summary strong { color: var(--text); }
+.tts-test-grid { display:grid; grid-template-columns: 1fr 150px 160px 110px auto; gap:10px; margin-top:12px; }
+.tts-test-grid input, .tts-test-grid select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 8px 10px; border-radius: var(--radius);
+}
+.tts-audio { width: 100%; margin-top: 12px; }
+.meta-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.meta-chip { font-size:11px; color: var(--dim); border:1px solid var(--border); border-radius:20px; padding:3px 8px; }
+@media (max-width: 960px) { .tts-grid, .tts-test-grid { grid-template-columns: 1fr; } }
+
+/* -- Service card -- */
+.svc-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; transition: border-left-color .2s;
+}
+.svc-card[data-status="active"]   { border-left-color: var(--success); }
+.svc-card[data-status="failed"]   { border-left-color: var(--danger);  }
+.svc-card[data-status="inactive"] { border-left-color: var(--muted);   }
+.card-top  { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; }
+.card-name { font-weight: 600; font-size: 14px; }
+.status-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 2px 8px; border-radius: 20px; }
+.status-pill.active   { background: rgba(16,185,129,.15); color: var(--success); }
+.status-pill.inactive { background: rgba(71,85,105,.15);  color: var(--muted);   }
+.status-pill.failed   { background: rgba(239,68,68,.15);  color: var(--danger);  }
+.status-pill.unknown  { background: rgba(245,158,11,.15); color: var(--warning); }
+.card-desc  { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+.card-port  { font-size: 11px; font-family: var(--mono); color: var(--muted); margin-bottom: 10px; }
+.card-acts  { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* -- Config panel -- */
+.cfg-nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; }
+.cfg-tab-btn {
+  background: var(--surface); border: 1px solid var(--border); color: var(--dim);
+  padding: 5px 14px; border-radius: 20px; cursor: pointer; font-size: 12px; transition: all .15s;
+}
+.cfg-tab-btn:hover { border-color: var(--accent); color: var(--text); }
+.cfg-tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.cfg-section { display: none; }
+.cfg-section.active { display: block; }
+
+.cfg-shell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.cfg-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.cfg-section-head h3 {
+  font-size: 18px;
+  line-height: 1.2;
+  margin-bottom: 4px;
+}
+.cfg-section-head p {
+  color: var(--dim);
+  font-size: 13px;
+  max-width: 760px;
+}
+.cfg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+.cfg-grid.tight { margin-bottom: 0; }
+.cfg-panel-grid {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.cfg-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.cfg-preset-card,
+.cfg-panel {
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.cfg-preset-card h4,
+.cfg-panel h4 {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.cfg-preset-card p,
+.cfg-panel p {
+  color: var(--dim);
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+.cfg-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 900px) {
+  .cfg-preset-grid,
+  .cfg-mini-grid,
+  .cfg-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 640px) {
+  .cfg-shell {
+    padding: 14px;
+  }
+  .cfg-section-head {
+    flex-direction: column;
+  }
+}
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field.wide { grid-column: 1 / -1; }
+.field label { font-size: 12px; color: var(--dim); }
+.field .hint  { font-size: 11px; color: var(--muted); }
+.field input, .field select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 7px 10px; border-radius: var(--radius); font-size: 13px; width: 100%;
+  transition: border-color .15s;
+}
+.field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+.field input.mono, .field input[type="number"] { font-family: var(--mono); }
+.save-bar { display: flex; align-items: center; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.restart-hint { font-size: 12px; color: var(--warning); }
+
+/* -- Path picker -- */
+.path-picker { display: flex; gap: 6px; align-items: stretch; }
+.path-picker select { flex: 0 0 auto; max-width: 340px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: var(--radius); font-size: 12px; }
+.path-picker input { flex: 1; }
+.path-picker .btn-refresh { padding: 4px 8px; font-size: 11px; flex-shrink: 0; }
+
+/* -- Saved configs bar -- */
+.saved-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 20px;
+}
+.saved-bar select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: var(--radius); font-size: 13px; min-width: 200px; }
+.saved-bar input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: var(--radius); font-size: 13px; width: 200px; }
+.config-toolbar {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.config-note {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.config-note strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+}
+.config-note p {
+  color: var(--dim);
+  font-size: 13px;
+}
+@media (max-width: 900px) {
+  .config-toolbar { grid-template-columns: 1fr; }
+}
+
+/* -- Add model panel -- */
+.add-model-panel {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px; margin-bottom: 24px;
+  display: none;
+}
+.add-model-panel.open { display: block; }
+.add-model-panel h3 {
+  font-size: 14px; margin-bottom: 0; color: var(--accent);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  cursor: pointer; user-select: none;
+}
+.add-model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.add-model-grid .field.wide { grid-column: 1 / -1; }
+@media (max-width: 640px) { .add-model-grid { grid-template-columns: 1fr; } }
+.add-model-actions { display:flex; gap:8px; flex-wrap: wrap; }
+.hf-panel {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(99,102,241,0.08), rgba(99,102,241,0.02));
+}
+.hf-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.hf-panel-head h4 {
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+.hf-panel-head p {
+  color: var(--dim);
+  font-size: 12px;
+}
+.hf-grid {
+  display: grid;
+  grid-template-columns: 1.1fr .9fr;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.hf-grid .field.wide { grid-column: 1 / -1; }
+.hf-inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.hf-status {
+  min-height: 18px;
+  color: var(--dim);
+  font-size: 12px;
+}
+.hf-status.err { color: var(--danger); }
+.hf-status.ok { color: var(--success); }
+.hf-download-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+@media (max-width: 800px) {
+  .hf-grid { grid-template-columns: 1fr; }
+}
+.custom-args-panel {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0));
+}
+.custom-args-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.custom-args-head h4 {
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+.custom-args-head p {
+  color: var(--dim);
+  font-size: 12px;
+}
+.family-badge {
+  font-size: 11px;
+  color: var(--accent-h);
+  border: 1px solid rgba(99,102,241,.35);
+  background: rgba(99,102,241,.08);
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.custom-args-list {
+  display: grid;
+  gap: 8px;
+}
+.custom-arg-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.custom-arg-row input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  width: 100%;
+}
+.custom-arg-row .btn {
+  min-width: 36px;
+  padding-left: 0;
+  padding-right: 0;
+}
+.custom-args-note {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+@media (max-width: 640px) {
+  .custom-arg-row {
+    grid-template-columns: 1fr auto auto;
+  }
+}
+
+/* -- Log panel -- */
+.log-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.log-bar select { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: var(--radius); font-size: 13px; }
+.log-out {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px; font-family: var(--mono); font-size: 12px; line-height: 1.75;
+  height: 520px; overflow-y: auto; color: #8899b0; white-space: pre-wrap; word-break: break-all;
+}
+.log-out .lerr { color: #f87171; }
+.log-out .lwarn { color: #fbbf24; }
+.log-out .linfo { color: #60a5fa; }
+
+/* -- Graphiti tables -- */
+.table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  overflow-x: auto;
+}
+.mini-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.mini-table th, .mini-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.mini-table th {
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.mini-table tbody tr:hover { background: rgba(99,102,241,0.08); }
+
+/* -- Toast -- */
+#toast {
+  position: fixed; bottom: 24px; right: 24px; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 11px 16px; font-size: 13px; max-width: 340px;
+  transform: translateY(80px); opacity: 0; transition: all .2s; z-index: 999;
+}
+#toast.show { transform: translateY(0); opacity: 1; }
+#toast.ok   { border-left: 3px solid var(--success); }
+#toast.err  { border-left: 3px solid var(--danger);  }
+#toast.info { border-left: 3px solid var(--accent);  }
+
+/* -- Misc -- */
+.spinner { display: inline-block; width: 11px; height: 11px; border: 2px solid transparent; border-top-color: currentColor; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="hdr-title">LLM <span>Stack</span> Manager</div>
+  <div class="hdr-gpus" id="gpu-stats"></div>
+  <div class="hdr-actions">
+    <button class="btn btn-danger" onclick="restartApp()">Restart App</button>
+    <button class="btn btn-primary" onclick="updateLlamaCpp(this)">Update llama.cpp</button>
+    <button class="btn btn-primary" onclick="defaultMode(this)">Default Mode</button>
+  </div>
+</header>
+
+<!-- Tab nav -->
+<nav class="tab-nav">
+  <button class="tab-btn active" data-tab="services">Services</button>
+  <button class="tab-btn"        data-tab="config">Configuration</button>
+  <button class="tab-btn"        data-tab="logs">Logs</button>
+</nav>
+
+<main>
+
+<!-- ====== Services tab ====== -->
+<div id="tab-services" class="tab-panel active">
+
+  <!-- Quick actions bar -->
+  <div class="quick-bar">
+    <span class="qlabel">Chat model</span>
+    {% for variant in builtin_chat_variants %}
+    <button class="btn btn-ghost btn-sm switch-model-btn builtin-switch-btn" data-variant="{{ variant.id }}" data-label="{{ variant.label }}" onclick="switchModel(this,'{{ variant.id }}')">Switch to {{ variant.label }}</button>
+    {% endfor %}
+    <span id="custom-switch-btns"></span>
+    <span class="active-indicator" id="active-model-label"></span>
+    <div class="qdivider"></div>
+    <span class="qlabel">All services</span>
+    <button class="btn btn-ghost btn-sm" onclick="bulkAction('start')">Start All</button>
+    <button class="btn btn-ghost btn-sm" onclick="bulkAction('stop')">Stop All</button>
+    <button class="btn btn-danger btn-sm" onclick="restartApp()">Restart App</button>
+    <div class="qdivider"></div>
+    <button class="btn btn-primary btn-sm" onclick="toggleAddModel()">+ Add Model</button>
+  </div>
+
+  <!-- Add model panel (hidden by default) -->
+  <div class="add-model-panel" id="add-model-panel">
+    <h3 id="add-model-title"><span id="add-model-title-text">Add Chat Model</span></h3>
+    <div class="hf-panel">
+      <div class="hf-panel-head">
+        <div>
+          <h4>Download From Hugging Face</h4>
+          <p>Paste a model repo URL, pick one GGUF quant, and the stack manager will download it into the local `models/` folder. If the repo has an MMProj GGUF, it will download that too and rename it to match the selected model file.</p>
+        </div>
+      </div>
+      <div class="hf-grid">
+        <div class="field wide">
+          <label>Repo URL</label>
+          <div class="hf-inline">
+            <input type="text" id="hf-repo-url" class="mono" placeholder="https://huggingface.co/owner/repo or owner/repo">
+            <button class="btn btn-primary btn-sm" id="hf-load-files-btn" onclick="loadHuggingFaceRepoFiles(this)">Load Files</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Quantized Model GGUF</label>
+          <select id="hf-model-file-select">
+            <option value="">-- Select model file --</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Matched MMProj</label>
+          <input type="text" id="hf-mmproj-match" class="mono" placeholder="No MMProj detected" readonly>
+        </div>
+        <div class="field wide">
+          <label>MMProj Rename Preview</label>
+          <input type="text" id="hf-mmproj-rename" class="mono" placeholder="Will appear after model selection" readonly>
+        </div>
+      </div>
+      <div class="hf-inline">
+        <button class="btn btn-success btn-sm" id="hf-download-btn" onclick="downloadSelectedHuggingFaceModel(this)" disabled>Download Selected Model</button>
+        <span class="hf-status" id="hf-status-text"></span>
+      </div>
+      <div class="hf-download-meta" id="hf-download-meta"></div>
+    </div>
+    <div class="add-model-grid">
+      <div class="field">
+        <label>Display Name</label>
+        <input type="text" id="new-display-name" placeholder="e.g. LLaMA 70B">
+      </div>
+      <div class="field">
+        <label>Model Name (for /v1/models)</label>
+        <input type="text" id="new-model-name" placeholder="auto-generated from display name">
+      </div>
+      <div class="field wide">
+        <label>Model GGUF</label>
+        <div class="path-picker">
+          <select id="new-model-gguf-select" onchange="ggufSelectChanged(this, 'new-model-path')">
+            <option value="">-- Select GGUF --</option>
+          </select>
+          <input type="text" id="new-model-path" class="mono" placeholder="Or enter path manually">
+        </div>
+      </div>
+      <div class="field wide">
+        <label>MMProj GGUF (optional, for vision)</label>
+        <div class="path-picker">
+          <select id="new-mmproj-gguf-select" onchange="ggufSelectChanged(this, 'new-mmproj-path')">
+            <option value="">-- None --</option>
+          </select>
+          <input type="text" id="new-mmproj-path" class="mono" placeholder="Or enter path manually">
+        </div>
+      </div>
+      <div class="field">
+        <label>Context Size</label>
+        <input type="number" id="new-ctx-size" value="32768">
+      </div>
+    </div>
+    <div class="custom-args-panel">
+      <div class="custom-args-head">
+        <div>
+          <h4>Custom Arguments</h4>
+          <p>Add one llama.cpp argument per row. Quoted values are preserved and expanded into argv safely when the custom backend starts.</p>
+        </div>
+        <span class="family-badge" id="custom-arg-family-badge" style="display:none;"></span>
+      </div>
+      <div class="custom-args-list" id="custom-args-list"></div>
+      <div class="custom-args-note">Example: <code>--chat-template-kwargs '{"preserve_thinking": true}'</code> or <code>--jinja</code></div>
+    </div>
+    <div class="add-model-actions">
+      <button class="btn btn-success" onclick="addModel()">Add Model</button>
+      <button class="btn btn-ghost" onclick="toggleAddModel()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Built-in service groups -->
+  {% for group_name, services in service_groups.items() %}
+  <div class="svc-group">
+    <div class="group-hdr">{{ group_name | title }}</div>
+    <div class="svc-cards">
+      {% for svc in services %}
+      <div class="svc-card" id="card-{{ svc.name }}" data-status="unknown">
+        <div class="card-top">
+          <span class="card-name">{{ svc.label }}</span>
+          <span class="status-pill unknown" id="pill-{{ svc.name }}">...</span>
+        </div>
+        <div class="card-desc">{{ svc.desc }}</div>
+        <div class="card-port">:{{ svc.ports }}</div>
+        <div class="card-acts">
+          <button class="btn btn-success btn-sm" onclick="svcAction('{{ svc.name }}','start',this)">Start</button>
+          <button class="btn btn-danger  btn-sm" onclick="svcAction('{{ svc.name }}','stop',this)">Stop</button>
+          <button class="btn btn-ghost   btn-sm" onclick="svcAction('{{ svc.name }}','restart',this)">Restart</button>
+          <button class="btn btn-ghost   btn-sm" onclick="openLogs('{{ svc.name }}')">Logs</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <!-- Custom models group (rendered by JS) -->
+  <div class="svc-group" id="custom-models-group" style="display:none;">
+    <div class="group-hdr">Custom Models</div>
+    <div class="svc-cards" id="custom-models-cards"></div>
+  </div>
+
+</div>
+
+<!-- ====== TTS tab ====== -->
+<div id="tab-tts" class="tab-panel" style="display:none">
+  <div class="tts-grid">
+    <div class="tts-panel">
+      <div class="group-hdr">Gateway</div>
+      <div class="tts-summary">
+        <span>Endpoint: <strong id="tts-public-endpoint">-</strong></span>
+        <span>Gateway: <strong id="tts-gateway-status">-</strong></span>
+        <span>Active: <strong id="tts-active-backend">-</strong></span>
+      </div>
+      <div class="field">
+        <label for="tts-test-input">Test Prompt</label>
+        <input id="tts-test-input" type="text" value="The local TTS gateway is online." placeholder="Enter text to synthesize">
+      </div>
+      <div class="tts-test-grid">
+        <select id="tts-test-backend"></select>
+        <select id="tts-test-voice"></select>
+        <select id="tts-test-format">
+          <option value="mp3">mp3</option>
+          <option value="wav">wav</option>
+          <option value="flac">flac</option>
+          <option value="opus">opus</option>
+          <option value="aac">aac</option>
+          <option value="pcm">pcm</option>
+        </select>
+        <input id="tts-test-speed" type="number" step="0.05" min="0.25" max="4" value="1.0">
+        <button class="btn btn-primary" onclick="runTtsTest(this)">Test Speech</button>
+      </div>
+      <audio id="tts-audio" class="tts-audio" controls style="display:none;"></audio>
+    </div>
+    <div class="tts-panel">
+      <div class="group-hdr">Notes</div>
+      <div class="card-desc">Clients should keep using the shared endpoint above. Switching the active backend changes the engine behind that endpoint without changing client configuration.</div>
+      <div class="meta-list" id="tts-meta-list"></div>
+    </div>
+  </div>
+  <div class="svc-group">
+    <div class="group-hdr">Backends</div>
+    <div class="svc-cards" id="tts-backend-cards"></div>
+  </div>
+</div>
+
+<!-- ====== Graphiti monitor tab ====== -->
+<div id="tab-graphiti" class="tab-panel" style="display:none">
+  <div class="quick-bar">
+    <span class="qlabel">Graphiti Monitor</span>
+    <button class="btn btn-primary btn-sm" onclick="refreshGraphitiAll()">Refresh</button>
+    <button class="btn btn-ghost btn-sm" onclick="loadGraphitiStatus()">Status</button>
+    <button class="btn btn-ghost btn-sm" onclick="loadGraphitiStats()">Stats</button>
+    <span id="graphiti-last-refresh" class="active-indicator">Last refresh: -</span>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Status</div>
+    <div class="svc-cards" id="graphiti-status-cards"></div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Summary Stats</div>
+    <div class="meta-list" id="graphiti-totals"></div>
+    <div class="table-wrap">
+      <h4 style="margin:10px 0 6px 0;font-size:12px;color:var(--dim);">Top Groups by Episode Count</h4>
+      <table class="mini-table" id="graphiti-top-groups-table">
+        <thead><tr><th>Group</th><th>Episodes</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <h4 style="margin:10px 0 6px 0;font-size:12px;color:var(--dim);">Top Entities by Degree</h4>
+      <table class="mini-table" id="graphiti-top-entities-table">
+        <thead><tr><th>Name</th><th>Group</th><th>Degree</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Recent Activity Browser</div>
+    <div class="saved-bar">
+      <span class="qlabel">Filters</span>
+      <input id="graphiti-filter-group" type="text" placeholder="group_id" style="width:220px;">
+      <input id="graphiti-filter-q" type="text" placeholder="name/relation contains..." style="width:240px;">
+      <input id="graphiti-filter-start" type="text" placeholder="start ISO (optional)" style="width:220px;">
+      <input id="graphiti-filter-end" type="text" placeholder="end ISO (optional)" style="width:220px;">
+      <button class="btn btn-primary btn-sm" onclick="refreshGraphitiRecents()">Apply</button>
+    </div>
+
+    <div class="table-wrap">
+      <h4 style="margin:10px 0 6px 0;font-size:12px;color:var(--dim);">Recent Episodes</h4>
+      <table class="mini-table" id="graphiti-episodes-table">
+        <thead><tr><th>Created</th><th>Group</th><th>Source</th><th>Snippet</th><th>Detail</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <h4 style="margin:10px 0 6px 0;font-size:12px;color:var(--dim);">Recent Entities</h4>
+      <table class="mini-table" id="graphiti-entities-table">
+        <thead><tr><th>Created</th><th>Name</th><th>Group</th><th>Labels</th><th>Degree</th><th>Detail</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <h4 style="margin:10px 0 6px 0;font-size:12px;color:var(--dim);">Recent Relationships</h4>
+      <table class="mini-table" id="graphiti-relationships-table">
+        <thead><tr><th>Created</th><th>Relation</th><th>From</th><th>To</th><th>Fact</th><th>Detail</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Search / Inspect</div>
+    <div class="saved-bar">
+      <span class="qlabel">Memory Search</span>
+      <input id="graphiti-search-group" type="text" placeholder="group_id (optional)" style="width:220px;">
+      <input id="graphiti-search-query" type="text" placeholder="search text" style="width:320px;">
+      <input id="graphiti-search-max-facts" type="number" value="10" min="1" max="50" style="width:90px;">
+      <button class="btn btn-primary btn-sm" onclick="runGraphitiMemorySearch()">Search</button>
+    </div>
+    <div class="saved-bar">
+      <span class="qlabel">Group Episodes</span>
+      <input id="graphiti-inspect-group" type="text" placeholder="group_id" style="width:220px;">
+      <input id="graphiti-inspect-lastn" type="number" value="30" min="1" max="500" style="width:90px;">
+      <button class="btn btn-primary btn-sm" onclick="inspectGraphitiGroup()">Inspect</button>
+    </div>
+    <div class="saved-bar">
+      <span class="qlabel">Entity Neighborhood</span>
+      <input id="graphiti-inspect-entity" type="text" placeholder="entity uuid" style="width:360px;">
+      <input id="graphiti-inspect-limit" type="number" value="50" min="1" max="200" style="width:90px;">
+      <button class="btn btn-primary btn-sm" onclick="inspectGraphitiNeighborhood()">Inspect</button>
+    </div>
+    <div class="log-out" id="graphiti-search-output" style="height:260px;"></div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Export</div>
+    <div class="saved-bar">
+      <select id="graphiti-export-type">
+        <option value="recent">recent N snapshot</option>
+        <option value="group">single group_id</option>
+        <option value="entity">single entity neighborhood</option>
+        <option value="date_range">date range</option>
+      </select>
+      <select id="graphiti-export-format">
+        <option value="json">json</option>
+        <option value="md">markdown</option>
+      </select>
+      <input id="graphiti-export-limit" type="number" value="200" min="1" max="10000" style="width:110px;">
+      <input id="graphiti-export-group" type="text" placeholder="group_id (for group export)" style="width:250px;">
+      <input id="graphiti-export-entity" type="text" placeholder="entity_uuid (for entity export)" style="width:300px;">
+      <input id="graphiti-export-start" type="text" placeholder="start ISO (date range)" style="width:220px;">
+      <input id="graphiti-export-end" type="text" placeholder="end ISO (date range)" style="width:220px;">
+      <button class="btn btn-success btn-sm" onclick="createGraphitiExport()">Export</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadGraphitiExports()">Refresh Files</button>
+    </div>
+    <div class="table-wrap">
+      <table class="mini-table" id="graphiti-exports-table">
+        <thead><tr><th>File</th><th>Size</th><th>Modified</th><th>Download</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="meta-list" id="graphiti-export-dir"></div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Detail View</div>
+    <div class="log-out" id="graphiti-detail-output" style="height:320px;">Click a detail button above.</div>
+  </div>
+</div>
+
+<!-- ====== Configuration tab ====== -->
+{% macro render_config_field(f, section) -%}
+<div class="field {% if f.type in ('path', 'custom_args') %}wide{% endif %}">
+  <label for="cfg-{{ f.key }}">{{ f.label }}</label>
+  {% if f.type == 'select' %}
+  <select id="cfg-{{ f.key }}" name="{{ f.key }}" onchange="markDirty('{{ section }}')">
+    {% for opt in f.options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+  </select>
+  {% elif f.type == 'custom_args' %}
+  <input id="cfg-{{ f.key }}" name="{{ f.key }}" type="hidden" value="[]">
+  <div class="custom-args-list" data-config-target="cfg-{{ f.key }}"></div>
+  <div class="custom-args-note">
+    One flag per row. Example:
+    <code>--chat-template-kwargs '{"preserve_thinking": true}'</code>
+  </div>
+  {% elif f.type == 'path' %}
+  <div class="path-picker">
+    <select class="gguf-path-select" data-target="cfg-{{ f.key }}" onchange="ggufSelectChanged(this, 'cfg-{{ f.key }}'); markDirty('{{ section }}')">
+      <option value="">-- Select GGUF --</option>
+    </select>
+    <input id="cfg-{{ f.key }}" name="{{ f.key }}"
+           type="text" class="mono"
+           placeholder="{{ f.get('hint','') }}"
+           oninput="markDirty('{{ section }}')">
+  </div>
+  {% elif f.type == 'transcript_model' %}
+  <div class="path-picker">
+    <select class="transcript-model-select" data-target="cfg-{{ f.key }}" data-engine-id="{{ f.get('engine_id', '') }}" onchange="transcriptModelSelectChanged(this, 'cfg-{{ f.key }}'); markDirty('{{ section }}')">
+      <option value="">-- Select transcription model --</option>
+    </select>
+    <input id="cfg-{{ f.key }}" name="{{ f.key }}"
+           type="text" class="mono"
+           placeholder="{{ f.get('hint','') }}"
+           oninput="markDirty('{{ section }}')">
+  </div>
+  {% else %}
+  <input id="cfg-{{ f.key }}" name="{{ f.key }}"
+         type="{{ 'number' if f.type == 'number' else 'text' }}"
+         class="{{ 'mono' if f.type in ('path','text') else '' }}"
+         placeholder="{{ f.get('hint','') }}"
+         oninput="markDirty('{{ section }}')">
+  {% endif %}
+  {% if f.get('hint') and f.type not in ('path',) %}
+  <span class="hint">{{ f.hint }}</span>
+  {% endif %}
+</div>
+{%- endmacro %}
+<div id="tab-config" class="tab-panel">
+
+  <div class="config-toolbar">
+    <div class="saved-bar" style="margin-bottom:0;">
+      <span class="qlabel" style="margin-right:4px;">Saved Configs</span>
+      <select id="saved-config-select">
+        <option value="">-- Select saved config --</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="loadSavedConfig()">Load</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteSavedConfig()">Delete</button>
+      <div class="qdivider"></div>
+      <input type="text" id="save-config-name" placeholder="Config name..." style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:var(--radius);font-size:13px;width:180px;">
+      <button class="btn btn-success btn-sm" onclick="saveCurrentConfig()">Save Current</button>
+    </div>
+    <div class="config-note">
+      <strong>How To Use This Page</strong>
+      <p>Each section saves independently. Shared Backend covers model-load settings that must stay aligned to avoid reloads, while Thinking, Instruct, and Coding each define request-time proxy behavior for their own public port.</p>
+    </div>
+  </div>
+
+  <div class="cfg-nav" id="cfg-nav">
+    {% for section in config_sections.keys() %}
+    <button class="cfg-tab-btn {% if loop.first %}active{% endif %}"
+            data-section="{{ section }}"
+            onclick="showCfgSection('{{ section }}')">{{ section }}</button>
+    {% endfor %}
+  </div>
+
+  {% for section, fields in config_sections.items() %}
+  <div class="cfg-section {% if loop.first %}active{% endif %}" id="cfgsec-{{ section|replace(' ','-') }}">
+    <div class="cfg-shell">
+      <div class="cfg-section-head">
+        <div>
+          <h3>{{ section }}</h3>
+          <p>
+            {% if section == 'Shared Backend' %}
+            Configure the upstream llama.cpp shared chat backends. BeeLLaMA has its own pane because it uses a separate backend build and launch surface.
+            {% elif section == 'BeeLLaMA Backend' %}
+            Configure the BeeLLaMA backend, including DFlash, TurboQuant, adaptive draft control, reasoning guards, and Bee-only diagnostics.
+            {% elif section == 'Thinking Endpoint' %}
+            Request-time defaults for the thinking proxy port. These overrides are injected by the proxy without reloading the shared backend model.
+            {% elif section == 'Instruct Endpoint' %}
+            Request-time defaults for the non-thinking instruct proxy port. Use this pane to keep chat-style behavior separate from the thinking and coding routes.
+            {% elif section == 'Coding Endpoint' %}
+            Request-time defaults for the coding proxy port. These settings let coding clients see a different exposed model identity and sampling profile without touching the loaded backend.
+            {% elif section == 'Task Model' %}
+            Tune the smaller task model used for fast utility work and background tasks.
+            {% elif section == 'OCR' %}
+            Configure the standalone GLM-OCR multimodal backend and its default extraction behavior.
+            {% else %}
+            Update this section and save it independently. Changes apply to the environment file used by the stack manager.
+            {% endif %}
+          </p>
+        </div>
+      </div>
+
+      {% if section == 'Shared Backend' %}
+      {% set dense_keys = ['CHAT_DENSE_LABEL', 'CHAT_DENSE_MODEL_NAME', 'CHAT_DENSE_MODEL_PATH', 'CHAT_DENSE_MMPROJ_PATH', 'CHAT_DENSE_CTX_SIZE'] %}
+      {% set moe_keys = ['CHAT_MOE_LABEL', 'CHAT_MOE_MODEL_NAME', 'CHAT_MOE_MODEL_PATH', 'CHAT_MOE_MMPROJ_PATH', 'CHAT_MOE_CTX_SIZE'] %}
+      {% set shared_keys = ['CHAT_MODEL_NAME', 'CHAT_N_PARALLEL', 'CHAT_BATCH_SIZE', 'CHAT_UBATCH_SIZE', 'CHAT_FLASH_ATTN', 'CHAT_JINJA', 'CHAT_FIT'] %}
+      {% set gpu_keys = ['CHAT_GPU_VISIBLE_DEVICES', 'CHAT_DEVICE', 'CHAT_N_GPU_LAYERS', 'CHAT_MAIN_GPU', 'CHAT_TENSOR_SPLIT', 'CHAT_SPLIT_MODE', 'CHAT_KV_OFFLOAD', 'CHAT_OP_OFFLOAD', 'CHAT_MMPROJ_OFFLOAD', 'CHAT_CACHE_TYPE_K', 'CHAT_CACHE_TYPE_V', 'CHAT_NO_MMAP', 'CHAT_MLOCK'] %}
+      {% set behavior_keys = ['CHAT_TEMP', 'CHAT_TOP_P', 'CHAT_TOP_K', 'CHAT_MIN_P', 'CHAT_REASONING_FORMAT'] %}
+      {% set spec_keys = ['CHAT_SPEC_METHOD', 'CHAT_SPEC_NGRAM_MOD', 'CHAT_SPEC_DRAFT_MODEL_PATH', 'CHAT_SPEC_DRAFT_N_GPU_LAYERS', 'CHAT_SPEC_DRAFT_DEVICES', 'CHAT_SPEC_DRAFT_CTX_SIZE', 'CHAT_SPEC_DRAFT_N_MAX', 'CHAT_SPEC_DRAFT_N_MIN', 'CHAT_SPEC_DRAFT_P_MIN', 'CHAT_SPEC_DRAFT_P_SPLIT', 'CHAT_SPEC_NGRAM_MOD_N_MATCH', 'CHAT_SPEC_NGRAM_MOD_N_MIN', 'CHAT_SPEC_NGRAM_MOD_N_MAX'] %}
+
+      <div class="cfg-panel" style="margin-bottom:20px;">
+        <h4>Download GGUFs From Hugging Face</h4>
+        <p>Download a quantized model directly into the local <code>models/</code> folder. If an MMProj GGUF is present in the repo, it will be downloaded alongside the model and renamed to match the selected model filename. When the download finishes, this page reloads so the Dense and MoE path dropdowns show the new files.</p>
+        <div class="hf-grid" style="margin-bottom:0;">
+          <div class="field wide">
+            <label>Repo URL</label>
+            <div class="hf-inline">
+              <input type="text" id="shared-hf-repo-url" class="mono" placeholder="https://huggingface.co/owner/repo or owner/repo">
+              <button class="btn btn-primary btn-sm" id="shared-hf-load-files-btn" onclick="loadSharedBackendHuggingFaceRepoFiles(this)">Load Files</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Quantized Model GGUF</label>
+            <select id="shared-hf-model-file-select">
+              <option value="">-- Select model file --</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Matched MMProj</label>
+            <input type="text" id="shared-hf-mmproj-match" class="mono" placeholder="No MMProj detected" readonly>
+          </div>
+          <div class="field wide">
+            <label>MMProj Rename Preview</label>
+            <input type="text" id="shared-hf-mmproj-rename" class="mono" placeholder="Will appear after model selection" readonly>
+          </div>
+        </div>
+        <div class="hf-inline">
+          <button class="btn btn-success btn-sm" id="shared-hf-download-btn" onclick="downloadSharedBackendHuggingFaceModel(this)" disabled>Download To Models Folder</button>
+          <span class="hf-status" id="shared-hf-status-text"></span>
+        </div>
+        <div class="hf-download-meta" id="shared-hf-download-meta"></div>
+      </div>
+
+      <div class="cfg-preset-grid">
+        <div class="cfg-preset-card">
+          <h4>Dense Preset Slot</h4>
+          <p>This is the built-in dense backend button on the services page.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in dense_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+        <div class="cfg-preset-card">
+          <h4>MoE Preset Slot</h4>
+          <p>This is the built-in mixture-of-experts backend button on the services page.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in moe_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="cfg-panel-grid">
+        <div class="cfg-panel">
+          <h4>Shared Backend Runtime</h4>
+          <p>These are the launch-time backend settings that stay constant across thinking, instruct, and coding so the underlying model does not need to reload.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in shared_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>GPU Placement And Memory</h4>
+          <p>Use this area for device visibility, sharding, KV cache types, and memory-mapping behavior.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in gpu_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Sampling And Tool Calling</h4>
+          <p>These settings shape output quality, determinism, reasoning formatting, and native tool-call support.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in behavior_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Speculative Decoding</h4>
+          <p>Use llama.cpp speculative decoding to accelerate the shared backend. Select the base mode, then tune draft and n-gram values separately. Turn on N-Gram Mod Assist to launch combined modes such as <code>draft-mtp,ngram-mod</code>.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in spec_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Custom llama.cpp Arguments</h4>
+          <p>These flags are appended to every shared chat backend launch, regardless of which proxy port is used. This is the right place for model-family flags like <code>--jinja</code> or template kwargs that should follow the loaded model.</p>
+      {% for f in fields if f.key == 'CHAT_CUSTOM_ARGS_JSON' %}
+      {{ render_config_field(f, section) }}
+      {% endfor %}
+        </div>
+      </div>
+      {% elif section == 'Task Model' %}
+      {% set task_identity_keys = ['TASK_MODEL_NAME', 'TASK_MODEL_PATH', 'TASK_MMPROJ_PATH', 'TASK_CTX_SIZE'] %}
+      {% set task_runtime_keys = ['TASK_N_PARALLEL', 'TASK_BATCH_SIZE', 'TASK_UBATCH_SIZE', 'TASK_FLASH_ATTN', 'TASK_JINJA', 'TASK_THINKING', 'TASK_REASONING_FORMAT', 'TASK_FIT'] %}
+      {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
+      {% set task_sampling_keys = ['TASK_TEMP', 'TASK_TOP_P', 'TASK_TOP_K', 'TASK_MIN_P', 'TASK_PRESENCE_PENALTY', 'TASK_REPEAT_PENALTY'] %}
+      <div class="cfg-panel-grid">
+        <div class="cfg-panel">
+          <h4>Model Identity And Files</h4>
+          <p>Set the advertised model name, GGUF path, optional MMProj, and base context window for the standalone task model.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in task_identity_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Runtime And Tool Calling</h4>
+          <p>These are the task model's launch-time runtime settings, including parallelism, batching, flash attention, jinja support, and reasoning behavior.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in task_runtime_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>GPU Placement And Memory</h4>
+          <p>Use this area for device visibility, sharding, KV placement, projector offload, cache types, and memory-mapping behavior.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in task_gpu_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Sampling Defaults</h4>
+          <p>These settings shape output quality, determinism, and repetition behavior for the task model itself.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in task_sampling_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Custom llama.cpp Arguments</h4>
+          <p>These flags are appended to the task model launch. Use this for model-family-specific flags that should stay with the task service.</p>
+          {% for f in fields if f.key == 'TASK_CUSTOM_ARGS_JSON' %}
+          {{ render_config_field(f, section) }}
+          {% endfor %}
+        </div>
+      </div>
+      {% elif section == 'Thinking Endpoint' %}
+      {% set thinking_identity_keys = ['THINK_MODEL_NAME'] %}
+      {% set thinking_behavior_keys = ['THINK_PRESERVE_THINKING', 'THINK_JINJA', 'THINK_REASONING_FORMAT'] %}
+      {% set thinking_sampling_keys = ['THINK_TEMP', 'THINK_TOP_P', 'THINK_TOP_K', 'THINK_MIN_P', 'THINK_PRESENCE_PENALTY', 'THINK_REPEAT_PENALTY'] %}
+      <div class="cfg-panel-grid">
+        <div class="cfg-panel">
+          <h4>Endpoint Identity</h4>
+          <p>The thinking port can expose its own model name while still routing requests into the same loaded backend.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in thinking_identity_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Request-Time Behavior</h4>
+          <p>These switches are applied by the proxy at call time, including preserve-thinking injection and whether tools are exposed on the thinking route.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in thinking_behavior_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Sampling Defaults</h4>
+          <p>Sampling stays request-scoped here, so different clients can hit the thinking endpoint without changing the loaded model.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in thinking_sampling_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% elif section == 'Instruct Endpoint' %}
+      {% set instruct_identity_keys = ['NOTHINK_MODEL_NAME'] %}
+      {% set instruct_behavior_keys = ['NOTHINK_PRESERVE_THINKING', 'NOTHINK_JINJA', 'NOTHINK_REASONING_FORMAT'] %}
+      {% set instruct_sampling_keys = ['NOTHINK_TEMP', 'NOTHINK_TOP_P', 'NOTHINK_TOP_K', 'NOTHINK_MIN_P', 'NOTHINK_PRESENCE_PENALTY', 'NOTHINK_REPEAT_PENALTY'] %}
+      <div class="cfg-panel-grid">
+        <div class="cfg-panel">
+          <h4>Endpoint Identity</h4>
+          <p>The instruct port keeps a separate exposed model identity for non-thinking clients while sharing the loaded backend.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in instruct_identity_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Request-Time Behavior</h4>
+          <p>These settings define how the proxy shapes non-thinking chat calls, including tool exposure and preserve-thinking template kwargs.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in instruct_behavior_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Sampling Defaults</h4>
+          <p>These defaults apply only to the instruct route and do not affect the backend load state.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in instruct_sampling_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% elif section == 'Coding Endpoint' %}
+      {% set code_identity_keys = ['CODE_MODEL_NAME'] %}
+      {% set code_behavior_keys = ['CODE_THINKING', 'CODE_PRESERVE_THINKING', 'CODE_JINJA', 'CODE_REASONING_FORMAT'] %}
+      {% set code_sampling_keys = ['CODE_TEMP', 'CODE_TOP_P', 'CODE_TOP_K', 'CODE_MIN_P', 'CODE_PRESENCE_PENALTY', 'CODE_REPEAT_PENALTY'] %}
+      <div class="cfg-panel-grid">
+        <div class="cfg-panel">
+          <h4>Endpoint Identity</h4>
+          <p>The coding route can advertise its own model name to coding-focused apps without forcing a backend restart.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in code_identity_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Request-Time Behavior</h4>
+          <p>These switches control whether the coding route thinks, preserves internal reasoning, and exposes tool calls at request time.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in code_behavior_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Sampling Defaults</h4>
+          <p>These defaults apply only to the coding route and can diverge from the thinking and instruct ports without reloading the model.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in code_sampling_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      {% elif section == 'Transcription' %}
+      {% set transcript_gateway_keys = ['TRANSCRIPT_PUBLIC_URL', 'TRANSCRIPT_HOST', 'TRANSCRIPT_PORT', 'TRANSCRIPT_ACTIVE_ENGINE', 'TRANSCRIPT_TIMEOUT_SECONDS'] %}
+      {% set transcript_runtime_keys = ['TRANSCRIPT_LOCAL_DEVICE', 'TRANSCRIPT_LOCAL_COMPUTE_TYPE'] %}
+      {% set transcript_parakeet_core_keys = ['PARAKEET_V3_BACKEND_TYPE', 'PARAKEET_V3_LOCAL_MODEL', 'PARAKEET_V3_UPSTREAM_URL', 'PARAKEET_V3_MODEL', 'PARAKEET_V3_API_KEY', 'PARAKEET_V3_TRANSCRIBE_PATH'] %}
+      {% set transcript_parakeet_stream_keys = ['PARAKEET_V3_STREAM_OUTPUT_ENABLED', 'PARAKEET_V3_STREAM_OUTPUT_TARGET', 'PARAKEET_V3_STREAM_OUTPUT_FORMAT'] %}
+      {% set transcript_parakeet_speaker_keys = ['PARAKEET_V3_SPEAKER_DETECTION', 'PARAKEET_V3_SPEAKER_MODE', 'PARAKEET_V3_SPEAKER_COUNT'] %}
+      {% set transcript_whisperkit_core_keys = ['WHISPERKIT_LARGE_V3_BACKEND_TYPE', 'WHISPERKIT_LARGE_V3_LOCAL_MODEL', 'WHISPERKIT_LARGE_V3_UPSTREAM_URL', 'WHISPERKIT_LARGE_V3_MODEL', 'WHISPERKIT_LARGE_V3_API_KEY', 'WHISPERKIT_LARGE_V3_TRANSCRIBE_PATH'] %}
+      {% set transcript_whisperkit_stream_keys = ['WHISPERKIT_LARGE_V3_STREAM_OUTPUT_ENABLED', 'WHISPERKIT_LARGE_V3_STREAM_OUTPUT_TARGET', 'WHISPERKIT_LARGE_V3_STREAM_OUTPUT_FORMAT'] %}
+      {% set transcript_whisperkit_speaker_keys = ['WHISPERKIT_LARGE_V3_SPEAKER_DETECTION', 'WHISPERKIT_LARGE_V3_SPEAKER_MODE', 'WHISPERKIT_LARGE_V3_SPEAKER_COUNT'] %}
+
+      <div class="cfg-panel-grid">
+        <div class="cfg-panel">
+          <h4>Gateway</h4>
+          <p>These settings define the public transcription endpoint and which engine is treated as the default target. There is no silent fallback path: the selected engine backend is what gets used.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in transcript_gateway_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Local Runtime</h4>
+          <p>These apply only to engines set to the <code>local</code> backend type.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in transcript_runtime_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="cfg-panel-grid">
+        <div class="cfg-panel">
+          <h4>Parakeet Engine</h4>
+          <p>Parakeet has its own backend type, its own model inventory, and its own future-capability scaffolding. If the selected local model or upstream target is wrong, requests fail instead of falling back to something else.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in transcript_parakeet_core_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+          <div class="cfg-panel" style="margin-top:16px;">
+            <h4>Download Parakeet Models</h4>
+            <div class="hf-grid" style="margin-bottom:0;">
+              <div class="field wide">
+                <label>Repo URL</label>
+                <div class="hf-inline">
+                  <input type="text" id="transcript-hf-repo-url-parakeet-v3" class="mono" placeholder="https://huggingface.co/owner/repo or owner/repo">
+                  <button class="btn btn-primary btn-sm" onclick="loadTranscriptHuggingFaceRepoInfo(this, 'parakeet-v3')">Inspect Repo</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>Target Folder</label>
+                <input type="text" id="transcript-hf-target-dir-parakeet-v3" class="mono" readonly>
+              </div>
+              <div class="field">
+                <label>Files To Download</label>
+                <input type="text" id="transcript-hf-file-count-parakeet-v3" class="mono" readonly>
+              </div>
+              <div class="field wide">
+                <label>Preview</label>
+                <input type="text" id="transcript-hf-preview-parakeet-v3" class="mono" readonly>
+              </div>
+            </div>
+            <div class="hf-inline">
+              <button class="btn btn-success btn-sm" id="transcript-hf-download-btn-parakeet-v3" onclick="downloadTranscriptHuggingFaceModel(this, 'parakeet-v3')" disabled>Download To Parakeet Models Folder</button>
+              <span class="hf-status" id="transcript-hf-status-text-parakeet-v3"></span>
+            </div>
+            <div class="hf-download-meta" id="transcript-hf-download-meta-parakeet-v3"></div>
+          </div>
+          <div class="cfg-panel transcript-capability-panel" data-engine-id="parakeet-v3" data-capability="supports_streaming" style="display:none;margin-top:16px;">
+            <h4>Streaming Output</h4>
+            <p>Scaffolding only. These settings stay hidden unless the configured Parakeet backend advertises streaming support.</p>
+            <div class="cfg-mini-grid">
+              {% for f in fields if f.key in transcript_parakeet_stream_keys %}
+              {{ render_config_field(f, section) }}
+              {% endfor %}
+            </div>
+          </div>
+          <div class="cfg-panel transcript-capability-panel" data-engine-id="parakeet-v3" data-capability="supports_speaker_detection" style="display:none;margin-top:16px;">
+            <h4>Speaker Detection</h4>
+            <p>Scaffolding only. These settings stay hidden unless the configured Parakeet backend advertises diarization or speaker-detection support.</p>
+            <div class="cfg-mini-grid">
+              {% for f in fields if f.key in transcript_parakeet_speaker_keys %}
+              {{ render_config_field(f, section) }}
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>WhisperKit Engine</h4>
+          <p>WhisperKit also has its own backend type and its own model inventory. Its local dropdown only shows models downloaded for WhisperKit.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in transcript_whisperkit_core_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+          <div class="cfg-panel" style="margin-top:16px;">
+            <h4>Download WhisperKit Models</h4>
+            <div class="hf-grid" style="margin-bottom:0;">
+              <div class="field wide">
+                <label>Repo URL</label>
+                <div class="hf-inline">
+                  <input type="text" id="transcript-hf-repo-url-whisperkit-large-v3" class="mono" placeholder="https://huggingface.co/owner/repo or owner/repo">
+                  <button class="btn btn-primary btn-sm" onclick="loadTranscriptHuggingFaceRepoInfo(this, 'whisperkit-large-v3')">Inspect Repo</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>Target Folder</label>
+                <input type="text" id="transcript-hf-target-dir-whisperkit-large-v3" class="mono" readonly>
+              </div>
+              <div class="field">
+                <label>Files To Download</label>
+                <input type="text" id="transcript-hf-file-count-whisperkit-large-v3" class="mono" readonly>
+              </div>
+              <div class="field wide">
+                <label>Preview</label>
+                <input type="text" id="transcript-hf-preview-whisperkit-large-v3" class="mono" readonly>
+              </div>
+            </div>
+            <div class="hf-inline">
+              <button class="btn btn-success btn-sm" id="transcript-hf-download-btn-whisperkit-large-v3" onclick="downloadTranscriptHuggingFaceModel(this, 'whisperkit-large-v3')" disabled>Download To WhisperKit Models Folder</button>
+              <span class="hf-status" id="transcript-hf-status-text-whisperkit-large-v3"></span>
+            </div>
+            <div class="hf-download-meta" id="transcript-hf-download-meta-whisperkit-large-v3"></div>
+          </div>
+          <div class="cfg-panel transcript-capability-panel" data-engine-id="whisperkit-large-v3" data-capability="supports_streaming" style="display:none;margin-top:16px;">
+            <h4>Streaming Output</h4>
+            <p>Scaffolding only. These settings stay hidden unless the configured WhisperKit backend advertises streaming support.</p>
+            <div class="cfg-mini-grid">
+              {% for f in fields if f.key in transcript_whisperkit_stream_keys %}
+              {{ render_config_field(f, section) }}
+              {% endfor %}
+            </div>
+          </div>
+          <div class="cfg-panel transcript-capability-panel" data-engine-id="whisperkit-large-v3" data-capability="supports_speaker_detection" style="display:none;margin-top:16px;">
+            <h4>Speaker Detection</h4>
+            <p>Scaffolding only. These settings stay hidden unless the configured WhisperKit backend advertises diarization or speaker-detection support.</p>
+            <div class="cfg-mini-grid">
+              {% for f in fields if f.key in transcript_whisperkit_speaker_keys %}
+              {{ render_config_field(f, section) }}
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="cfg-grid">
+        {% for f in fields %}
+        {{ render_config_field(f, section) }}
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="save-bar">
+        <button class="btn btn-primary" onclick="saveCfgSection('{{ section }}',this)">Save {{ section }}</button>
+        <span class="restart-hint" id="rhint-{{ section|replace(' ','-') }}"></span>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+</div>
+
+<!-- ====== Logs tab ====== -->
+<div id="tab-logs" class="tab-panel">
+  <div class="log-bar">
+    <select id="log-svc">
+      {% for group_name, services in service_groups.items() %}
+      <optgroup label="{{ group_name | title }}">
+        {% for svc in services %}
+        <option value="{{ svc.name }}">{{ svc.label }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+    </select>
+    <button class="btn btn-success btn-sm" id="log-start" onclick="startLogs()">Stream</button>
+    <button class="btn btn-danger  btn-sm" id="log-stop"  onclick="stopLogs()" disabled>Stop</button>
+    <button class="btn btn-ghost   btn-sm" onclick="clearLogs()">Clear</button>
+    <label style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:5px;">
+      <input type="checkbox" id="autoscroll" checked> Auto-scroll
+    </label>
+  </div>
+  <div class="log-out" id="log-out">Select a service above and click Stream.</div>
+</div>
+
+</main>
+<div id="toast"></div>
+
+<script>
+// -- state --
+let pollTimer  = null;
+let logSrc     = null;
+let cfgDirty   = {};
+let cfgCurrent = {};
+let ggufFiles  = [];
+let customModels = [];
+let activeModel = null;
+let ttsOverview = null;
+let graphitiLoaded = false;
+let customArgsDirty = false;
+let customArgPresetTimer = null;
+let huggingFaceRepoFiles = [];
+let huggingFaceDownloadJobId = null;
+let sharedBackendRepoFiles = [];
+let sharedBackendDownloadJobId = null;
+let transcriptionModelsByEngine = {};
+let transcriptionCapabilities = {};
+let transcriptRepoInfoByEngine = {};
+let transcriptDownloadJobIdByEngine = {};
+const builtInChatVariants = {{ builtin_chat_variants|tojson }};
+const builtInChatVariantMap = Object.fromEntries(builtInChatVariants.map(v => [v.id, v]));
+
+// -- tabs --
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'config' && !Object.keys(cfgCurrent).length) loadConfig();
+    if (btn.dataset.tab === 'graphiti') initGraphitiTab();
+  });
+});
+
+function showCfgSection(name) {
+  document.querySelectorAll('.cfg-tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.cfg-section').forEach(s => s.classList.remove('active'));
+  document.querySelector(`.cfg-tab-btn[data-section="${name}"]`).classList.add('active');
+  document.getElementById('cfgsec-' + name.replace(/ /g, '-')).classList.add('active');
+}
+
+function refreshBuiltInModelButtons(updates) {
+  const slotMappings = [
+    { key: 'CHAT_DENSE_LABEL', variant: 'dense' },
+    { key: 'CHAT_MOE_LABEL', variant: 'moe' },
+  ];
+  slotMappings.forEach(({ key, variant }) => {
+    if (!(key in updates) || !builtInChatVariantMap[variant]) return;
+    builtInChatVariantMap[variant].label = updates[key];
+    const btn = document.querySelector(`.builtin-switch-btn[data-variant="${variant}"]`);
+    if (btn) {
+      btn.dataset.label = updates[key];
+      btn.textContent = `Switch to ${updates[key]}`;
+    }
+  });
+}
+
+// -- status polling --
+function startPolling() {
+  poll();
+  pollTimer = setInterval(poll, 5000);
+}
+
+async function poll() {
+  try {
+    const d = await fetchJSON('/api/status');
+    applyStatuses(d.services);
+    applyGpus(d.gpus);
+  } catch {}
+  try { await pollActiveModel(); } catch {}
+  try { await loadTtsOverview(true); } catch {}
+}
+
+function applyStatuses(statuses) {
+  for (const [name, status] of Object.entries(statuses)) {
+    const card = document.getElementById('card-' + name);
+    const pill = document.getElementById('pill-' + name);
+    if (!card) continue;
+    card.dataset.status = status;
+    pill.className = 'status-pill ' + status;
+    pill.textContent = status;
+  }
+}
+
+function applyGpus(gpus) {
+  document.getElementById('gpu-stats').innerHTML = gpus.map(g => `
+    <div class="gpu-chip">
+      <span class="gpu-label">GPU${g.index}</span>
+      <div class="bar-wrap" title="${g.mem_used}/${g.mem_total} MiB | ${g.util}% | ${g.temp} C">
+        <div class="bar-fill ${g.mem_pct>90?'max':g.mem_pct>70?'hi':''}" style="width:${g.mem_pct}%"></div>
+      </div>
+      <span>${g.mem_used}/${g.mem_total}&nbsp;MiB</span>
+      <span>${g.util}%</span>
+      <span>${g.temp} C</span>
+    </div>`).join('');
+}
+
+// -- tts --
+async function loadTtsOverview(silent = false) {
+  try {
+    ttsOverview = await fetchJSON('/api/tts/overview');
+    renderTtsOverview();
+  } catch (e) {
+    if (!silent) toast('Could not load TTS overview: ' + e, 'err');
+  }
+}
+
+function renderTtsOverview() {
+  if (!ttsOverview) return;
+  document.getElementById('tts-public-endpoint').textContent = ttsOverview.public_endpoint || '-';
+  document.getElementById('tts-gateway-status').textContent = ttsOverview.gateway_service_status || 'unknown';
+  document.getElementById('tts-active-backend').textContent = ttsOverview.active_backend || 'none';
+
+  const backendSelect = document.getElementById('tts-test-backend');
+  const voiceSelect = document.getElementById('tts-test-voice');
+  const formatSelect = document.getElementById('tts-test-format');
+  backendSelect.innerHTML = ttsOverview.backends.map(b =>
+    `<option value="${b.id}" ${b.active ? 'selected' : ''}>${b.label}</option>`
+  ).join('');
+  const selectedBackend = ttsOverview.backends.find(b => b.id === backendSelect.value) || ttsOverview.backends[0];
+  voiceSelect.innerHTML = (selectedBackend?.voices?.length ? selectedBackend.voices : ['default']).map(v =>
+    `<option value="${v}">${v}</option>`
+  ).join('');
+  if (ttsOverview.default_format) formatSelect.value = ttsOverview.default_format;
+
+  document.getElementById('tts-meta-list').innerHTML = [
+    `Single active: ${ttsOverview.single_active}`,
+    `Backends: ${ttsOverview.backends.length}`,
+    ttsOverview.updated_at ? `Last switch: ${ttsOverview.updated_at}` : 'Last switch: -',
+    ttsOverview.gateway_error ? `Gateway error: ${ttsOverview.gateway_error}` : 'Gateway health polling available'
+  ].map(item => `<span class="meta-chip">${item}</span>`).join('');
+
+  document.getElementById('tts-backend-cards').innerHTML = ttsOverview.backends.map(b => {
+    const health = b.health || {};
+    const detail = health.detail ? String(health.detail).slice(0, 120) : '';
+    return `
+      <div class="svc-card" data-status="${b.active ? 'active' : b.service_status || 'inactive'}">
+        <div class="card-top">
+          <span class="card-name">${b.label}</span>
+          <span class="status-pill ${b.active ? 'active' : (b.service_status || 'inactive')}">${b.active ? 'active' : (b.service_status || 'inactive')}</span>
+        </div>
+        <div class="card-desc">${b.description || b.family || ''}</div>
+        <div class="card-port">${b.internal_url || '-'}</div>
+        <div class="meta-list">
+          <span class="meta-chip">configured: ${b.configured ? 'yes' : 'no'}</span>
+          <span class="meta-chip">health: ${health.ok ? 'ok' : 'down'}</span>
+          <span class="meta-chip">voices: ${(b.voices || []).length}</span>
+        </div>
+        ${detail ? `<div class="card-desc" style="margin-top:10px;">${detail}</div>` : ''}
+        <div class="card-acts" style="margin-top:12px;">
+          <button class="btn btn-success btn-sm" onclick="svcAction('${b.service_name}','start',this)">Start</button>
+          <button class="btn btn-danger btn-sm" onclick="svcAction('${b.service_name}','stop',this)">Stop</button>
+          <button class="btn btn-primary btn-sm" onclick="activateTtsBackend('${b.id}', this)">Make Active</button>
+          <button class="btn btn-ghost btn-sm" onclick="openLogs('${b.service_name}')">Logs</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+document.getElementById('tts-test-backend').addEventListener('change', () => {
+  if (!ttsOverview) return;
+  const backend = ttsOverview.backends.find(b => b.id === document.getElementById('tts-test-backend').value);
+  const voiceSelect = document.getElementById('tts-test-voice');
+  voiceSelect.innerHTML = (backend?.voices?.length ? backend.voices : ['default']).map(v =>
+    `<option value="${v}">${v}</option>`
+  ).join('');
+});
+
+async function activateTtsBackend(backendId, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const d = await fetchJSON(`/api/tts/activate/${backendId}`, 'POST');
+    toast(d.ok ? `Active TTS backend: ${backendId}` : (d.error || 'failed'), d.ok ? 'ok' : 'err');
+    await loadTtsOverview();
+    await poll();
+  } catch (e) {
+    toast('Error: ' + e, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function runTtsTest(btn) {
+  const text = document.getElementById('tts-test-input').value.trim();
+  if (!text) {
+    toast('Enter text to synthesize', 'err');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const res = await fetch('/api/tts/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: document.getElementById('tts-test-backend').value,
+        input: text,
+        voice: document.getElementById('tts-test-voice').value,
+        response_format: document.getElementById('tts-test-format').value,
+        speed: Number(document.getElementById('tts-test-speed').value || '1.0'),
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || body.detail || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const audio = document.getElementById('tts-audio');
+    audio.src = URL.createObjectURL(blob);
+    audio.style.display = '';
+    await audio.play().catch(() => {});
+    toast('Speech generated', 'ok');
+  } catch (e) {
+    toast('TTS test failed: ' + e, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+// -- active model tracking --
+async function pollActiveModel() {
+  const d = await fetchJSON('/api/active-chat-model');
+  activeModel = d.variant;
+  const label = document.getElementById('active-model-label');
+  // Update label
+  if (builtInChatVariantMap[d.variant]) label.textContent = 'Active: ' + (d.label || builtInChatVariantMap[d.variant].label);
+  else if (d.custom_model) label.textContent = 'Active: ' + d.custom_model.display_name;
+  else if (d.variant === 'generic') label.textContent = 'Active: Custom';
+  else label.textContent = 'No backend active';
+
+  // Highlight active switch button
+  document.querySelectorAll('.switch-model-btn').forEach(btn => {
+    if (btn.dataset.variant === d.variant) {
+      btn.classList.add('btn-active-model');
+      btn.classList.remove('btn-ghost');
+    } else {
+      btn.classList.remove('btn-active-model');
+      btn.classList.add('btn-ghost');
+    }
+  });
+
+  // Update custom model card statuses
+  updateCustomModelCardStatuses(d);
+}
+
+function updateCustomModelCardStatuses(activeData) {
+  customModels.forEach(m => {
+    const card = document.getElementById('custom-card-' + m.id);
+    if (!card) return;
+    const pill = card.querySelector('.status-pill');
+    if (activeData.variant === m.id) {
+      card.dataset.status = 'active';
+      pill.className = 'status-pill active';
+      pill.textContent = 'active';
+    } else {
+      card.dataset.status = 'inactive';
+      pill.className = 'status-pill inactive';
+      pill.textContent = 'inactive';
+    }
+  });
+}
+
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function prettyJson(v) {
+  return JSON.stringify(v, null, 2);
+}
+
+function fmtEpoch(epoch) {
+  if (!epoch) return '-';
+  try { return new Date(epoch * 1000).toLocaleString(); } catch { return '-'; }
+}
+
+function formatBytes(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = n;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function slugFromFilename(filename = '') {
+  return filename
+    .replace(/\.gguf$/i, '')
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-zA-Z0-9.-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
+}
+
+function filenameFromPath(path = '') {
+  return String(path || '').split('/').filter(Boolean).pop() || '';
+}
+
+function displayNameFromFilename(filename = '') {
+  return filenameFromPath(filename).replace(/\.gguf$/i, '');
+}
+
+function isLikelyMmprojGguf(file) {
+  if (file && typeof file.is_mmproj === 'boolean') return file.is_mmproj;
+  const name = String(file?.name || filenameFromPath(file?.path || '')).toLowerCase();
+  const relative = String(file?.relative || file?.path || '').toLowerCase();
+  if (name.includes('mmproj') || relative.includes('mmproj')) return true;
+  if (name.includes('projector') || relative.includes('projector')) return true;
+  if (name.includes('mm_project') || relative.includes('mm_project')) return true;
+  if ((name.includes('clip') || name.includes('vision')) && Number(file?.size_gb || 0) > 0 && Number(file.size_gb) < 2) return true;
+  return false;
+}
+
+function ggufFilesForTarget(targetId = '') {
+  const key = String(targetId || '').replace(/^cfg-/, '').toUpperCase();
+  const wantsMmproj = key.includes('MMPROJ');
+  return ggufFiles.filter(file => wantsMmproj ? isLikelyMmprojGguf(file) : !isLikelyMmprojGguf(file));
+}
+
+function fillCustomModelIdentityFromPath(path = '', overwrite = false) {
+  const filename = filenameFromPath(path);
+  if (!filename) return;
+  const display = document.getElementById('new-display-name');
+  const model = document.getElementById('new-model-name');
+  if (display && (overwrite || !display.value.trim())) {
+    display.value = displayNameFromFilename(filename);
+  }
+  if (model && (overwrite || !model.value.trim())) {
+    model.value = slugFromFilename(filename);
+  }
+  scheduleCustomArgPresetRefresh();
+}
+
+async function initGraphitiTab() {
+  if (graphitiLoaded) return;
+  graphitiLoaded = true;
+  await refreshGraphitiAll();
+}
+
+async function refreshGraphitiAll() {
+  await loadGraphitiStatus();
+  await loadGraphitiStats();
+  await refreshGraphitiRecents();
+  await loadGraphitiExports();
+}
+
+async function loadGraphitiStatus() {
+  try {
+    const d = await fetchJSON('/api/graphiti/status');
+    document.getElementById('graphiti-last-refresh').textContent = `Last refresh: ${fmtEpoch(d.last_refresh)}`;
+    const checks = d.checks || {};
+    const cards = [
+      ['Graphiti API', checks.graphiti_api],
+      ['Neo4j', checks.neo4j],
+      ['LLM Endpoint', checks.llm_endpoint],
+      ['Embedding Endpoint', checks.embedding_endpoint],
+      ['Reranker Endpoint', checks.reranker_endpoint],
+      ['Ingestion Worker', checks.ingestion_worker],
+    ];
+    document.getElementById('graphiti-status-cards').innerHTML = cards.map(([label, v]) => {
+      const ok = v?.ok === true;
+      const unknown = v?.ok === null || typeof v?.ok === 'undefined';
+      const status = ok ? 'active' : (unknown ? 'unknown' : 'failed');
+      const text = ok ? 'ok' : (unknown ? 'unknown' : 'down');
+      const err = escapeHtml(v?.error || '');
+      return `
+        <div class="svc-card" data-status="${status}">
+          <div class="card-top">
+            <span class="card-name">${escapeHtml(label)}</span>
+            <span class="status-pill ${status}">${text}</span>
+          </div>
+          <div class="card-desc">${err || 'reachable'}</div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    toast('Graphiti status failed: ' + e, 'err');
+  }
+}
+
+async function loadGraphitiStats() {
+  try {
+    const d = await fetchJSON('/api/graphiti/stats');
+    if (!d.ok) throw new Error(d.error || 'stats failed');
+    const t = d.totals || {};
+    document.getElementById('graphiti-totals').innerHTML = [
+      `Episodes: ${t.episodes ?? 0}`,
+      `Entities: ${t.entities ?? 0}`,
+      `Relationships: ${t.relationships ?? 0}`,
+      `Refreshed: ${fmtEpoch(d.last_refresh)}`
+    ].map(x => `<span class="meta-chip">${escapeHtml(x)}</span>`).join('');
+
+    const groupsBody = document.querySelector('#graphiti-top-groups-table tbody');
+    groupsBody.innerHTML = (d.top_groups || []).map(r =>
+      `<tr><td>${escapeHtml(r.group_id || '(none)')}</td><td>${escapeHtml(r.c)}</td></tr>`
+    ).join('') || `<tr><td colspan="2">No data</td></tr>`;
+
+    const entsBody = document.querySelector('#graphiti-top-entities-table tbody');
+    entsBody.innerHTML = (d.top_entities || []).map(r =>
+      `<tr><td>${escapeHtml(r.name || r.uuid || '')}</td><td>${escapeHtml(r.group_id || '')}</td><td>${escapeHtml(r.degree)}</td></tr>`
+    ).join('') || `<tr><td colspan="3">No data</td></tr>`;
+  } catch (e) {
+    toast('Graphiti stats failed: ' + e, 'err');
+  }
+}
+
+function graphitiFilters() {
+  return {
+    group_id: document.getElementById('graphiti-filter-group').value.trim(),
+    q: document.getElementById('graphiti-filter-q').value.trim(),
+    start_time: document.getElementById('graphiti-filter-start').value.trim(),
+    end_time: document.getElementById('graphiti-filter-end').value.trim(),
+    page_size: 25,
+    page: 1,
+  };
+}
+
+async function refreshGraphitiRecents() {
+  const f = graphitiFilters();
+  const qs = new URLSearchParams(f).toString();
+  try {
+    const [episodes, entities, rels] = await Promise.all([
+      fetchJSON('/api/graphiti/recent/episodes?' + qs),
+      fetchJSON('/api/graphiti/recent/entities?' + qs),
+      fetchJSON('/api/graphiti/recent/relationships?' + qs),
+    ]);
+
+    const epBody = document.querySelector('#graphiti-episodes-table tbody');
+    epBody.innerHTML = (episodes.items || []).map(e => `
+      <tr>
+        <td>${escapeHtml(e.created_at || '')}</td>
+        <td>${escapeHtml(e.group_id || '')}</td>
+        <td>${escapeHtml(e.source || '')}</td>
+        <td>${escapeHtml(e.content_snippet || '')}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="showEpisodeDetail('${escapeHtml(e.uuid)}')">Open</button></td>
+      </tr>
+    `).join('') || `<tr><td colspan="5">No episodes found</td></tr>`;
+
+    const enBody = document.querySelector('#graphiti-entities-table tbody');
+    enBody.innerHTML = (entities.items || []).map(e => `
+      <tr>
+        <td>${escapeHtml(e.created_at || '')}</td>
+        <td>${escapeHtml(e.name || '')}</td>
+        <td>${escapeHtml(e.group_id || '')}</td>
+        <td>${escapeHtml((e.labels || []).join(', '))}</td>
+        <td>${escapeHtml(e.degree || 0)}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="showEntityDetail('${escapeHtml(e.uuid)}')">Open</button></td>
+      </tr>
+    `).join('') || `<tr><td colspan="6">No entities found</td></tr>`;
+
+    const relBody = document.querySelector('#graphiti-relationships-table tbody');
+    relBody.innerHTML = (rels.items || []).map(r => `
+      <tr>
+        <td>${escapeHtml(r.created_at || '')}</td>
+        <td>${escapeHtml(r.relation_name || '')}</td>
+        <td>${escapeHtml(r.source_name || '')}</td>
+        <td>${escapeHtml(r.target_name || '')}</td>
+        <td>${escapeHtml(r.fact_snippet || '')}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="showRelationshipDetail('${escapeHtml(r.uuid)}')">Open</button></td>
+      </tr>
+    `).join('') || `<tr><td colspan="6">No relationships found</td></tr>`;
+  } catch (e) {
+    toast('Graphiti recents failed: ' + e, 'err');
+  }
+}
+
+async function showEpisodeDetail(uuid) {
+  const d = await fetchJSON(`/api/graphiti/detail/episode/${encodeURIComponent(uuid)}`);
+  if (!d.ok) { toast(d.error || 'episode detail failed', 'err'); return; }
+  document.getElementById('graphiti-detail-output').textContent = prettyJson(d.item);
+}
+
+async function showEntityDetail(uuid) {
+  const d = await fetchJSON(`/api/graphiti/detail/entity/${encodeURIComponent(uuid)}`);
+  if (!d.ok) { toast(d.error || 'entity detail failed', 'err'); return; }
+  document.getElementById('graphiti-detail-output').textContent = prettyJson(d.item);
+}
+
+async function showRelationshipDetail(uuid) {
+  const d = await fetchJSON(`/api/graphiti/detail/relationship/${encodeURIComponent(uuid)}`);
+  if (!d.ok) { toast(d.error || 'relationship detail failed', 'err'); return; }
+  document.getElementById('graphiti-detail-output').textContent = prettyJson(d.item);
+}
+
+async function runGraphitiMemorySearch() {
+  const query = document.getElementById('graphiti-search-query').value.trim();
+  const group_id = document.getElementById('graphiti-search-group').value.trim();
+  const max_facts = Number(document.getElementById('graphiti-search-max-facts').value || '10');
+  if (!query) { toast('Enter memory search text', 'err'); return; }
+  const d = await fetchJSON('/api/graphiti/search/memory', 'POST', { query, group_id, max_facts });
+  if (!d.ok) { toast(d.error || 'search failed', 'err'); return; }
+  document.getElementById('graphiti-search-output').textContent = prettyJson(d.result || {});
+}
+
+async function inspectGraphitiGroup() {
+  const group = document.getElementById('graphiti-inspect-group').value.trim();
+  const last_n = Number(document.getElementById('graphiti-inspect-lastn').value || '30');
+  if (!group) { toast('Enter a group_id', 'err'); return; }
+  const d = await fetchJSON(`/api/graphiti/search/group/${encodeURIComponent(group)}?last_n=${last_n}`);
+  if (!d.ok) { toast(d.error || 'group inspect failed', 'err'); return; }
+  document.getElementById('graphiti-search-output').textContent = prettyJson(d);
+}
+
+async function inspectGraphitiNeighborhood() {
+  const uuid = document.getElementById('graphiti-inspect-entity').value.trim();
+  const limit = Number(document.getElementById('graphiti-inspect-limit').value || '50');
+  if (!uuid) { toast('Enter an entity uuid', 'err'); return; }
+  const d = await fetchJSON(`/api/graphiti/neighborhood/${encodeURIComponent(uuid)}?limit=${limit}`);
+  if (!d.ok) { toast(d.error || 'neighborhood inspect failed', 'err'); return; }
+  document.getElementById('graphiti-search-output').textContent = prettyJson(d.item || {});
+}
+
+async function createGraphitiExport() {
+  const export_type = document.getElementById('graphiti-export-type').value;
+  const format = document.getElementById('graphiti-export-format').value;
+  const limit = Number(document.getElementById('graphiti-export-limit').value || '200');
+  const group_id = document.getElementById('graphiti-export-group').value.trim();
+  const entity_uuid = document.getElementById('graphiti-export-entity').value.trim();
+  const start_time = document.getElementById('graphiti-export-start').value.trim();
+  const end_time = document.getElementById('graphiti-export-end').value.trim();
+  const payload = { export_type, format, limit, group_id, entity_uuid, start_time, end_time };
+  const d = await fetchJSON('/api/graphiti/export', 'POST', payload);
+  if (!d.ok) { toast(d.error || 'export failed', 'err'); return; }
+  toast(`Export created: ${d.file.filename}`, 'ok');
+  await loadGraphitiExports();
+}
+
+async function loadGraphitiExports() {
+  try {
+    const d = await fetchJSON('/api/graphiti/exports');
+    if (!d.ok) throw new Error(d.error || 'exports list failed');
+    document.getElementById('graphiti-export-dir').innerHTML =
+      `<span class="meta-chip">Export dir: ${escapeHtml(d.directory || '-')}</span>`;
+    const body = document.querySelector('#graphiti-exports-table tbody');
+    body.innerHTML = (d.items || []).map(f => `
+      <tr>
+        <td>${escapeHtml(f.filename)}</td>
+        <td>${escapeHtml(f.size_bytes)}</td>
+        <td>${escapeHtml(fmtEpoch(f.modified_at))}</td>
+        <td><a class="btn btn-ghost btn-sm" href="${escapeHtml(f.download_url)}">Download</a></td>
+      </tr>
+    `).join('') || `<tr><td colspan="4">No exports yet</td></tr>`;
+  } catch (e) {
+    toast('Failed to load export files: ' + e, 'err');
+  }
+}
+
+// -- service actions --
+async function svcAction(name, action, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const d = await fetchJSON(`/api/service/${name}/${action}`, 'POST');
+    toast(d.ok ? `${name} - ${action} OK` : (d.output || d.error || 'failed'), d.ok ? 'ok' : 'err');
+    await poll();
+  } catch (e) { toast('Error: ' + e, 'err'); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+async function bulkAction(action) {
+  const names = [...document.querySelectorAll('.svc-card[id^="card-"]')]
+    .map(c => c.id.replace('card-',''));
+  toast(`${action} all services...`, 'info');
+  for (const name of names) {
+    try { await fetchJSON(`/api/service/${name}/${action}`, 'POST'); } catch {}
+  }
+  await poll();
+  toast(`${action} all done`, 'ok');
+}
+
+async function restartApp() {
+  if (!confirm('Restart all stack services now?')) return;
+  await bulkAction('restart');
+}
+
+async function updateLlamaCpp(btn) {
+  if (!confirm('Update llama.cpp now? This runs git pull + cmake build, then restarts active llama services.')) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Updating...';
+  toast('Updating llama.cpp. This may take a few minutes...', 'info');
+  try {
+    const d = await fetchJSON('/api/llamacpp/update', 'POST');
+    if (d.output) {
+      document.getElementById('log-out').textContent = d.output;
+    }
+    if (d.ok) {
+      const restarted = (d.restarted_services || []).join(', ') || 'none';
+      toast(`llama.cpp updated. Restarted: ${restarted}`, 'ok');
+    } else {
+      toast('llama.cpp update failed. See Logs tab output.', 'err');
+    }
+    await poll();
+  } catch (e) {
+    toast('Error: ' + e, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+// -- default mode --
+async function defaultMode(btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Running...';
+  toast('Running default-mode.sh...', 'info');
+  try {
+    const d = await fetchJSON('/api/default-mode', 'POST');
+    toast(d.ok ? 'Default mode active' : (d.output || 'failed'), d.ok ? 'ok' : 'err');
+    await poll();
+  } catch (e) { toast('Error: ' + e, 'err'); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+// -- switch model (built-in + custom) --
+async function switchModel(btn, variant) {
+  const orig = btn.textContent;
+  const targetLabel = builtInChatVariantMap[variant]?.label
+    || customModels.find(m => m.id === variant)?.display_name
+    || variant;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  toast(`Switching to ${targetLabel}...`, 'info');
+  try {
+    const d = await fetchJSON(`/api/switch/${variant}`, 'POST');
+    toast(d.ok ? `Switched to ${targetLabel}` : (d.output || d.error || 'failed'), d.ok ? 'ok' : 'err');
+    await poll();
+  } catch (e) { toast('Error: ' + e, 'err'); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+// -- GGUF file management --
+async function loadGgufFiles() {
+  try {
+    ggufFiles = await fetchJSON('/api/gguf-files');
+    populateGgufSelects();
+  } catch (e) { console.error('Failed to load GGUF files:', e); }
+}
+
+async function loadTranscriptionModels(engineId) {
+  try {
+    const d = await fetchJSON(`/api/transcription-models/${engineId}`);
+    transcriptionModelsByEngine[engineId] = d.models || [];
+    populateTranscriptionModelSelects();
+  } catch (e) {
+    console.error('Failed to load transcription models:', e);
+  }
+}
+
+async function loadTranscriptionCapabilities() {
+  try {
+    const d = await fetchJSON('/api/transcription-capabilities');
+    transcriptionCapabilities = d.engines || {};
+    applyTranscriptionCapabilities();
+  } catch (e) {
+    console.error('Failed to load transcription capabilities:', e);
+  }
+}
+
+function populateGgufSelects() {
+  // All selects with class gguf-path-select (config tab) and add-model selects
+  const allSelects = document.querySelectorAll('.gguf-path-select');
+  allSelects.forEach(sel => {
+    const targetId = sel.dataset.target;
+    const targetInput = document.getElementById(targetId);
+    const currentVal = targetInput ? targetInput.value : '';
+
+    // Keep first option, clear rest
+    while (sel.options.length > 1) sel.remove(1);
+
+    ggufFilesForTarget(targetId).forEach(f => {
+      const opt = document.createElement('option');
+      opt.value = f.path;
+      opt.textContent = `${f.name} (${f.size_gb} GB)`;
+      if (f.path === currentVal) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  });
+
+  // Add-model selects
+  populateAddModelSelects();
+}
+
+function populateTranscriptionModelSelects() {
+  document.querySelectorAll('.transcript-model-select').forEach(sel => {
+    const targetId = sel.dataset.target;
+    const targetInput = document.getElementById(targetId);
+    const currentVal = targetInput ? targetInput.value : '';
+    const engineId = sel.dataset.engineId || '';
+    const models = transcriptionModelsByEngine[engineId] || [];
+
+    while (sel.options.length > 1) sel.remove(1);
+
+    models.forEach(item => {
+      const opt = document.createElement('option');
+      opt.value = item.value;
+      opt.textContent = item.kind === 'local'
+        ? `${item.label} · ${item.format || 'folder'}${item.supported_local === false ? ' · unsupported' : ''}`
+        : `${item.label} · preset`;
+      if (item.value === currentVal) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  });
+}
+
+function populateAddModelSelects() {
+  const modelSel = document.getElementById('new-model-gguf-select');
+  const mmprojSel = document.getElementById('new-mmproj-gguf-select');
+  if (!modelSel || !mmprojSel) return;
+
+  // Clear and repopulate model select
+  while (modelSel.options.length > 1) modelSel.remove(1);
+  while (mmprojSel.options.length > 1) mmprojSel.remove(1);
+
+  ggufFiles.filter(f => !isLikelyMmprojGguf(f)).forEach(f => {
+    const opt1 = document.createElement('option');
+    opt1.value = f.path;
+    opt1.textContent = `${f.name} (${f.size_gb} GB)`;
+    modelSel.appendChild(opt1);
+  });
+
+  ggufFiles.filter(f => isLikelyMmprojGguf(f)).forEach(f => {
+    const opt2 = document.createElement('option');
+    opt2.value = f.path;
+    opt2.textContent = `${f.name} (${f.size_gb} GB)`;
+    mmprojSel.appendChild(opt2);
+  });
+}
+
+function ggufSelectChanged(sel, targetId) {
+  const input = document.getElementById(targetId);
+  if (input && sel.value) input.value = sel.value;
+  if (targetId === 'new-model-path' && sel.value) {
+    fillCustomModelIdentityFromPath(sel.value);
+  }
+}
+
+function transcriptModelSelectChanged(sel, targetId) {
+  const input = document.getElementById(targetId);
+  if (input) input.value = sel.value;
+}
+
+function applyTranscriptionCapabilities() {
+  document.querySelectorAll('.transcript-capability-panel').forEach(panel => {
+    const engineId = panel.dataset.engineId;
+    const capability = panel.dataset.capability;
+    const supported = !!transcriptionCapabilities?.[engineId]?.[capability];
+    panel.style.display = supported ? '' : 'none';
+  });
+}
+
+function parseArgJson(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(v => String(v || '').trim()).map(v => String(v)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function syncConfigArgInput(targetId, silent = false) {
+  const input = document.getElementById(targetId);
+  if (!input) return;
+  const rows = [...document.querySelectorAll(`.custom-args-list[data-config-target="${targetId}"] .custom-arg-input`)];
+  const values = rows.map(el => el.value.trim()).filter(Boolean);
+  input.value = JSON.stringify(values);
+  if (!silent) {
+    const section = input.closest('.cfg-section')?.id?.replace(/^cfgsec-/, '').replace(/-/g, ' ') || 'Shared Backend';
+    markDirty(section);
+  }
+}
+
+function renderConfigArgRows(targetId, values = ['']) {
+  const list = document.querySelector(`.custom-args-list[data-config-target="${targetId}"]`);
+  if (!list) return;
+  const rows = (values && values.length ? values : ['']).map((value, index) => `
+    <div class="custom-arg-row">
+      <input type="text" class="custom-arg-input mono" value="${escapeHtml(value)}" placeholder="--chat-template-kwargs '{&quot;preserve_thinking&quot;: true}'" oninput="syncConfigArgInput('${targetId}')">
+      <button class="btn btn-ghost btn-sm" type="button" onclick="addConfigArgRow('${targetId}')">+</button>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="removeConfigArgRow(this, '${targetId}')" ${index === 0 && values.length <= 1 ? 'disabled' : ''}>-</button>
+    </div>
+  `).join('');
+  list.innerHTML = rows;
+  syncConfigArgInput(targetId, true);
+}
+
+function addConfigArgRow(targetId, value = '') {
+  const input = document.getElementById(targetId);
+  const current = parseArgJson(input?.value || '[]');
+  current.push(value);
+  renderConfigArgRows(targetId, current);
+}
+
+function removeConfigArgRow(btn, targetId) {
+  const input = document.getElementById(targetId);
+  const current = parseArgJson(input?.value || '[]');
+  const row = btn.closest('.custom-arg-row');
+  const rows = [...row.parentElement.querySelectorAll('.custom-arg-row')];
+  const index = rows.indexOf(row);
+  if (current.length <= 1) {
+    renderConfigArgRows(targetId, ['']);
+    return;
+  }
+  current.splice(index, 1);
+  renderConfigArgRows(targetId, current);
+}
+
+function initConfigArgEditors() {
+  document.querySelectorAll('.custom-args-list[data-config-target]').forEach(list => {
+    const targetId = list.dataset.configTarget;
+    const input = document.getElementById(targetId);
+    renderConfigArgRows(targetId, parseArgJson(input?.value || '[]'));
+  });
+}
+
+// -- custom models --
+function setCustomArgFamilyBadge(familyLabel = '', source = '') {
+  const badge = document.getElementById('custom-arg-family-badge');
+  if (!badge) return;
+  if (!familyLabel) {
+    badge.style.display = 'none';
+    badge.textContent = '';
+    return;
+  }
+  const suffix = source === 'builtin' ? ' default'
+    : source === 'family' ? ' preset'
+    : '';
+  badge.textContent = `${familyLabel}${suffix}`;
+  badge.style.display = '';
+}
+
+function getCustomArgValues() {
+  return [...document.querySelectorAll('.custom-arg-input')]
+    .map(input => input.value.trim())
+    .filter(Boolean);
+}
+
+function markCustomArgsDirty() {
+  customArgsDirty = true;
+}
+
+function renderCustomArgRows(values = ['']) {
+  const list = document.getElementById('custom-args-list');
+  const rows = (values && values.length ? values : ['']).map((value, index) => `
+    <div class="custom-arg-row">
+      <input type="text" class="custom-arg-input mono" value="${escapeHtml(value)}" placeholder="--jinja or --chat-template-kwargs '{&quot;preserve_thinking&quot;: true}'" oninput="markCustomArgsDirty()">
+      <button class="btn btn-ghost btn-sm" type="button" onclick="addCustomArgRow()">+</button>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="removeCustomArgRow(this)" ${index === 0 && values.length <= 1 ? 'disabled' : ''}>-</button>
+    </div>
+  `).join('');
+  list.innerHTML = rows;
+}
+
+function addCustomArgRow(value = '') {
+  const current = getCustomArgValues();
+  current.push(value);
+  renderCustomArgRows(current);
+  markCustomArgsDirty();
+}
+
+function removeCustomArgRow(btn) {
+  const rows = [...document.querySelectorAll('.custom-arg-row')];
+  if (rows.length <= 1) {
+    rows[0]?.querySelector('.custom-arg-input')?.focus();
+    return;
+  }
+  btn.closest('.custom-arg-row')?.remove();
+  if (document.querySelectorAll('.custom-arg-row').length === 0) {
+    renderCustomArgRows(['']);
+  } else {
+    renderCustomArgRows(getCustomArgValues());
+  }
+  markCustomArgsDirty();
+}
+
+function resetCustomModelForm() {
+  document.getElementById('new-display-name').value = '';
+  document.getElementById('new-model-name').value = '';
+  document.getElementById('new-model-path').value = '';
+  document.getElementById('new-mmproj-path').value = '';
+  document.getElementById('new-ctx-size').value = '32768';
+  document.getElementById('new-model-gguf-select').selectedIndex = 0;
+  document.getElementById('new-mmproj-gguf-select').selectedIndex = 0;
+  document.getElementById('add-model-title-text').textContent = 'Add Chat Model';
+  const addBtn = document.querySelector('#add-model-panel .btn-success');
+  if (addBtn) {
+    addBtn.textContent = 'Add Model';
+    addBtn.onclick = addModel;
+  }
+  renderCustomArgRows(['']);
+  customArgsDirty = false;
+  setCustomArgFamilyBadge();
+  resetHuggingFacePicker();
+}
+
+async function maybeLoadCustomArgPreset(force = false) {
+  const displayName = document.getElementById('new-display-name').value.trim();
+  const modelName = document.getElementById('new-model-name').value.trim();
+  const modelPath = document.getElementById('new-model-path').value.trim();
+  if (!displayName && !modelName && !modelPath) {
+    if (!customArgsDirty) {
+      renderCustomArgRows(['']);
+      setCustomArgFamilyBadge();
+    }
+    return;
+  }
+  try {
+    const d = await fetchJSON('/api/custom-model-arg-presets/match', 'POST', {
+      display_name: displayName,
+      model_name: modelName,
+      model_path: modelPath,
+    });
+    setCustomArgFamilyBadge(d.family_label, d.source);
+    if (force || !customArgsDirty || getCustomArgValues().length === 0) {
+      renderCustomArgRows(d.args && d.args.length ? d.args : ['']);
+      customArgsDirty = false;
+    }
+  } catch (e) {
+    console.error('Failed to load custom arg preset:', e);
+  }
+}
+
+function scheduleCustomArgPresetRefresh() {
+  if (customArgPresetTimer) clearTimeout(customArgPresetTimer);
+  customArgPresetTimer = setTimeout(() => maybeLoadCustomArgPreset(false), 180);
+}
+
+function initCustomModelForm() {
+  resetCustomModelForm();
+  ['new-display-name', 'new-model-name', 'new-model-path'].forEach(id => {
+    const el = document.getElementById(id);
+    el?.addEventListener('input', scheduleCustomArgPresetRefresh);
+  });
+  document.getElementById('hf-model-file-select')?.addEventListener('change', handleHuggingFaceModelSelection);
+  document.getElementById('shared-hf-model-file-select')?.addEventListener('change', handleSharedBackendHuggingFaceModelSelection);
+}
+
+function setHfStatus(message = '', type = '') {
+  const el = document.getElementById('hf-status-text');
+  if (!el) return;
+  el.textContent = message;
+  el.className = `hf-status${type ? ' ' + type : ''}`;
+}
+
+function resetHuggingFacePicker() {
+  huggingFaceRepoFiles = [];
+  huggingFaceDownloadJobId = null;
+  const sel = document.getElementById('hf-model-file-select');
+  if (sel) {
+    sel.innerHTML = '<option value="">-- Select model file --</option>';
+  }
+  const mmprojMatch = document.getElementById('hf-mmproj-match');
+  const mmprojRename = document.getElementById('hf-mmproj-rename');
+  const downloadBtn = document.getElementById('hf-download-btn');
+  const meta = document.getElementById('hf-download-meta');
+  if (mmprojMatch) mmprojMatch.value = '';
+  if (mmprojRename) mmprojRename.value = '';
+  if (downloadBtn) downloadBtn.disabled = true;
+  if (meta) meta.innerHTML = '';
+  setHfStatus('');
+}
+
+async function loadHuggingFaceRepoFiles(btn) {
+  const repoUrl = document.getElementById('hf-repo-url').value.trim();
+  if (!repoUrl) {
+    setHfStatus('Enter a Hugging Face repo URL first', 'err');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  resetHuggingFacePicker();
+  try {
+    const d = await fetchJSON('/api/huggingface/repo-files', 'POST', { repo_url: repoUrl });
+    if (!d.ok) {
+      setHfStatus(d.error || 'Failed to load repo files', 'err');
+      return;
+    }
+    huggingFaceRepoFiles = d.model_files || [];
+    const sel = document.getElementById('hf-model-file-select');
+    sel.innerHTML = '<option value="">-- Select model file --</option>';
+    huggingFaceRepoFiles.forEach(file => {
+      const opt = document.createElement('option');
+      opt.value = file.path;
+      const sizePart = file.size ? ` · ${formatBytes(file.size)}` : '';
+      opt.textContent = `${file.name}${sizePart}`;
+      sel.appendChild(opt);
+    });
+    document.getElementById('hf-download-meta').innerHTML = [
+      `<span class="meta-chip">Repo: ${escapeHtml(d.repo_id || '-')}</span>`,
+      `<span class="meta-chip">Revision: ${escapeHtml(d.revision || 'main')}</span>`,
+      `<span class="meta-chip">Models: ${escapeHtml(huggingFaceRepoFiles.length)}</span>`,
+    ].join('');
+    setHfStatus(huggingFaceRepoFiles.length ? 'Select a GGUF file to download' : 'No non-MMProj GGUF files found in this repo', huggingFaceRepoFiles.length ? 'ok' : 'err');
+  } catch (e) {
+    setHfStatus(`Failed to load repo files: ${e}`, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+function handleHuggingFaceModelSelection() {
+  const selected = document.getElementById('hf-model-file-select').value;
+  const file = huggingFaceRepoFiles.find(item => item.path === selected);
+  const mmprojMatch = document.getElementById('hf-mmproj-match');
+  const mmprojRename = document.getElementById('hf-mmproj-rename');
+  const downloadBtn = document.getElementById('hf-download-btn');
+  if (!file) {
+    if (mmprojMatch) mmprojMatch.value = '';
+    if (mmprojRename) mmprojRename.value = '';
+    if (downloadBtn) downloadBtn.disabled = true;
+    return;
+  }
+  if (mmprojMatch) mmprojMatch.value = file.matched_mmproj || '';
+  if (mmprojRename) mmprojRename.value = file.renamed_mmproj || '';
+  if (downloadBtn) downloadBtn.disabled = false;
+  fillCustomModelIdentityFromPath(file.name || file.path);
+  setHfStatus(file.matched_mmproj ? 'Model and MMProj ready to download' : 'Model ready to download; no MMProj found', 'ok');
+}
+
+function setSharedHfStatus(message = '', type = '') {
+  const el = document.getElementById('shared-hf-status-text');
+  if (!el) return;
+  el.textContent = message;
+  el.className = `hf-status${type ? ' ' + type : ''}`;
+}
+
+function resetSharedBackendHuggingFacePicker() {
+  sharedBackendRepoFiles = [];
+  sharedBackendDownloadJobId = null;
+  const sel = document.getElementById('shared-hf-model-file-select');
+  if (sel) sel.innerHTML = '<option value="">-- Select model file --</option>';
+  const mmprojMatch = document.getElementById('shared-hf-mmproj-match');
+  const mmprojRename = document.getElementById('shared-hf-mmproj-rename');
+  const downloadBtn = document.getElementById('shared-hf-download-btn');
+  const meta = document.getElementById('shared-hf-download-meta');
+  if (mmprojMatch) mmprojMatch.value = '';
+  if (mmprojRename) mmprojRename.value = '';
+  if (downloadBtn) downloadBtn.disabled = true;
+  if (meta) meta.innerHTML = '';
+  setSharedHfStatus('');
+}
+
+async function loadSharedBackendHuggingFaceRepoFiles(btn) {
+  const repoUrl = document.getElementById('shared-hf-repo-url').value.trim();
+  if (!repoUrl) {
+    setSharedHfStatus('Enter a Hugging Face repo URL first', 'err');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  resetSharedBackendHuggingFacePicker();
+  try {
+    const d = await fetchJSON('/api/huggingface/repo-files', 'POST', { repo_url: repoUrl });
+    if (!d.ok) {
+      setSharedHfStatus(d.error || 'Failed to load repo files', 'err');
+      return;
+    }
+    sharedBackendRepoFiles = d.model_files || [];
+    const sel = document.getElementById('shared-hf-model-file-select');
+    sel.innerHTML = '<option value="">-- Select model file --</option>';
+    sharedBackendRepoFiles.forEach(file => {
+      const opt = document.createElement('option');
+      opt.value = file.path;
+      const sizePart = file.size ? ` · ${formatBytes(file.size)}` : '';
+      opt.textContent = `${file.name}${sizePart}`;
+      sel.appendChild(opt);
+    });
+    document.getElementById('shared-hf-download-meta').innerHTML = [
+      `<span class="meta-chip">Repo: ${escapeHtml(d.repo_id || '-')}</span>`,
+      `<span class="meta-chip">Revision: ${escapeHtml(d.revision || 'main')}</span>`,
+      `<span class="meta-chip">Models: ${escapeHtml(sharedBackendRepoFiles.length)}</span>`,
+    ].join('');
+    setSharedHfStatus(sharedBackendRepoFiles.length ? 'Select a GGUF file to download' : 'No non-MMProj GGUF files found in this repo', sharedBackendRepoFiles.length ? 'ok' : 'err');
+  } catch (e) {
+    setSharedHfStatus(`Failed to load repo files: ${e}`, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+function handleSharedBackendHuggingFaceModelSelection() {
+  const selected = document.getElementById('shared-hf-model-file-select').value;
+  const file = sharedBackendRepoFiles.find(item => item.path === selected);
+  const mmprojMatch = document.getElementById('shared-hf-mmproj-match');
+  const mmprojRename = document.getElementById('shared-hf-mmproj-rename');
+  const downloadBtn = document.getElementById('shared-hf-download-btn');
+  if (!file) {
+    if (mmprojMatch) mmprojMatch.value = '';
+    if (mmprojRename) mmprojRename.value = '';
+    if (downloadBtn) downloadBtn.disabled = true;
+    return;
+  }
+  if (mmprojMatch) mmprojMatch.value = file.matched_mmproj || '';
+  if (mmprojRename) mmprojRename.value = file.renamed_mmproj || '';
+  if (downloadBtn) downloadBtn.disabled = false;
+  setSharedHfStatus(file.matched_mmproj ? 'Model and MMProj ready to download' : 'Model ready to download; no MMProj found', 'ok');
+}
+
+async function pollSharedBackendHuggingFaceDownload(jobId) {
+  while (sharedBackendDownloadJobId === jobId) {
+    const d = await fetchJSON(`/api/huggingface/downloads/${jobId}`);
+    if (!d.ok || !d.job) {
+      setSharedHfStatus(d.error || 'Download job disappeared', 'err');
+      sharedBackendDownloadJobId = null;
+      return null;
+    }
+    const job = d.job;
+    const meta = document.getElementById('shared-hf-download-meta');
+    const fileLabel = job.current_file ? escapeHtml(job.current_file) : escapeHtml(job.model_file || '');
+    const progressLabel = job.total_bytes
+      ? `${formatBytes(job.current_bytes)} / ${formatBytes(job.total_bytes)}`
+      : formatBytes(job.current_bytes);
+    meta.innerHTML = [
+      `<span class="meta-chip">Status: ${escapeHtml(job.status || '-')}</span>`,
+      `<span class="meta-chip">Stage: ${escapeHtml(job.stage || '-')}</span>`,
+      `<span class="meta-chip">File: ${fileLabel || '-'}</span>`,
+      `<span class="meta-chip">Transferred: ${escapeHtml(progressLabel)}</span>`,
+      job.progress != null ? `<span class="meta-chip">Progress: ${escapeHtml(job.progress)}%</span>` : '',
+    ].join('');
+    if (job.status === 'done') {
+      sharedBackendDownloadJobId = null;
+      return job;
+    }
+    if (job.status === 'error') {
+      sharedBackendDownloadJobId = null;
+      setSharedHfStatus(job.error || 'Download failed', 'err');
+      return null;
+    }
+    setSharedHfStatus(`${job.stage || 'Downloading'}${job.current_file ? ` · ${job.current_file}` : ''}`, '');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  return null;
+}
+
+async function downloadSharedBackendHuggingFaceModel(btn) {
+  const repoUrl = document.getElementById('shared-hf-repo-url').value.trim();
+  const modelFile = document.getElementById('shared-hf-model-file-select').value;
+  const match = sharedBackendRepoFiles.find(item => item.path === modelFile);
+  if (!repoUrl || !modelFile || !match) {
+    setSharedHfStatus('Load a repo and select a model file first', 'err');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Downloading...';
+  setSharedHfStatus('Starting download...', '');
+  try {
+    const d = await fetchJSON('/api/huggingface/downloads', 'POST', {
+      repo_url: repoUrl,
+      model_file: modelFile,
+      mmproj_file: match.matched_mmproj || '',
+    });
+    if (!d.ok || !d.job) {
+      setSharedHfStatus(d.error || 'Failed to start download', 'err');
+      return;
+    }
+    sharedBackendDownloadJobId = d.job.id;
+    const job = await pollSharedBackendHuggingFaceDownload(d.job.id);
+    if (!job || !job.result) return;
+    setSharedHfStatus('Download complete. Reloading to refresh the Dense and MoE dropdowns...', 'ok');
+    toast(`Downloaded ${job.result.model_name || 'model'}; refreshing page`, 'ok');
+    setTimeout(() => location.reload(), 700);
+  } catch (e) {
+    setSharedHfStatus(`Download failed: ${e}`, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+function setTranscriptHfStatus(engineId, message = '', type = '') {
+  const el = document.getElementById(`transcript-hf-status-text-${engineId}`);
+  if (!el) return;
+  el.textContent = message;
+  el.className = `hf-status${type ? ' ' + type : ''}`;
+}
+
+function resetTranscriptHuggingFacePicker(engineId) {
+  transcriptRepoInfoByEngine[engineId] = null;
+  transcriptDownloadJobIdByEngine[engineId] = null;
+  const targetDir = document.getElementById(`transcript-hf-target-dir-${engineId}`);
+  const fileCount = document.getElementById(`transcript-hf-file-count-${engineId}`);
+  const preview = document.getElementById(`transcript-hf-preview-${engineId}`);
+  const downloadBtn = document.getElementById(`transcript-hf-download-btn-${engineId}`);
+  const meta = document.getElementById(`transcript-hf-download-meta-${engineId}`);
+  if (targetDir) targetDir.value = '';
+  if (fileCount) fileCount.value = '';
+  if (preview) preview.value = '';
+  if (downloadBtn) downloadBtn.disabled = true;
+  if (meta) meta.innerHTML = '';
+  setTranscriptHfStatus(engineId, '');
+}
+
+async function loadTranscriptHuggingFaceRepoInfo(btn, engineId) {
+  const repoUrl = document.getElementById(`transcript-hf-repo-url-${engineId}`).value.trim();
+  if (!repoUrl) {
+    setTranscriptHfStatus(engineId, 'Enter a Hugging Face repo URL first', 'err');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  resetTranscriptHuggingFacePicker(engineId);
+  try {
+    const d = await fetchJSON('/api/huggingface/transcription-repo-files', 'POST', { repo_url: repoUrl, engine_id: engineId });
+    if (!d.ok) {
+      setTranscriptHfStatus(engineId, d.error || 'Failed to inspect repo', 'err');
+      return;
+    }
+    transcriptRepoInfoByEngine[engineId] = d;
+    document.getElementById(`transcript-hf-target-dir-${engineId}`).value = d.target_dir || '';
+    document.getElementById(`transcript-hf-file-count-${engineId}`).value = `${d.file_count || 0} files`;
+    document.getElementById(`transcript-hf-preview-${engineId}`).value = (d.sample_files || []).join(', ');
+    document.getElementById(`transcript-hf-download-meta-${engineId}`).innerHTML = [
+      `<span class="meta-chip">Repo: ${escapeHtml(d.repo_id || '-')}</span>`,
+      `<span class="meta-chip">Revision: ${escapeHtml(d.revision || 'main')}</span>`,
+      `<span class="meta-chip">Files: ${escapeHtml(d.file_count || 0)}</span>`,
+    ].join('');
+    document.getElementById(`transcript-hf-download-btn-${engineId}`).disabled = !(d.file_count > 0);
+    setTranscriptHfStatus(engineId, d.file_count > 0 ? 'Repo ready to download' : 'No usable files found in this repo', d.file_count > 0 ? 'ok' : 'err');
+  } catch (e) {
+    setTranscriptHfStatus(engineId, `Failed to inspect repo: ${e}`, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function pollTranscriptHuggingFaceDownload(engineId, jobId) {
+  while (transcriptDownloadJobIdByEngine[engineId] === jobId) {
+    const d = await fetchJSON(`/api/huggingface/downloads/${jobId}`);
+    if (!d.ok || !d.job) {
+      setTranscriptHfStatus(engineId, d.error || 'Download job disappeared', 'err');
+      transcriptDownloadJobIdByEngine[engineId] = null;
+      return null;
+    }
+    const job = d.job;
+    const meta = document.getElementById(`transcript-hf-download-meta-${engineId}`);
+    const fileLabel = job.current_file ? escapeHtml(job.current_file) : '-';
+    const progressLabel = job.total_bytes
+      ? `${formatBytes(job.current_bytes)} / ${formatBytes(job.total_bytes)}`
+      : formatBytes(job.current_bytes);
+    meta.innerHTML = [
+      `<span class="meta-chip">Status: ${escapeHtml(job.status || '-')}</span>`,
+      `<span class="meta-chip">Stage: ${escapeHtml(job.stage || '-')}</span>`,
+      `<span class="meta-chip">File: ${fileLabel}</span>`,
+      `<span class="meta-chip">Transferred: ${escapeHtml(progressLabel)}</span>`,
+      job.progress != null ? `<span class="meta-chip">Progress: ${escapeHtml(job.progress)}%</span>` : '',
+    ].join('');
+    if (job.status === 'done') {
+      transcriptDownloadJobIdByEngine[engineId] = null;
+      return job;
+    }
+    if (job.status === 'error') {
+      transcriptDownloadJobIdByEngine[engineId] = null;
+      setTranscriptHfStatus(engineId, job.error || 'Download failed', 'err');
+      return null;
+    }
+    setTranscriptHfStatus(engineId, `${job.stage || 'Downloading'}${job.current_file ? ` · ${job.current_file}` : ''}`, '');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  return null;
+}
+
+async function downloadTranscriptHuggingFaceModel(btn, engineId) {
+  const repoUrl = document.getElementById(`transcript-hf-repo-url-${engineId}`).value.trim();
+  if (!repoUrl || !transcriptRepoInfoByEngine[engineId]) {
+    setTranscriptHfStatus(engineId, 'Inspect a repo first', 'err');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Downloading...';
+  setTranscriptHfStatus(engineId, 'Starting download...', '');
+  try {
+    const d = await fetchJSON('/api/huggingface/transcription-downloads', 'POST', { repo_url: repoUrl, engine_id: engineId });
+    if (!d.ok || !d.job) {
+      setTranscriptHfStatus(engineId, d.error || 'Failed to start download', 'err');
+      return;
+    }
+    transcriptDownloadJobIdByEngine[engineId] = d.job.id;
+    const job = await pollTranscriptHuggingFaceDownload(engineId, d.job.id);
+    if (!job || !job.result) return;
+    await loadTranscriptionModels(engineId);
+    const downloadedValue = job.result.model_value || '';
+    const inputId = engineId === 'parakeet-v3' ? 'cfg-PARAKEET_V3_LOCAL_MODEL' : 'cfg-WHISPERKIT_LARGE_V3_LOCAL_MODEL';
+    const localInput = document.getElementById(inputId);
+    const localSelect = document.querySelector(`.transcript-model-select[data-target="${inputId}"]`);
+    if (localInput) localInput.value = downloadedValue;
+    if (localSelect) localSelect.value = downloadedValue;
+    markDirty('Transcription');
+    setTranscriptHfStatus(engineId, 'Download complete. This engine model list was refreshed and selected.', 'ok');
+    toast(`Downloaded ${job.result.engine_label || 'transcription'} model ${job.result.model_label || ''}`.trim(), 'ok');
+  } catch (e) {
+    setTranscriptHfStatus(engineId, `Download failed: ${e}`, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function pollHuggingFaceDownload(jobId) {
+  while (huggingFaceDownloadJobId === jobId) {
+    const d = await fetchJSON(`/api/huggingface/downloads/${jobId}`);
+    if (!d.ok || !d.job) {
+      setHfStatus(d.error || 'Download job disappeared', 'err');
+      huggingFaceDownloadJobId = null;
+      return null;
+    }
+    const job = d.job;
+    const meta = document.getElementById('hf-download-meta');
+    const fileLabel = job.current_file ? escapeHtml(job.current_file) : escapeHtml(job.model_file || '');
+    const progressLabel = job.total_bytes
+      ? `${formatBytes(job.current_bytes)} / ${formatBytes(job.total_bytes)}`
+      : formatBytes(job.current_bytes);
+    meta.innerHTML = [
+      `<span class="meta-chip">Status: ${escapeHtml(job.status || '-')}</span>`,
+      `<span class="meta-chip">Stage: ${escapeHtml(job.stage || '-')}</span>`,
+      `<span class="meta-chip">File: ${fileLabel || '-'}</span>`,
+      `<span class="meta-chip">Transferred: ${escapeHtml(progressLabel)}</span>`,
+      job.progress != null ? `<span class="meta-chip">Progress: ${escapeHtml(job.progress)}%</span>` : '',
+    ].join('');
+    if (job.status === 'done') {
+      huggingFaceDownloadJobId = null;
+      return job;
+    }
+    if (job.status === 'error') {
+      huggingFaceDownloadJobId = null;
+      setHfStatus(job.error || 'Download failed', 'err');
+      return null;
+    }
+    setHfStatus(`${job.stage || 'Downloading'}${job.current_file ? ` · ${job.current_file}` : ''}`, '');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+  }
+  return null;
+}
+
+async function downloadSelectedHuggingFaceModel(btn) {
+  const repoUrl = document.getElementById('hf-repo-url').value.trim();
+  const modelFile = document.getElementById('hf-model-file-select').value;
+  const match = huggingFaceRepoFiles.find(item => item.path === modelFile);
+  if (!repoUrl || !modelFile || !match) {
+    setHfStatus('Load a repo and select a model file first', 'err');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Downloading...';
+  setHfStatus('Starting download...', '');
+  try {
+    const d = await fetchJSON('/api/huggingface/downloads', 'POST', {
+      repo_url: repoUrl,
+      model_file: modelFile,
+      mmproj_file: match.matched_mmproj || '',
+    });
+    if (!d.ok || !d.job) {
+      setHfStatus(d.error || 'Failed to start download', 'err');
+      return;
+    }
+    huggingFaceDownloadJobId = d.job.id;
+    const job = await pollHuggingFaceDownload(d.job.id);
+    if (!job || !job.result) return;
+
+    await loadGgufFiles();
+
+    const downloadedModelPath = job.result.model_path || '';
+    const downloadedMmprojPath = job.result.mmproj_path || '';
+    const downloadedName = job.result.model_name || filenameFromPath(downloadedModelPath);
+
+    document.getElementById('new-model-path').value = downloadedModelPath;
+    document.getElementById('new-mmproj-path').value = downloadedMmprojPath;
+    fillCustomModelIdentityFromPath(downloadedName || downloadedModelPath);
+    selectGgufOption('new-model-gguf-select', downloadedModelPath);
+    selectGgufOption('new-mmproj-gguf-select', downloadedMmprojPath);
+    setHfStatus('Download complete. The form below was populated with the new local paths.', 'ok');
+    toast(`Downloaded ${downloadedName}`, 'ok');
+  } catch (e) {
+    setHfStatus(`Download failed: ${e}`, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function loadCustomModels() {
+  try {
+    customModels = await fetchJSON('/api/custom-models');
+    renderCustomModels();
+  } catch (e) { console.error('Failed to load custom models:', e); }
+}
+
+function renderCustomModels() {
+  const group = document.getElementById('custom-models-group');
+  const container = document.getElementById('custom-models-cards');
+  const switchContainer = document.getElementById('custom-switch-btns');
+
+  // Render switch buttons in quick bar
+  switchContainer.innerHTML = customModels.map(m =>
+    `<button class="btn btn-ghost btn-sm switch-model-btn" data-variant="${m.id}" onclick="switchModel(this,'${m.id}')">Switch to ${m.display_name}</button>`
+  ).join('');
+
+  if (customModels.length === 0) {
+    group.style.display = 'none';
+    return;
+  }
+  group.style.display = '';
+
+  container.innerHTML = customModels.map(m => `
+    <div class="svc-card" id="custom-card-${m.id}" data-status="inactive">
+      <div class="card-top">
+        <span class="card-name">${m.display_name}</span>
+        <span class="status-pill inactive">inactive</span>
+      </div>
+      <div class="card-desc">${m.model_name} | ctx ${m.ctx_size}</div>
+      <div class="card-port" title="${m.model_path}">${m.model_path.split('/').pop()}</div>
+      <div class="meta-list">
+        ${m.arg_family_label ? `<span class="meta-chip">family: ${escapeHtml(m.arg_family_label)}</span>` : ''}
+        ${(m.resolved_custom_args || []).length ? `<span class="meta-chip">args: ${m.resolved_custom_args.length}</span>` : '<span class="meta-chip">args: none</span>'}
+      </div>
+      <div class="card-acts">
+        <button class="btn btn-success btn-sm" onclick="switchModel(this,'${m.id}')">Switch To</button>
+        <button class="btn btn-ghost btn-sm" onclick="editCustomModel('${m.id}')">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="removeCustomModel('${m.id}')">Remove</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggleAddModel() {
+  const panel = document.getElementById('add-model-panel');
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) {
+    panel.classList.remove('collapsed');
+    loadGgufFiles();
+    maybeLoadCustomArgPreset(false);
+  } else {
+    resetCustomModelForm();
+  }
+}
+
+async function addModel() {
+  const displayName = document.getElementById('new-display-name').value.trim();
+  const modelName = document.getElementById('new-model-name').value.trim();
+  const modelPath = document.getElementById('new-model-path').value.trim();
+  const mmprojPath = document.getElementById('new-mmproj-path').value.trim();
+  const ctxSize = document.getElementById('new-ctx-size').value.trim();
+  const customArgs = getCustomArgValues();
+
+  if (!displayName || !modelPath) {
+    toast('Display name and model GGUF are required', 'err');
+    return;
+  }
+
+  try {
+    const d = await fetchJSON('/api/custom-models', 'POST', {
+      display_name: displayName,
+      model_name: modelName || undefined,
+      model_path: modelPath,
+      mmproj_path: mmprojPath,
+      ctx_size: ctxSize || '32768',
+      custom_args: customArgs,
+    });
+    if (d.ok) {
+      toast(`Added model: ${displayName}`, 'ok');
+      toggleAddModel();
+      await loadCustomModels();
+    } else {
+      toast('Failed: ' + (d.error || 'unknown'), 'err');
+    }
+  } catch (e) { toast('Error: ' + e, 'err'); }
+}
+
+async function removeCustomModel(id) {
+  const m = customModels.find(m => m.id === id);
+  if (!confirm(`Remove "${m ? m.display_name : id}"?`)) return;
+  try {
+    await fetchJSON(`/api/custom-models/${id}`, 'DELETE');
+    toast('Model removed', 'ok');
+    await loadCustomModels();
+  } catch (e) { toast('Error: ' + e, 'err'); }
+}
+
+function editCustomModel(id) {
+  const m = customModels.find(m => m.id === id);
+  if (!m) return;
+
+  // Populate the add-model form with existing values for editing
+  document.getElementById('new-display-name').value = m.display_name;
+  document.getElementById('new-model-name').value = m.model_name;
+  document.getElementById('new-model-path').value = m.model_path;
+  document.getElementById('new-mmproj-path').value = m.mmproj_path || '';
+  document.getElementById('new-ctx-size').value = m.ctx_size || '32768';
+  renderCustomArgRows((m.resolved_custom_args || m.custom_args || []).length ? (m.resolved_custom_args || m.custom_args) : ['']);
+  customArgsDirty = false;
+  setCustomArgFamilyBadge(m.arg_family_label, m.custom_arg_source);
+
+  // Open panel and change button to update
+  const panel = document.getElementById('add-model-panel');
+  panel.classList.add('open');
+  panel.classList.remove('collapsed');
+  document.getElementById('add-model-title-text').textContent = 'Edit Chat Model';
+  loadGgufFiles().then(() => {
+    // Select matching options
+    selectGgufOption('new-model-gguf-select', m.model_path);
+    selectGgufOption('new-mmproj-gguf-select', m.mmproj_path);
+  });
+
+  // Replace Add button with Update
+  const addBtn = panel.querySelector('.btn-success');
+  addBtn.textContent = 'Update Model';
+  addBtn.onclick = async function() {
+    const data = {
+      display_name: document.getElementById('new-display-name').value.trim(),
+      model_name: document.getElementById('new-model-name').value.trim(),
+      model_path: document.getElementById('new-model-path').value.trim(),
+      mmproj_path: document.getElementById('new-mmproj-path').value.trim(),
+      ctx_size: document.getElementById('new-ctx-size').value.trim() || '32768',
+      custom_args: getCustomArgValues(),
+    };
+    try {
+      const d = await fetchJSON(`/api/custom-models/${id}`, 'PUT', data);
+      if (d.ok) {
+        toast('Model updated', 'ok');
+        toggleAddModel();
+        // Reset button
+        addBtn.textContent = 'Add Model';
+        addBtn.onclick = addModel;
+        document.getElementById('add-model-title-text').textContent = 'Add Chat Model';
+        await loadCustomModels();
+      } else {
+        toast('Failed: ' + (d.error || 'unknown'), 'err');
+      }
+    } catch (e) { toast('Error: ' + e, 'err'); }
+  };
+}
+
+function selectGgufOption(selectId, path) {
+  const sel = document.getElementById(selectId);
+  if (!sel || !path) return;
+  for (let i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === path) {
+      sel.selectedIndex = i;
+      return;
+    }
+  }
+}
+
+// -- config --
+async function loadConfig() {
+  try {
+    if (!ggufFiles.length) await loadGgufFiles();
+    if (!Object.keys(transcriptionModelsByEngine).length) {
+      await loadTranscriptionModels('parakeet-v3');
+      await loadTranscriptionModels('whisperkit-large-v3');
+    }
+    if (!Object.keys(transcriptionCapabilities).length) await loadTranscriptionCapabilities();
+    cfgCurrent = await fetchJSON('/api/config');
+    for (const [key, val] of Object.entries(cfgCurrent)) {
+      const el = document.getElementById('cfg-' + key);
+      if (el) {
+        el.value = val;
+        // Also update the corresponding GGUF dropdown
+        const sel = document.querySelector(`.gguf-path-select[data-target="cfg-${key}"]`);
+        if (sel) selectGgufOption(sel.id || '', val);
+      }
+    }
+    // Sync gguf selects with current values
+    document.querySelectorAll('.gguf-path-select').forEach(sel => {
+      const targetId = sel.dataset.target;
+      const input = document.getElementById(targetId);
+      if (input) {
+        for (let i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value === input.value) {
+            sel.selectedIndex = i;
+            break;
+          }
+        }
+      }
+    });
+    document.querySelectorAll('.transcript-model-select').forEach(sel => {
+      const targetId = sel.dataset.target;
+      const input = document.getElementById(targetId);
+      if (input) {
+        for (let i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value === input.value) {
+            sel.selectedIndex = i;
+            break;
+          }
+        }
+      }
+    });
+    initConfigArgEditors();
+  } catch (e) { toast('Could not load config: ' + e, 'err'); }
+}
+
+function markDirty(section) { cfgDirty[section] = true; }
+
+async function saveCfgSection(section, btn) {
+  const sec = document.getElementById('cfgsec-' + section.replace(/ /g, '-'));
+  const updates = {};
+  sec.querySelectorAll('[name]').forEach(el => { updates[el.name] = el.value; });
+
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Saving...';
+  try {
+    const d = await fetchJSON('/api/config', 'POST', updates);
+    if (d.ok) {
+      cfgCurrent = { ...cfgCurrent, ...updates };
+      refreshBuiltInModelButtons(updates);
+      cfgDirty[section] = false;
+      const hint = document.getElementById('rhint-' + section.replace(/ /g, '-'));
+      const restartNeeded = d.restart_needed || [];
+      if (section === 'Transcription' && restartNeeded.includes('transcript-backend')) {
+        hint.textContent = 'Restarting transcript-backend...';
+        const restart = await fetchJSON('/api/service/transcript-backend/restart', 'POST');
+        if (restart.ok) {
+          hint.textContent = 'Saved and restarted: transcript-backend';
+          toast('Saved Transcription and restarted transcript-backend', 'ok');
+          await poll();
+        } else {
+          hint.textContent = 'Saved, but restart failed: transcript-backend';
+          toast(restart.output || restart.error || 'Transcript backend restart failed', 'err');
+        }
+      } else {
+        hint.textContent = restartNeeded.length
+          ? 'Restart needed: ' + restartNeeded.join(', ')
+          : '';
+        toast('Saved ' + section, 'ok');
+      }
+    } else {
+      toast('Save failed: ' + (d.error || 'unknown'), 'err');
+    }
+  } catch (e) { toast('Error: ' + e, 'err'); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+// -- saved configurations --
+async function loadSavedConfigsList() {
+  try {
+    const configs = await fetchJSON('/api/saved-configs');
+    const sel = document.getElementById('saved-config-select');
+    while (sel.options.length > 1) sel.remove(1);
+    configs.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.name;
+      opt.textContent = c.display_name + (c.description ? ` - ${c.description}` : '');
+      sel.appendChild(opt);
+    });
+  } catch (e) { console.error('Failed to load saved configs:', e); }
+}
+
+async function saveCurrentConfig() {
+  const name = document.getElementById('save-config-name').value.trim();
+  if (!name) { toast('Enter a config name first', 'err'); return; }
+  try {
+    const d = await fetchJSON('/api/saved-configs', 'POST', {
+      name,
+      config: collectConfigFormValues(),
+    });
+    if (d.ok) {
+      toast(`Saved config: ${name}`, 'ok');
+      document.getElementById('save-config-name').value = '';
+      await loadSavedConfigsList();
+    } else {
+      toast('Failed: ' + (d.error || 'unknown'), 'err');
+    }
+  } catch (e) { toast('Error: ' + e, 'err'); }
+}
+
+function collectConfigFormValues() {
+  document.querySelectorAll('.custom-args-list[data-config-target]').forEach(list => {
+    syncConfigArgInput(list.dataset.configTarget, true);
+  });
+  const values = {};
+  document.querySelectorAll('#tab-config [name]').forEach(el => {
+    values[el.name] = el.value;
+  });
+  return values;
+}
+
+async function loadSavedConfig() {
+  const sel = document.getElementById('saved-config-select');
+  const name = sel.value;
+  if (!name) { toast('Select a config to load', 'err'); return; }
+
+  if (!confirm(`Apply saved config "${name}"? This will overwrite current settings.`)) return;
+
+  try {
+    const d = await fetchJSON(`/api/saved-configs/${name}/apply`, 'POST');
+    if (d.ok) {
+      toast('Config applied. Reloading values...', 'ok');
+      await loadConfig();
+      if (d.restart_needed && d.restart_needed.length) {
+        toast('Restart needed: ' + d.restart_needed.join(', '), 'info');
+      }
+    } else {
+      toast('Failed: ' + (d.error || 'unknown'), 'err');
+    }
+  } catch (e) { toast('Error: ' + e, 'err'); }
+}
+
+async function deleteSavedConfig() {
+  const sel = document.getElementById('saved-config-select');
+  const name = sel.value;
+  if (!name) { toast('Select a config to delete', 'err'); return; }
+  if (!confirm(`Delete saved config "${name}"?`)) return;
+
+  try {
+    await fetchJSON(`/api/saved-configs/${name}`, 'DELETE');
+    toast('Config deleted', 'ok');
+    await loadSavedConfigsList();
+  } catch (e) { toast('Error: ' + e, 'err'); }
+}
+
+// -- logs --
+function openLogs(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('.tab-btn[data-tab="logs"]').classList.add('active');
+  document.getElementById('tab-logs').classList.add('active');
+  document.getElementById('log-svc').value = name;
+  startLogs();
+}
+
+function startLogs() {
+  stopLogs();
+  const svc = document.getElementById('log-svc').value;
+  clearLogs();
+  document.getElementById('log-start').disabled = true;
+  document.getElementById('log-stop').disabled  = false;
+  logSrc = new EventSource('/api/logs/' + svc);
+  logSrc.onmessage = e => {
+    const line = JSON.parse(e.data);
+    const el = document.createElement('div');
+    const ll = line.toLowerCase();
+    if (ll.includes('error') || ll.includes('fail')) el.className = 'lerr';
+    else if (ll.includes('warn'))                     el.className = 'lwarn';
+    else if (ll.includes('info') || ll.includes('listen') || ll.includes('ready')) el.className = 'linfo';
+    el.textContent = line;
+    const out = document.getElementById('log-out');
+    out.appendChild(el);
+    if (document.getElementById('autoscroll').checked) out.scrollTop = out.scrollHeight;
+  };
+  logSrc.onerror = () => { stopLogs(); toast('Log stream ended', 'info'); };
+}
+
+function stopLogs() {
+  if (logSrc) { logSrc.close(); logSrc = null; }
+  document.getElementById('log-start').disabled = false;
+  document.getElementById('log-stop').disabled  = true;
+}
+
+function clearLogs() {
+  document.getElementById('log-out').textContent = '';
+}
+
+function setupCollapsibleSection(root, header) {
+  if (!root || !header || root.dataset.collapseReady === '1') return;
+  root.dataset.collapseReady = '1';
+  header.classList.add('collapsible-trigger');
+  const indicator = document.createElement('span');
+  indicator.className = header.classList.contains('group-hdr')
+    ? 'collapse-indicator'
+    : 'panel-collapse-indicator';
+  indicator.textContent = '▾';
+  header.appendChild(indicator);
+
+  const body = document.createElement('div');
+  body.className = 'collapsible-body';
+  while (header.nextSibling) {
+    body.appendChild(header.nextSibling);
+  }
+  root.appendChild(body);
+
+  header.addEventListener('click', (e) => {
+    if (e.target.closest('button, a, input, select, textarea, label')) return;
+    root.classList.toggle('collapsed');
+  });
+}
+
+function initCollapsibleSections() {
+  document.querySelectorAll('.svc-group').forEach(group => {
+    setupCollapsibleSection(group, group.firstElementChild);
+  });
+  document.querySelectorAll('.cfg-shell').forEach(panel => {
+    setupCollapsibleSection(panel, panel.firstElementChild);
+  });
+  const addModelPanel = document.getElementById('add-model-panel');
+  if (addModelPanel) {
+    setupCollapsibleSection(addModelPanel, addModelPanel.firstElementChild);
+  }
+}
+
+// -- toast --
+let toastT = null;
+function toast(msg, type = 'info') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + type;
+  if (toastT) clearTimeout(toastT);
+  toastT = setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+// -- fetch helper --
+async function fetchJSON(url, method = 'GET', body = null) {
+  const opts = { method, headers: {} };
+  if (body) { opts.body = JSON.stringify(body); opts.headers['Content-Type'] = 'application/json'; }
+  const r = await fetch(url, opts);
+  return r.json();
+}
+
+// -- boot --
+async function boot() {
+  initCollapsibleSections();
+  initCustomModelForm();
+  startPolling();
+  await loadGgufFiles();
+  await loadTranscriptionModels('parakeet-v3');
+  await loadTranscriptionModels('whisperkit-large-v3');
+  await loadTranscriptionCapabilities();
+  await loadCustomModels();
+  await loadTtsOverview();
+  await loadSavedConfigsList();
+}
+boot();
+</script>
+</body>
+</html>

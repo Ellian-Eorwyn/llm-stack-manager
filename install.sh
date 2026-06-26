@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+# Install the git-friendly core LLM stack without touching any older stack tree.
+set -euo pipefail
+
+STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="${STACK_DIR}/config"
+CONFIG_FILE="${CONFIG_DIR}/llm-stack.env"
+EXAMPLE_CONFIG="${CONFIG_DIR}/llm-stack.env.example"
+HONCHO_ENV_TEMPLATE="${CONFIG_DIR}/honcho.env.example"
+HONCHO_ENV_FILE="${CONFIG_DIR}/honcho.env"
+SERVICE_USER="$(stat -c '%U' "${STACK_DIR}")"
+SERVICE_GROUP="$(stat -c '%G' "${STACK_DIR}")"
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run with sudo: sudo bash ${STACK_DIR}/install.sh" >&2
+    exit 1
+fi
+
+echo "=== LLM Stack Core Installer ==="
+echo "Stack directory: ${STACK_DIR}"
+echo "Service user:    ${SERVICE_USER}:${SERVICE_GROUP}"
+
+mkdir -p "${STACK_DIR}/models" "${STACK_DIR}/logs" "${STACK_DIR}/deps" "${CONFIG_DIR}" "${CONFIG_DIR}/saved" "${CONFIG_DIR}/chat-templates"
+chmod 755 "${STACK_DIR}/scripts"/*.sh "${STACK_DIR}/validate.sh" "${STACK_DIR}/scripts/install-dependencies.py"
+
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+    echo "Creating local config: ${CONFIG_FILE}"
+    sed -e "s|@STACK_DIR@|${STACK_DIR}|g" -e "s|@SERVICE_USER@|${SERVICE_USER}|g" "${EXAMPLE_CONFIG}" > "${CONFIG_FILE}"
+else
+    echo "Keeping existing local config: ${CONFIG_FILE}"
+fi
+
+merge_honcho_config_defaults() {
+    python3 - "${EXAMPLE_CONFIG}" "${CONFIG_FILE}" "${STACK_DIR}" "${SERVICE_USER}" <<'PYMERGEHONCHO'
+import re
+import sys
+from pathlib import Path
+
+example = Path(sys.argv[1])
+config = Path(sys.argv[2])
+stack_dir = sys.argv[3]
+service_user = sys.argv[4]
+content = config.read_text(encoding="utf-8")
+existing = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)=", content, re.MULTILINE))
+missing = []
+for line in example.read_text(encoding="utf-8").splitlines():
+    if not line.startswith("HONCHO_") or "=" not in line:
+        continue
+    key = line.split("=", 1)[0]
+    if key in existing:
+        continue
+    rendered = line.replace("@STACK_DIR@", stack_dir).replace("@SERVICE_USER@", service_user)
+    missing.append(rendered)
+if missing:
+    if content and not content.endswith("\n"):
+        content += "\n"
+    content += "\n# Local Honcho memory service defaults added by install.sh\n"
+    content += "\n".join(missing) + "\n"
+    config.write_text(content, encoding="utf-8")
+PYMERGEHONCHO
+}
+merge_honcho_config_defaults
+
+merge_config_defaults() {
+    python3 - "${EXAMPLE_CONFIG}" "${CONFIG_FILE}" "${STACK_DIR}" "${SERVICE_USER}" <<'PYMERGEDEFAULTS'
+import re
+import sys
+from pathlib import Path
+
+example = Path(sys.argv[1])
+config = Path(sys.argv[2])
+stack_dir = sys.argv[3]
+service_user = sys.argv[4]
+content = config.read_text(encoding="utf-8")
+existing = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)=", content, re.MULTILINE))
+missing = []
+for line in example.read_text(encoding="utf-8").splitlines():
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key = line.split("=", 1)[0]
+    if key in existing:
+        continue
+    rendered = line.replace("@STACK_DIR@", stack_dir).replace("@SERVICE_USER@", service_user)
+    missing.append(rendered)
+if missing:
+    if content and not content.endswith("\n"):
+        content += "\n"
+    content += "\n# Missing defaults added by install.sh\n"
+    content += "\n".join(missing) + "\n"
+    config.write_text(content, encoding="utf-8")
+PYMERGEDEFAULTS
+}
+merge_config_defaults
+
+repair_glmocr_sdk_config() {
+    python3 - "${CONFIG_FILE}" <<'PYREPAIRGLMOCR'
+import re
+import sys
+from pathlib import Path
+
+config = Path(sys.argv[1])
+content = config.read_text(encoding="utf-8")
+
+def set_env(content: str, key: str, value: str) -> str:
+    rendered = '""' if value == "" else value
+    pattern = re.compile(r"^" + re.escape(key) + r"=.*$", re.MULTILINE)
+    if pattern.search(content):
+        return pattern.sub(f"{key}={rendered}", content, count=1)
+    if content and not content.endswith("\n"):
+        content += "\n"
+    return content + f"{key}={rendered}\n"
+
+def env_value(content: str, key: str) -> str | None:
+    match = re.search(r"^" + re.escape(key) + r"=(.*)$", content, re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        value = value[1:-1]
+    return value
+
+layout_gpus = env_value(content, "GLMOCR_LAYOUT_CUDA_VISIBLE_DEVICES")
+if layout_gpus is None:
+    content = set_env(content, "GLMOCR_LAYOUT_CUDA_VISIBLE_DEVICES", "")
+elif "," in layout_gpus:
+    content = set_env(content, "GLMOCR_LAYOUT_CUDA_VISIBLE_DEVICES", (layout_gpus.split(",", 1)[0].strip() or "0"))
+
+layout_device = env_value(content, "GLMOCR_LAYOUT_DEVICE")
+if layout_device and layout_device.startswith("cuda:") and "," in layout_device:
+    content = set_env(content, "GLMOCR_LAYOUT_DEVICE", "cuda:" + (layout_device.removeprefix("cuda:").split(",", 1)[0].strip() or "0"))
+
+config.write_text(content, encoding="utf-8")
+PYREPAIRGLMOCR
+}
+repair_glmocr_sdk_config
+
+# shellcheck source=/dev/null
+source "${CONFIG_FILE}"
+
+create_honcho_env() {
+    if [[ -f "${HONCHO_ENV_FILE}" ]]; then
+        echo "Keeping existing local Honcho env: ${HONCHO_ENV_FILE}"
+        chmod 600 "${HONCHO_ENV_FILE}"
+        return
+    fi
+    if [[ ! -f "${HONCHO_ENV_TEMPLATE}" ]]; then
+        echo "Missing Honcho env template: ${HONCHO_ENV_TEMPLATE}" >&2
+        exit 1
+    fi
+    local db_password
+    db_password="$(python3 - <<'PYHONCHOPASS'
+import secrets
+print(secrets.token_hex(24))
+PYHONCHOPASS
+)"
+    echo "Creating local Honcho env: ${HONCHO_ENV_FILE}"
+    sed \
+      -e "s|@HONCHO_DB_PASSWORD@|${db_password}|g" \
+      -e "s|@HONCHO_LLM_MODEL@|${HONCHO_LLM_MODEL}|g" \
+      -e "s|@HONCHO_LLM_BASE_URL@|${HONCHO_LLM_BASE_URL}|g" \
+      -e "s|@HONCHO_EMBED_MODEL@|${HONCHO_EMBED_MODEL}|g" \
+      -e "s|@HONCHO_EMBED_BASE_URL@|${HONCHO_EMBED_BASE_URL}|g" \
+      -e "s|@HONCHO_EMBED_VECTOR_DIMENSIONS@|${HONCHO_EMBED_VECTOR_DIMENSIONS}|g" \
+      "${HONCHO_ENV_TEMPLATE}" > "${HONCHO_ENV_FILE}"
+    chmod 600 "${HONCHO_ENV_FILE}"
+}
+
+if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+    create_honcho_env
+fi
+
+chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${STACK_DIR}"
+
+if [[ "${HONCHO_ENABLED:-off}" == "on" && "${HONCHO_INSTALL_DATASTORES:-on}" == "on" ]]; then
+    echo "Installing/configuring local Honcho PostgreSQL/pgvector and Redis..."
+    SERVICE_USER="${SERVICE_USER}" bash "${STACK_DIR}/scripts/install-honcho-system-deps.sh"
+fi
+
+if [[ "${LLM_STACK_SKIP_DEP_UPDATE:-0}" == "1" ]]; then
+    echo "Skipping dependency update because LLM_STACK_SKIP_DEP_UPDATE=1."
+else
+    echo "Installing/updating dependencies from dependencies.json..."
+    if ! sudo -u "${SERVICE_USER}" env HONCHO_ENABLED="${HONCHO_ENABLED:-off}" "${STACK_DIR}/scripts/install-dependencies.py" --update; then
+        if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+            echo "Dependency update failed while Honcho is enabled." >&2
+            exit 1
+        fi
+        if [[ -x "${LLAMA_SERVER_BIN:-${STACK_DIR}/deps/llama.cpp/build/bin/llama-server}" ]]; then
+            echo "Dependency update failed, but an existing llama-server binary is present; continuing with systemd unit installation." >&2
+        else
+            echo "Dependency update failed and no llama-server binary is available." >&2
+            exit 1
+        fi
+    fi
+fi
+
+install_unit() {
+    local unit_name="$1"
+    local description="$2"
+    local script="$3"
+    local timeout="${4:-300}"
+    cat > "/etc/systemd/system/${unit_name}.service" <<UNIT
+[Unit]
+Description=${description}
+After=network.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
+WorkingDirectory=${STACK_DIR}
+EnvironmentFile=${CONFIG_FILE}
+ExecStart=${STACK_DIR}/scripts/${script}
+Restart=always
+RestartSec=5
+TimeoutStartSec=${timeout}
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${unit_name}
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    chmod 644 "/etc/systemd/system/${unit_name}.service"
+    echo "  installed: ${unit_name}.service"
+}
+
+cat > /etc/systemd/system/llm-manager.service <<UNIT
+[Unit]
+Description=LLM Stack Manager - web UI
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=${STACK_DIR}
+EnvironmentFile=${CONFIG_FILE}
+ExecStart=${STACK_DIR}/scripts/start-llm-manager.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=llm-manager
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+chmod 644 /etc/systemd/system/llm-manager.service
+echo "  installed: llm-manager.service"
+
+install_unit "think"             "LLM Chat Thinking Legacy - llama-server"          "start-think.sh"             300
+install_unit "nothink"           "LLM Chat Nothink Legacy - llama-server"          "start-nothink.sh"           300
+install_unit "chat-backend"      "LLM Chat Custom Shared Backend - llama-server"   "start-chat-backend.sh"      300
+install_unit "chat-backend-dense"  "LLM Chat Dense Shared Backend - llama-server"    "start-chat-backend-dense.sh"  300
+install_unit "chat-backend-moe"  "LLM Chat MoE Shared Backend - llama-server"      "start-chat-backend-moe.sh"  300
+install_unit "chat-backend-bee"  "LLM Chat BeeLLaMA Shared Backend - llama-server" "start-chat-backend-bee.sh"  300
+install_unit "chat-proxy"        "LLM Chat Proxy - think/chat/code ports"          "start-chat-proxy.sh"        30
+install_unit "embed"         "LLM Embedding Model - llama-server"              "start-embed.sh"         120
+install_unit "rerank"          "LLM Reranker Model - llama-server"               "start-rerank.sh"          120
+install_unit "task"              "LLM Task Model - llama-server"                   "start-task.sh"              120
+install_unit "ocr"               "LLM OCR GLM-OCR Backend - llama-server"          "start-ocr.sh"               120
+install_unit "glmocr-sdk"        "LLM OCR GLM-OCR SDK Parser"                      "start-glmocr-sdk.sh"        300
+if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+    install_unit "honcho-api"     "Local Honcho Memory API"                         "start-honcho-api.sh"        120
+    install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
+fi
+
+sed -i "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service|" /etc/systemd/system/chat-proxy.service
+sed -i "s|^After=network.target$|After=network.target ocr.service|" /etc/systemd/system/glmocr-sdk.service
+sed -i "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
+sed -i "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
+if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+    sed -i "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service embed.service|" /etc/systemd/system/honcho-api.service
+    sed -i "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service embed.service" /etc/systemd/system/honcho-api.service
+    sed -i "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service embed.service|" /etc/systemd/system/honcho-deriver.service
+    sed -i "/^After=/a Wants=honcho-api.service chat-proxy.service embed.service" /etc/systemd/system/honcho-deriver.service
+fi
+sed -i "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
+sed -i "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
+sed -i "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-bee.service
+sed -i "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service" /etc/systemd/system/chat-backend.service
+
+systemctl daemon-reload
+
+DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
+if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+    DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
+fi
+NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe chat-backend-bee ocr glmocr-sdk)
+LEGACY_SERVICES=(
+    qwen-think
+    qwen-nothink
+    qwen-chat-backend
+    qwen-chat-backend-27b
+    qwen-chat-backend-35b
+    qwen-chat-proxy
+    qwen-embedding
+    qwen-reranker
+    qwen-task
+)
+for svc in "${NON_DEFAULT_SERVICES[@]}" "${LEGACY_SERVICES[@]}"; do
+    systemctl disable "${svc}" 2>/dev/null || true
+done
+for svc in "${DEFAULT_BOOT_SERVICES[@]}"; do
+    systemctl enable "${svc}"
+done
+
+if [[ "${HONCHO_ENABLED:-off}" == "on" && "${HONCHO_CONFIGURE_HERMES:-on}" == "on" && -d "${STACK_DIR}/hermes" ]]; then
+    SERVICE_USER="${SERVICE_USER}" SERVICE_GROUP="${SERVICE_GROUP}" bash "${STACK_DIR}/scripts/configure-hermes-honcho.sh" || true
+fi
+
+echo "Install complete. Start the default core stack with:"
+echo "  sudo bash ${STACK_DIR}/scripts/default-mode.sh"
