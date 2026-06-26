@@ -85,7 +85,21 @@ After this directory is initialized as a git repo and connected to GitHub:
 sudo bash update.sh
 ```
 
-`update.sh` fast-forwards this repo, updates/builds dependencies, regenerates units when run as root, and restarts active core services.
+`update.sh` fetches from GitHub, updates to the latest GitHub release/tag by default, updates/builds dependencies, regenerates units when run as root, and restarts active core services.
+
+For development machines that should track the latest `main` branch instead of releases:
+
+```bash
+sudo bash update.sh --branch main
+```
+
+Useful options:
+
+```bash
+bash update.sh --help
+bash update.sh --release --skip-deps
+sudo bash update.sh --release --skip-restart
+```
 
 ## Model Files
 
