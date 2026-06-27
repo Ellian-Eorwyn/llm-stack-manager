@@ -27,6 +27,9 @@
 }
 
 body { 
+  margin: 0;
+  overflow: hidden;
+  height: 100vh;
   background: var(--bg);
   background-image: radial-gradient(circle at top right, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
                     radial-gradient(circle at bottom left, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
@@ -35,7 +38,6 @@ body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif; 
   font-size: 14px; 
   line-height: 1.6; 
-  min-height: 100vh; 
 }
 
 /* -- Header -- */
@@ -137,7 +139,8 @@ header {
 .app-shell {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
-  min-height: calc(100vh - 58px);
+  height: calc(100vh - 64px);
+  overflow: hidden;
   transition: grid-template-columns .15s ease;
 }
 .app-shell.sidebar-collapsed {
@@ -229,7 +232,7 @@ header {
 .side-nav-secondary.visible { display: block; }
 
 /* -- Layout -- */
-main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; }
+main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 100%; overflow-y: auto; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
@@ -745,9 +748,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; }
   <div class="hdr-title">LLM <span>Stack</span> Manager</div>
   <div class="hdr-gpus" id="gpu-stats"></div>
   <div class="hdr-actions">
-    <button class="btn btn-danger" onclick="restartApp()">Restart App</button>
-    <button class="btn btn-primary" onclick="updateLlamaCpp(this)">Update llama.cpp</button>
-    <button class="btn btn-primary" onclick="defaultMode(this)">Default Mode</button>
+    <button class="btn btn-primary" onclick="updateApp(this)">Update App</button>
   </div>
 </header>
 
@@ -756,8 +757,6 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; }
   <div class="side-nav-group">
     <div class="side-nav-title">Manager</div>
     <button class="tab-btn active" data-tab="services"><span class="nav-icon">S</span><span class="nav-label">Services</span></button>
-    <button class="tab-btn" data-tab="tts"><span class="nav-icon">T</span><span class="nav-label">TTS</span></button>
-    <button class="tab-btn" data-tab="graphiti"><span class="nav-icon">G</span><span class="nav-label">Graphiti Monitor</span></button>
     <button class="tab-btn" data-tab="config"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
     <button class="tab-btn" data-tab="logs"><span class="nav-icon">L</span><span class="nav-label">Logs</span></button>
   </div>
@@ -777,17 +776,9 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; }
 
   <!-- Quick actions bar -->
   <div class="quick-bar">
-    <span class="qlabel">Chat model</span>
-    {% for variant in builtin_chat_variants %}
-    <button class="btn btn-ghost btn-sm switch-model-btn builtin-switch-btn" data-variant="{{ variant.id }}" data-label="{{ variant.label }}" onclick="switchModel(this,'{{ variant.id }}')">Switch to {{ variant.label }}</button>
-    {% endfor %}
-    <span id="custom-switch-btns"></span>
     <span class="active-indicator" id="active-model-label"></span>
-    <div class="qdivider"></div>
     <span class="qlabel">All services</span>
-    <button class="btn btn-ghost btn-sm" onclick="bulkAction('start')">Start All</button>
     <button class="btn btn-ghost btn-sm" onclick="bulkAction('stop')">Stop All</button>
-    <button class="btn btn-danger btn-sm" onclick="restartApp()">Restart App</button>
     <div class="qdivider"></div>
     <button class="btn btn-primary btn-sm" onclick="toggleAddModel()">+ Add Model</button>
   </div>
@@ -1667,6 +1658,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; }
 
       <div class="save-bar">
         <button class="btn btn-primary" onclick="saveCfgSection('{{ section }}',this)">Save {{ section }}</button>
+        <button class="btn btn-ghost" id="restart-btn-{{ section|replace(' ','-') }}" onclick="restartSectionServices('{{ section|replace(' ','-') }}', this)" style="display:none;">Restart Service</button>
         <span class="restart-hint" id="rhint-{{ section|replace(' ','-') }}"></span>
       </div>
     </div>
@@ -2387,6 +2379,31 @@ async function bulkAction(action) {
 async function restartApp() {
   if (!confirm('Restart all stack services now?')) return;
   await bulkAction('restart');
+}
+
+async function updateApp(btn) {
+  if (!confirm('Update LLM Stack Manager from GitHub now? This will pull the latest changes, install dependencies, and restart the app.')) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Updating...';
+  toast('Updating app in background. Page will reload shortly...', 'info');
+  try {
+    const d = await fetchJSON('/api/app/update', 'POST');
+    if (!d.ok) {
+      toast('Update failed to start: ' + (d.error || 'Unknown error'), 'err');
+      btn.disabled = false;
+      btn.textContent = orig;
+      return;
+    }
+    // Reload page after a delay to allow restart
+    setTimeout(() => {
+      window.location.reload();
+    }, 15000);
+  } catch (e) {
+    toast('Error starting update', 'err');
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
 }
 
 async function updateLlamaCpp(btn) {
@@ -3703,9 +3720,17 @@ async function saveCfgSection(section, btn) {
           toast(restart.output || restart.error || 'Transcript backend restart failed', 'err');
         }
       } else {
-        hint.textContent = restartNeeded.length
-          ? 'Restart needed: ' + restartNeeded.join(', ')
-          : '';
+        const restartBtn = document.getElementById('restart-btn-' + section.replace(/ /g, '-'));
+        if (restartNeeded.length > 0) {
+          hint.textContent = 'Restart needed: ' + restartNeeded.join(', ');
+          if (restartBtn) {
+            restartBtn.style.display = 'inline-block';
+            restartBtn.dataset.services = JSON.stringify(restartNeeded);
+          }
+        } else {
+          hint.textContent = '';
+          if (restartBtn) restartBtn.style.display = 'none';
+        }
         toast('Saved ' + section, 'ok');
       }
     } else {
@@ -3713,6 +3738,33 @@ async function saveCfgSection(section, btn) {
     }
   } catch (e) { toast('Error: ' + e, 'err'); }
   finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+async function restartSectionServices(secId, btn) {
+  const orig = btn.textContent;
+  const svcsText = btn.dataset.services;
+  if (!svcsText) return;
+  const svcs = JSON.parse(svcsText);
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Restarting...';
+  let successCount = 0;
+  for (const svc of svcs) {
+    try {
+      const d = await fetchJSON(`/api/service/${svc}/restart`, 'POST');
+      if (d.ok) successCount++;
+    } catch {}
+  }
+  btn.disabled = false;
+  btn.textContent = orig;
+  if (successCount > 0) {
+    toast(`Restarted ${successCount} service(s)`, 'ok');
+    btn.style.display = 'none';
+    const hint = document.getElementById('rhint-' + secId);
+    if (hint) hint.textContent = 'Restarted successfully.';
+    await poll();
+  } else {
+    toast('Failed to restart services.', 'err');
+  }
 }
 
 // -- saved configurations --

@@ -3396,6 +3396,15 @@ def api_default_mode():
     return jsonify(ok=ok, output=output)
 
 
+@app.route('/api/app/update', methods=['POST'])
+def api_app_update():
+    script_path = os.path.join(STACK_DIR, 'update.sh')
+    if not os.path.exists(script_path):
+        return jsonify(ok=False, error="update.sh not found"), 404
+    import subprocess
+    subprocess.Popen(['bash', script_path], start_new_session=True)
+    return jsonify(ok=True)
+
 @app.route('/api/llamacpp/update', methods=['POST'])
 def api_llamacpp_update():
     ok, output, restarted = update_llamacpp_and_restart_active_services()
@@ -4004,6 +4013,17 @@ def api_saved_configs_save():
     config['_name'] = name
     active = (data or {}).get('active_chat_model')
     config['_active_chat_model'] = active if isinstance(active, dict) else active_chat_model_snapshot(env)
+    
+    active_services = []
+    for svc in SERVICES:
+        name = svc.get('name')
+        if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 'chat-backend-bee', 
+                                'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
+            continue
+        if get_service_status(name) == 'active':
+            active_services.append(name)
+    config['_active_services'] = active_services
+
     try:
         SAVED_CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
         (SAVED_CONFIGS_DIR / f'{safe_name}.json').write_text(
@@ -4054,6 +4074,21 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
             }
         restart_needed.difference_update(SHARED_CHAT_BACKEND_RESTART)
         restart_needed.discard('chat-proxy')
+
+        active_services = config.get('_active_services')
+        if active_services is not None:
+            for svc in SERVICES:
+                name = svc.get('name')
+                if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 'chat-backend-bee', 
+                                        'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
+                    continue
+                is_active = get_service_status(name) == 'active'
+                should_be_active = name in active_services
+                if should_be_active and not is_active:
+                    ServiceManager.start(name)
+                    launched.append(name)
+                elif not should_be_active and is_active:
+                    ServiceManager.stop(name)
 
     return {
         'ok': True,
