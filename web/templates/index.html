@@ -755,6 +755,20 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 }
 .svc-group.dragging { opacity: 0.5; }
 
+.card-drag-handle {
+  cursor: grab;
+  color: var(--border);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  margin-right: 6px;
+}
+.card-drag-handle:hover { color: var(--text-dim); }
+.card-drag-handle:active { cursor: grabbing; }
+.card-drag-handle svg { width: 14px; height: 14px; }
+.svc-card.dragging { opacity: 0.5; box-shadow: 0 8px 16px rgba(0,0,0,0.2); }
+.svc-cards { min-height: 40px; } /* Ensure empty groups can accept drops */
+
 </style>
 </head>
 <body>
@@ -907,6 +921,9 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% for svc in services %}
       <div class="svc-card" id="card-{{ svc.name }}" data-status="unknown">
         <div class="card-top">
+          <span class="card-drag-handle" title="Drag to reorder card">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+          </span>
           <span class="card-name">{{ svc.label }}</span>
           <span class="status-pill unknown" id="pill-{{ svc.name }}">...</span>
         </div>
@@ -3569,6 +3586,9 @@ function renderCustomModels() {
   container.innerHTML = customModels.map(m => `
     <div class="svc-card" id="custom-card-${m.id}" data-status="inactive">
       <div class="card-top">
+        <span class="card-drag-handle" title="Drag to reorder card">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+        </span>
         <span class="card-name">${m.display_name}</span>
         <span class="status-pill inactive">inactive</span>
       </div>
@@ -4131,22 +4151,60 @@ function applyGroupLayout() {
     if (titles[gid]) el.textContent = titles[gid];
   });
 
-  // Apply order
-  const order = JSON.parse(localStorage.getItem('llmStackLayout') || '[]');
-  order.forEach(id => {
-    const el = document.getElementById(id);
-    if (el && el.classList.contains('svc-group')) {
-      container.appendChild(el);
+  // Apply V2 order (groups and cards)
+  const layout = JSON.parse(localStorage.getItem('llmStackLayoutV2'));
+  if (layout && layout.groups) {
+    layout.groups.forEach(groupId => {
+      const el = document.getElementById(groupId);
+      if (el && el.classList.contains('svc-group')) container.appendChild(el);
+    });
+    
+    if (layout.cards) {
+      Object.keys(layout.cards).forEach(groupId => {
+        const groupEl = document.getElementById(groupId);
+        if (!groupEl) return;
+        const cardsContainer = groupEl.querySelector('.svc-cards');
+        if (!cardsContainer) return;
+        layout.cards[groupId].forEach(cardId => {
+          const cardEl = document.getElementById(cardId);
+          if (cardEl && cardEl.classList.contains('svc-card')) {
+            cardsContainer.appendChild(cardEl);
+          }
+        });
+      });
     }
-  });
+  } else {
+    // Fallback for V1 order (only groups)
+    const order = JSON.parse(localStorage.getItem('llmStackLayout') || '[]');
+    order.forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.classList.contains('svc-group')) container.appendChild(el);
+    });
+  }
 }
 
 function saveGroupLayout() {
   const container = document.getElementById('svc-groups-container');
-  const order = Array.from(container.children)
-    .filter(el => el.classList.contains('svc-group'))
-    .map(el => el.id);
-  localStorage.setItem('llmStackLayout', JSON.stringify(order));
+  if (!container) return;
+  
+  const layout = { groups: [], cards: {} };
+  
+  Array.from(container.children).forEach(group => {
+    if (group.classList.contains('svc-group')) {
+      layout.groups.push(group.id);
+      layout.cards[group.id] = [];
+      const cardsContainer = group.querySelector('.svc-cards');
+      if (cardsContainer) {
+        Array.from(cardsContainer.children).forEach(card => {
+          if (card.classList.contains('svc-card')) {
+            layout.cards[group.id].push(card.id);
+          }
+        });
+      }
+    }
+  });
+  
+  localStorage.setItem('llmStackLayoutV2', JSON.stringify(layout));
 }
 
 function initDragAndDrop() {
@@ -4154,30 +4212,44 @@ function initDragAndDrop() {
   if (!container) return;
   
   let draggedEl = null;
+  let draggedType = null; // 'group' or 'card'
 
-  // Make draggable only when hovering the handle so the mouse click registers the drag
   container.addEventListener('mouseover', e => {
-    if (e.target.closest('.drag-handle')) {
-      const group = e.target.closest('.svc-group');
-      if (group) group.setAttribute('draggable', 'true');
+    const handle = e.target.closest('.drag-handle, .card-drag-handle');
+    if (handle) {
+      const isCard = handle.classList.contains('card-drag-handle');
+      const target = isCard ? e.target.closest('.svc-card') : e.target.closest('.svc-group');
+      if (target) target.setAttribute('draggable', 'true');
     }
   });
   
   container.addEventListener('mouseout', e => {
-    if (e.target.closest('.drag-handle')) {
-      const group = e.target.closest('.svc-group');
-      if (group) group.removeAttribute('draggable');
+    const handle = e.target.closest('.drag-handle, .card-drag-handle');
+    if (handle) {
+      const isCard = handle.classList.contains('card-drag-handle');
+      const target = isCard ? e.target.closest('.svc-card') : e.target.closest('.svc-group');
+      if (target) target.removeAttribute('draggable');
     }
   });
 
   container.addEventListener('dragstart', e => {
+    const card = e.target.closest('.svc-card');
     const group = e.target.closest('.svc-group');
-    if (!group) return;
-    draggedEl = group;
+    
+    if (card && card.getAttribute('draggable') === 'true') {
+      draggedEl = card;
+      draggedType = 'card';
+    } else if (group && group.getAttribute('draggable') === 'true') {
+      draggedEl = group;
+      draggedType = 'group';
+    } else {
+      return;
+    }
+    
     e.dataTransfer.effectAllowed = 'move';
-    // Firefox requires some data to be set to allow dragging
-    e.dataTransfer.setData('text/plain', group.id); 
-    group.classList.add('dragging');
+    e.dataTransfer.setData('text/plain', draggedEl.id); 
+    draggedEl.classList.add('dragging');
+    e.stopPropagation(); // prevent card drag from bubbling to group
   });
 
   container.addEventListener('dragover', e => {
@@ -4185,14 +4257,30 @@ function initDragAndDrop() {
     e.dataTransfer.dropEffect = 'move';
     if (!draggedEl) return;
     
-    const group = e.target.closest('.svc-group');
-    if (group && group !== draggedEl) {
-      const rect = group.getBoundingClientRect();
-      const mid = rect.top + rect.height / 2;
-      if (e.clientY < mid) {
-        group.parentNode.insertBefore(draggedEl, group);
-      } else {
-        group.parentNode.insertBefore(draggedEl, group.nextSibling);
+    if (draggedType === 'group') {
+      const group = e.target.closest('.svc-group');
+      if (group && group !== draggedEl && !draggedEl.contains(group)) {
+        const rect = group.getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2) {
+          group.parentNode.insertBefore(draggedEl, group);
+        } else {
+          group.parentNode.insertBefore(draggedEl, group.nextSibling);
+        }
+      }
+    } else if (draggedType === 'card') {
+      const targetCard = e.target.closest('.svc-card');
+      const targetContainer = e.target.closest('.svc-cards');
+      
+      if (targetCard && targetCard !== draggedEl) {
+        const rect = targetCard.getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2) {
+          targetCard.parentNode.insertBefore(draggedEl, targetCard);
+        } else {
+          targetCard.parentNode.insertBefore(draggedEl, targetCard.nextSibling);
+        }
+      } else if (targetContainer && !targetCard && targetContainer !== draggedEl.parentNode) {
+        // Dropping into an empty container or at the bottom of a container
+        targetContainer.appendChild(draggedEl);
       }
     }
   });
@@ -4200,8 +4288,9 @@ function initDragAndDrop() {
   container.addEventListener('dragend', e => {
     if (draggedEl) {
       draggedEl.classList.remove('dragging');
-      draggedEl.draggable = false;
+      draggedEl.removeAttribute('draggable');
       draggedEl = null;
+      draggedType = null;
       saveGroupLayout();
     }
   });
