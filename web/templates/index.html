@@ -506,6 +506,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   display: none;
 }
 .add-model-panel.open { display: block; }
+
 .add-model-panel h3 {
   font-size: 14px; margin-bottom: 0; color: var(--accent);
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -728,6 +729,32 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 @keyframes spin { to { transform: rotate(360deg); } }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Drag and Drop & Editable Titles */
+.drag-handle {
+  cursor: grab;
+  color: var(--muted);
+  user-select: none;
+  display: flex;
+  align-items: center;
+}
+.drag-handle:hover { color: var(--text); }
+.drag-handle:active { cursor: grabbing; }
+.drag-handle svg { width: 16px; height: 16px; }
+
+.group-title {
+  outline: none;
+  border-bottom: 1px dashed transparent;
+  transition: border-color 0.2s;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.group-title:hover, .group-title:focus {
+  border-bottom-color: var(--border);
+  background: var(--surface2);
+}
+.svc-group.dragging { opacity: 0.5; }
+
 </style>
 </head>
 <body>
@@ -867,9 +894,15 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   </div>
 
   <!-- Built-in service groups -->
+  <div id="svc-groups-container">
   {% for group_name, services in service_groups.items() %}
-  <div class="svc-group">
-    <div class="group-hdr">{{ group_name | title }}</div>
+  <div class="svc-group" id="group-{{ group_name | slugify }}">
+    <div class="group-hdr">
+      <span class="drag-handle" title="Drag to reorder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+      </span>
+      <span class="group-title" contenteditable="true" data-group-id="group-{{ group_name | slugify }}">{{ group_name | title }}</span>
+    </div>
     <div class="svc-cards">
       {% for svc in services %}
       <div class="svc-card" id="card-{{ svc.name }}" data-status="unknown">
@@ -895,9 +928,15 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   {% endfor %}
 
   <!-- Custom models group (rendered by JS) -->
-  <div class="svc-group" id="custom-models-group" style="display:none;">
-    <div class="group-hdr">Custom Models</div>
+  <div class="svc-group" id="group-custom-models" style="display:none;">
+    <div class="group-hdr">
+      <span class="drag-handle" title="Drag to reorder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+      </span>
+      <span class="group-title" contenteditable="true" data-group-id="group-custom-models">Custom Models</span>
+    </div>
     <div class="svc-cards" id="custom-models-cards"></div>
+  </div>
   </div>
 
 </div>
@@ -3512,7 +3551,7 @@ async function loadCustomModels() {
 }
 
 function renderCustomModels() {
-  const group = document.getElementById('custom-models-group');
+  const group = document.getElementById('group-custom-models');
   const container = document.getElementById('custom-models-cards');
   const switchContainer = document.getElementById('custom-switch-btns');
 
@@ -4080,11 +4119,108 @@ async function fetchJSON(url, method = 'GET', body = null) {
   return r.json();
 }
 
+// -- drag and drop layout --
+function applyGroupLayout() {
+  const container = document.getElementById('svc-groups-container');
+  if (!container) return;
+
+  // Apply custom titles
+  const titles = JSON.parse(localStorage.getItem('llmStackTitles') || '{}');
+  container.querySelectorAll('.group-title').forEach(el => {
+    const gid = el.getAttribute('data-group-id');
+    if (titles[gid]) el.textContent = titles[gid];
+  });
+
+  // Apply order
+  const order = JSON.parse(localStorage.getItem('llmStackLayout') || '[]');
+  order.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.classList.contains('svc-group')) {
+      container.appendChild(el);
+    }
+  });
+}
+
+function saveGroupLayout() {
+  const container = document.getElementById('svc-groups-container');
+  const order = Array.from(container.children)
+    .filter(el => el.classList.contains('svc-group'))
+    .map(el => el.id);
+  localStorage.setItem('llmStackLayout', JSON.stringify(order));
+}
+
+function initDragAndDrop() {
+  const container = document.getElementById('svc-groups-container');
+  if (!container) return;
+  
+  let draggedEl = null;
+
+  // Make draggable only when clicking the handle to preserve text selection
+  container.addEventListener('mousedown', e => {
+    if (e.target.closest('.drag-handle')) {
+      const group = e.target.closest('.svc-group');
+      if (group) group.draggable = true;
+    }
+  });
+  
+  container.addEventListener('mouseup', e => {
+    const group = e.target.closest('.svc-group');
+    if (group) group.draggable = false;
+  });
+
+  container.addEventListener('dragstart', e => {
+    const group = e.target.closest('.svc-group');
+    if (!group) return;
+    draggedEl = group;
+    e.dataTransfer.effectAllowed = 'move';
+    // Firefox requires some data to be set to allow dragging
+    e.dataTransfer.setData('text/plain', group.id); 
+    group.classList.add('dragging');
+  });
+
+  container.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (!draggedEl) return;
+    
+    const group = e.target.closest('.svc-group');
+    if (group && group !== draggedEl) {
+      const rect = group.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (e.clientY < mid) {
+        group.parentNode.insertBefore(draggedEl, group);
+      } else {
+        group.parentNode.insertBefore(draggedEl, group.nextSibling);
+      }
+    }
+  });
+
+  container.addEventListener('dragend', e => {
+    if (draggedEl) {
+      draggedEl.classList.remove('dragging');
+      draggedEl.draggable = false;
+      draggedEl = null;
+      saveGroupLayout();
+    }
+  });
+
+  // Save titles on edit
+  container.addEventListener('input', e => {
+    if (e.target.classList.contains('group-title')) {
+      const titles = JSON.parse(localStorage.getItem('llmStackTitles') || '{}');
+      titles[e.target.getAttribute('data-group-id')] = e.target.textContent;
+      localStorage.setItem('llmStackTitles', JSON.stringify(titles));
+    }
+  });
+}
+
 // -- boot --
 async function boot() {
   initSidebar();
   initCollapsibleSections();
   initCustomModelForm();
+  applyGroupLayout();
+  initDragAndDrop();
   startPolling();
   await loadGgufFiles();
   await loadTranscriptionModels('parakeet-v3');
