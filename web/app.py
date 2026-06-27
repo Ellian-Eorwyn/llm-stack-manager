@@ -67,6 +67,23 @@ TRANSCRIPTION_ENGINES = [
     {"id": "whisperkit-large-v3", "label": "WhisperKit Large v3", "env_prefix": "WHISPERKIT_LARGE_V3"},
 ]
 TRANSCRIPTION_ENGINE_BY_ID = {item["id"]: item for item in TRANSCRIPTION_ENGINES}
+BEE_KV_CACHE_OPTIONS = [
+    {"value": "f32", "label": "f32 - unquantized 32-bit float"},
+    {"value": "f16", "label": "f16 - unquantized 16-bit float"},
+    {"value": "bf16", "label": "bf16 - unquantized bfloat16"},
+    {"value": "q8_0", "label": "q8_0 - regular 8-bit KV quant"},
+    {"value": "q6_0", "label": "q6_0 - regular 6-bit KV quant"},
+    {"value": "q5_0", "label": "q5_0 - regular 5-bit KV quant"},
+    {"value": "q5_1", "label": "q5_1 - regular 5-bit KV quant"},
+    {"value": "q4_0", "label": "q4_0 - regular 4-bit KV quant"},
+    {"value": "q4_1", "label": "q4_1 - regular 4-bit KV quant"},
+    {"value": "iq4_nl", "label": "iq4_nl - regular importance 4-bit KV quant"},
+    {"value": "turbo2", "label": "turbo2 - TurboQuant 2-bit"},
+    {"value": "turbo3", "label": "turbo3 - TurboQuant 3-bit"},
+    {"value": "turbo4", "label": "turbo4 - TurboQuant 4-bit"},
+    {"value": "turbo2_tcq", "label": "turbo2_tcq - TurboQuant TCQ 2-bit"},
+    {"value": "turbo3_tcq", "label": "turbo3_tcq - TurboQuant TCQ 3-bit"},
+]
 
 BUILTIN_CUSTOM_MODEL_ARG_PRESETS = {
     "qwen3.6": [
@@ -205,7 +222,7 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_THREADS_BATCH",         "label": "CPU Batch Threads",      "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
     {"section": "Shared Backend", "key": "CHAT_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",    "type": "number"},
     {"section": "Shared Backend", "key": "CHAT_MAIN_GPU",              "label": "Main GPU Index",         "type": "number", "hint": "GPU index (within visible devices) for split-mode=none, or KV/intermediate buffers with row split"},
-    {"section": "Shared Backend", "key": "CHAT_DEVICE",                "label": "Offload Devices",        "type": "text",   "hint": "Optional llama.cpp --device override, e.g. 0,1 or none"},
+    {"section": "Shared Backend", "key": "CHAT_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override for shared backends, including BeeLLaMA main model; use --list-devices names like CUDA0,CUDA1 or none"},
     {"section": "Shared Backend", "key": "CHAT_TENSOR_SPLIT",          "label": "Tensor Split",           "type": "text",   "hint": "e.g. 1,1"},
     {"section": "Shared Backend", "key": "CHAT_SPLIT_MODE",            "label": "Split Mode",             "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none=model on one GPU, layer=layer sharding, row=row sharding, tensor=parallel tensor+KV sharding"},
     {"section": "Shared Backend", "key": "CHAT_KV_OFFLOAD",            "label": "KV Offload",             "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
@@ -238,21 +255,21 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD_N_MIN",  "label": "N-Gram Min Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-min (default 48)"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD_N_MAX",  "label": "N-Gram Max Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-max (default 64)"},
     {"section": "Shared Backend", "key": "CHAT_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",       "type": "custom_args", "hint": "Extra llama.cpp flags applied to all shared chat backends"},
-    {"section": "Shared Backend", "key": "BEELLAMA_SERVER_BIN",                  "label": "BeeLLaMA Binary",       "type": "path", "hint": "Path to deps/beellama.cpp build/bin/llama-server"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_CACHE_TYPE_K",                "label": "Bee KV Key Type",       "type": "select", "options": ["f32", "f16", "bf16", "q8_0", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl", "turbo2", "turbo3", "turbo4", "turbo2_tcq", "turbo3_tcq"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_CACHE_TYPE_V",                "label": "Bee KV Value Type",     "type": "select", "options": ["f32", "f16", "bf16", "q8_0", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl", "turbo2", "turbo3", "turbo4", "turbo2_tcq", "turbo3_tcq"]},
+    {"section": "Shared Backend", "key": "BEELLAMA_SERVER_BIN",                  "label": "BeeLLaMA Binary",       "type": "executable_path", "hint": "Path to deps/beellama.cpp build/bin/llama-server"},
+    {"section": "Shared Backend", "key": "CHAT_BEE_CACHE_TYPE_K",                "label": "Bee KV Key Type",       "type": "select", "options": BEE_KV_CACHE_OPTIONS, "hint": "Main-model KV cache type. Labels indicate unquantized, regular quant, or TurboQuant/TCQ."},
+    {"section": "Shared Backend", "key": "CHAT_BEE_CACHE_TYPE_V",                "label": "Bee KV Value Type",     "type": "select", "options": BEE_KV_CACHE_OPTIONS, "hint": "Main-model KV cache type. Labels indicate unquantized, regular quant, or TurboQuant/TCQ."},
     {"section": "Shared Backend", "key": "CHAT_BEE_KV_UNIFIED",                  "label": "Bee Unified KV",        "type": "select", "options": ["off", "on"]},
     {"section": "Shared Backend", "key": "CHAT_BEE_NO_HOST",                     "label": "Bee No Host Buffer",    "type": "select", "options": ["off", "on"]},
     {"section": "Shared Backend", "key": "CHAT_BEE_LOG_TIMESTAMPS",              "label": "Bee Log Timestamps",    "type": "select", "options": ["false", "true"]},
     {"section": "Shared Backend", "key": "CHAT_BEE_LOG_COLORS",                  "label": "Bee Log Colors",        "type": "select", "options": ["off", "on", "auto"]},
     {"section": "Shared Backend", "key": "CHAT_BEE_VERBOSITY",                   "label": "Bee Verbosity",         "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_METHOD",                 "label": "Bee Spec Method",       "type": "select", "options": ["off", "dflash", "copyspec", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod", "suffix", "recycle"]},
+    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_METHOD",                 "label": "Bee Spec Method",       "type": "select", "options": ["off", "dflash", "draft-mtp", "copyspec", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod", "suffix", "recycle"], "hint": "BeeLLaMA --spec-type; draft-mtp uses native MTP heads in MTP-preserved GGUFs"},
     {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_MODEL_PATH",       "label": "Bee Draft Model",       "type": "path"},
     {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_N_GPU_LAYERS",     "label": "Bee Draft GPU Layers",  "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_DEVICES",          "label": "Bee Draft Devices",     "type": "text"},
+    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_DEVICES",          "label": "Bee Draft Devices",     "type": "text", "hint": "BeeLLaMA --spec-draft-device for DFlash/draft model placement, e.g. CUDA0,CUDA1"},
     {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_CTX_SIZE",         "label": "Bee Draft Context",     "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_TYPE_K",           "label": "Bee Draft K Cache",     "type": "select", "options": ["f32", "f16", "bf16", "q8_0", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl", "turbo2", "turbo3", "turbo4", "turbo2_tcq", "turbo3_tcq"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_TYPE_V",           "label": "Bee Draft V Cache",     "type": "select", "options": ["f32", "f16", "bf16", "q8_0", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl", "turbo2", "turbo3", "turbo4", "turbo2_tcq", "turbo3_tcq"]},
+    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_TYPE_K",           "label": "Bee Draft K Cache",     "type": "select", "options": BEE_KV_CACHE_OPTIONS, "hint": "Draft-model KV cache type for speculative decoding."},
+    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_TYPE_V",           "label": "Bee Draft V Cache",     "type": "select", "options": BEE_KV_CACHE_OPTIONS, "hint": "Draft-model KV cache type for speculative decoding."},
     {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_N_MAX",            "label": "Bee Draft Max",         "type": "number"},
     {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_N_MIN",            "label": "Bee Draft Min",         "type": "number"},
     {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_P_MIN",            "label": "Bee Draft P Min",       "type": "text"},
@@ -451,10 +468,10 @@ CONFIG_FIELDS = [
     {"section": "OCR",        "key": "OCR_THREADS",              "label": "CPU Threads",          "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
     {"section": "OCR",        "key": "OCR_THREADS_BATCH",        "label": "CPU Batch Threads",    "type": "number"},
     {"section": "OCR",        "key": "OCR_N_GPU_LAYERS",         "label": "GPU Layers (-1=all)",  "type": "number"},
-    {"section": "OCR",        "key": "OCR_MAIN_GPU",             "label": "Main GPU Index",       "type": "number"},
-    {"section": "OCR",        "key": "OCR_DEVICE",               "label": "Offload Devices",      "type": "text",   "hint": "Optional llama.cpp --device override, e.g. 0,1 or none"},
-    {"section": "OCR",        "key": "OCR_TENSOR_SPLIT",         "label": "Tensor Split",         "type": "text",   "hint": "auto expands to one weight per visible GPU, e.g. GPUs 0,1 -> 1,1; set 2,1 to bias GPU 0"},
-    {"section": "OCR",        "key": "OCR_SPLIT_MODE",           "label": "Split Mode",           "type": "select", "options": ["none", "layer", "row", "tensor"]},
+    {"section": "OCR",        "key": "OCR_MAIN_GPU",             "label": "Main GPU Index",       "type": "number", "hint": "GPU index within OCR GPU Devices; use 0 for the first visible GPU, 1 for the second"},
+    {"section": "OCR",        "key": "OCR_DEVICE",               "label": "Offload Devices",      "type": "text",   "hint": "Optional llama.cpp --device override for OCR, e.g. CUDA0,CUDA1 or none"},
+    {"section": "OCR",        "key": "OCR_TENSOR_SPLIT",         "label": "Tensor Split",         "type": "text",   "hint": "auto expands to one weight per visible OCR GPU, e.g. GPU Devices 0,1 -> 1,1; set 2,1 to bias GPU 0"},
+    {"section": "OCR",        "key": "OCR_SPLIT_MODE",           "label": "Split Mode",           "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none keeps OCR on one GPU; layer/row/tensor split OCR across OCR GPU Devices"},
     {"section": "OCR",        "key": "OCR_KV_OFFLOAD",           "label": "KV Offload",           "type": "select", "options": ["on", "off"]},
     {"section": "OCR",        "key": "OCR_OP_OFFLOAD",           "label": "Host Op Offload",      "type": "select", "options": ["on", "off"]},
     {"section": "OCR",        "key": "OCR_MMPROJ_OFFLOAD",       "label": "MMProj Offload",       "type": "select", "options": ["on", "off"]},
@@ -465,7 +482,7 @@ CONFIG_FIELDS = [
     {"section": "OCR",        "key": "OCR_CACHE_TYPE_V",         "label": "KV Cache Value Type",  "type": "select", "options": ["q8_0", "f16", "f32", "q4_0", "q4_1", "iq4_nl"]},
     {"section": "OCR",        "key": "OCR_NO_MMAP",              "label": "Disable mmap",         "type": "select", "options": ["false", "true"]},
     {"section": "OCR",        "key": "OCR_MLOCK",                "label": "Lock Memory",          "type": "select", "options": ["false", "true"]},
-    {"section": "OCR",        "key": "OCR_GPU_VISIBLE_DEVICES",  "label": "GPU Devices",          "type": "text"},
+    {"section": "OCR",        "key": "OCR_GPU_VISIBLE_DEVICES",  "label": "OCR GPU Devices",      "type": "text",   "hint": "CUDA_VISIBLE_DEVICES for OCR. Use 0 or 1 for one GPU, 0,1 for both GPUs."},
     {"section": "OCR",        "key": "OCR_PROMPT",               "label": "Default OCR Prompt",   "type": "text",   "hint": "Used by /api/ocr/extract when a call does not provide a prompt"},
     {"section": "OCR",        "key": "OCR_TEMP",                 "label": "Temperature",          "type": "text",   "hint": "Low values are best for OCR"},
     {"section": "OCR",        "key": "OCR_TOP_P",                "label": "Top-P",                "type": "text"},
@@ -637,9 +654,9 @@ RESTART_HINTS = {
     "CHAT_THREADS_BATCH":        ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_N_GPU_LAYERS":         ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_MAIN_GPU":             ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_DEVICE":               ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_TENSOR_SPLIT":         ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPLIT_MODE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
+    "CHAT_DEVICE":               ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
+    "CHAT_TENSOR_SPLIT":         ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
+    "CHAT_SPLIT_MODE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
     "CHAT_KV_OFFLOAD":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_OP_OFFLOAD":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_MMPROJ_OFFLOAD":       ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
@@ -650,7 +667,7 @@ RESTART_HINTS = {
     "CHAT_UBATCH_SIZE":          ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_NO_MMAP":              ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_MLOCK":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_GPU_VISIBLE_DEVICES":  ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
+    "CHAT_GPU_VISIBLE_DEVICES":  ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
     "CHAT_TEMP":                 ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_TOP_P":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_TOP_K":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
@@ -1135,7 +1152,10 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("OCR_CACHE_TYPE_V", "f16")
     normalized.setdefault("OCR_NO_MMAP", "false")
     normalized.setdefault("OCR_MLOCK", "false")
-    normalized.setdefault("OCR_GPU_VISIBLE_DEVICES", normalized.get("TASK_GPU_VISIBLE_DEVICES", "0"))
+    normalized.setdefault(
+        "OCR_GPU_VISIBLE_DEVICES",
+        normalized.get("CHAT_GPU_VISIBLE_DEVICES", normalized.get("TASK_GPU_VISIBLE_DEVICES", "0")),
+    )
     normalized.setdefault("OCR_PROMPT", "OCR")
     normalized.setdefault("OCR_TEMP", "0.1")
     normalized.setdefault("OCR_TOP_P", "0.95")
@@ -1246,7 +1266,7 @@ def _quote_env_value(value) -> str:
 
 def update_env_values(updates: dict):
     """Update key=value lines in the env file, preserving all comments."""
-    updates = normalize_env_keys(updates)
+    updates = normalize_config_updates(updates)
     with open(CONFIG_FILE, 'r') as f:
         content = f.read()
     for key, value in updates.items():
@@ -1433,28 +1453,113 @@ def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str
     return r.returncode == 0, (r.stdout + r.stderr).strip(), ["chat-backend", "chat-proxy"]
 
 
+def service_main_pids() -> dict[int, str]:
+    mapping = {}
+    for svc in SERVICES:
+        name = svc.get("name")
+        if not name:
+            continue
+        try:
+            r = subprocess.run(
+                ["systemctl", "show", name, "--property=MainPID", "--value"],
+                capture_output=True, text=True, timeout=2,
+            )
+            pid = int((r.stdout or "0").strip() or "0")
+            if pid > 0:
+                mapping[pid] = name
+        except Exception:
+            continue
+    return mapping
+
+
+def label_gpu_process(pid: int, process_name: str, service_pids: dict[int, str]) -> str:
+    if pid in service_pids:
+        return service_pids[pid]
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_text(errors="ignore").replace("\x00", " ").strip()
+    except Exception:
+        cmdline = ""
+    haystack = f"{process_name} {cmdline}"
+    for svc in SERVICES:
+        name = svc.get("name", "")
+        if name and (name in haystack or f"start-{name}.sh" in haystack):
+            return name
+    if "llama-server" in haystack:
+        return "llama-server"
+    if "python" in process_name.lower():
+        return Path(cmdline.split(" ", 1)[0] if cmdline else process_name).name
+    return Path(process_name or "process").name
+
+
+def get_gpu_processes(uuid_by_index: dict[int, str]) -> dict[int, list[dict]]:
+    uuid_to_index = {uuid: index for index, uuid in uuid_by_index.items() if uuid}
+    service_pids = service_main_pids()
+    processes = {index: [] for index in uuid_by_index}
+    try:
+        r = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 4:
+                continue
+            gpu_uuid, pid_text, process_name, used_text = parts[:4]
+            index = uuid_to_index.get(gpu_uuid)
+            if index is None:
+                continue
+            try:
+                pid = int(pid_text)
+                used = int(float(used_text))
+            except ValueError:
+                continue
+            processes.setdefault(index, []).append({
+                "pid": pid,
+                "name": label_gpu_process(pid, process_name, service_pids),
+                "process_name": Path(process_name).name,
+                "used_memory": used,
+            })
+    except Exception:
+        pass
+    for items in processes.values():
+        items.sort(key=lambda item: item.get("used_memory", 0), reverse=True)
+    return processes
+
+
 def get_gpu_info() -> list:
     try:
         r = subprocess.run(
             ['nvidia-smi',
-             '--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu',
+             '--query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu,temperature.gpu',
              '--format=csv,noheader,nounits'],
             capture_output=True, text=True, timeout=5,
         )
         gpus = []
+        uuid_by_index = {}
         for line in r.stdout.strip().splitlines():
             parts = [p.strip() for p in line.split(',')]
-            if len(parts) >= 5:
-                mem_used, mem_total = int(parts[1]), int(parts[2])
+            if len(parts) >= 7:
+                index = int(parts[0])
+                mem_used, mem_total = int(parts[3]), int(parts[4])
+                uuid_by_index[index] = parts[1]
                 gpus.append({
-                    'index':     len(gpus),
-                    'name':      parts[0],
+                    'index':     index,
+                    'uuid':      parts[1],
+                    'name':      parts[2],
                     'mem_used':  mem_used,
                     'mem_total': mem_total,
-                    'util':      int(parts[3]),
-                    'temp':      int(parts[4]),
+                    'util':      int(parts[5]),
+                    'temp':      int(parts[6]),
                     'mem_pct':   round(100 * mem_used / max(mem_total, 1)),
+                    'processes': [],
                 })
+        processes = get_gpu_processes(uuid_by_index)
+        for gpu in gpus:
+            gpu["processes"] = processes.get(gpu["index"], [])
         return gpus
     except Exception:
         return []
@@ -2668,6 +2773,19 @@ def normalize_custom_model(model: dict) -> dict:
     return item
 
 
+def display_name_from_model_path(model_path: str) -> str:
+    name = Path(model_path or "").name
+    if name.lower().endswith(".gguf"):
+        name = name[:-5]
+    return name or "Custom Model"
+
+
+def model_name_from_display_name(display_name: str) -> str:
+    slug = re.sub(r"[^a-z0-9._-]+", "-", (display_name or "").strip().lower())
+    slug = re.sub(r"-+", "-", slug).strip("-._")
+    return slug or "custom-model"
+
+
 def load_custom_models() -> list:
     """Load custom model definitions from JSON file."""
     if CUSTOM_MODELS_FILE.exists():
@@ -3452,9 +3570,12 @@ def api_custom_models_list():
 
 @app.route('/api/custom-models', methods=['POST'])
 def api_custom_models_add():
-    data = request.json
-    if not data or not data.get('display_name') or not data.get('model_path'):
-        return jsonify(ok=False, error='display_name and model_path are required'), 400
+    data = request.json or {}
+    model_path = (data.get('model_path') or '').strip()
+    if not model_path:
+        return jsonify(ok=False, error='model_path is required'), 400
+    display_name = (data.get('display_name') or '').strip() or display_name_from_model_path(model_path)
+    model_name = (data.get('model_name') or '').strip() or model_name_from_display_name(display_name)
     custom_args_supplied = 'custom_args' in data
     custom_args = normalize_custom_arg_entries(data.get('custom_args', []))
     try:
@@ -3462,18 +3583,17 @@ def api_custom_models_add():
     except ValueError as exc:
         return jsonify(ok=False, error=f'invalid custom argument: {exc}'), 400
     family = infer_model_arg_family(
-        data.get('display_name', ''),
-        data.get('model_name', ''),
-        data.get('model_path', ''),
+        display_name,
+        model_name,
+        model_path,
     )
     if not custom_args_supplied and family:
         custom_args, _ = resolve_custom_args_for_family(family)
     model = {
         'id': str(uuid.uuid4())[:8],
-        'display_name': data['display_name'],
-        'model_name': data.get('model_name',
-                               data['display_name'].lower().replace(' ', '-')),
-        'model_path': data['model_path'],
+        'display_name': display_name,
+        'model_name': model_name,
+        'model_path': model_path,
         'mmproj_path': data.get('mmproj_path', ''),
         'ctx_size': str(data.get('ctx_size', '32768')),
         'custom_args': custom_args,
@@ -3863,11 +3983,41 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
     }
 
 
+def update_saved_config_values(name: str, updates: dict) -> dict:
+    safe_name = saved_config_name(name)
+    path = SAVED_CONFIGS_DIR / f'{safe_name}.json'
+    if not path.exists():
+        return {'ok': False, 'error': 'Config not found'}
+    if not isinstance(updates, dict):
+        return {'ok': False, 'error': 'Expected updates object'}
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return {'ok': False, 'error': 'Saved config is invalid'}
+        filtered = filter_config_updates(updates)
+        if not filtered:
+            return {'ok': True, 'name': safe_name, 'updated_keys': []}
+        data.update(filtered)
+        data['_timestamp'] = int(time.time())
+        path.write_text(json.dumps(data, indent=2))
+        return {'ok': True, 'name': safe_name, 'updated_keys': sorted(filtered.keys())}
+    except Exception as exc:
+        return {'ok': False, 'error': f'Could not update saved config: {exc}'}
+
+
 @app.route('/api/saved-configs/<name>/apply', methods=['POST'])
 def api_saved_configs_apply(name):
     data = request.get_json(silent=True) or {}
     result = apply_saved_config(name, launch=bool(data.get('launch')))
     status = 200 if result.get('ok') else (404 if result.get('error') == 'Config not found' else 500)
+    return jsonify(result), status
+
+
+@app.route('/api/saved-configs/<name>/patch', methods=['POST'])
+def api_saved_configs_patch(name):
+    data = request.get_json(silent=True) or {}
+    result = update_saved_config_values(name, data.get('updates', data))
+    status = 200 if result.get('ok') else (404 if result.get('error') == 'Config not found' else 400)
     return jsonify(result), status
 
 
@@ -4497,14 +4647,9 @@ def api_logs(name):
 
 def apply_default_saved_config_on_startup():
     default_name = get_default_saved_config_name()
-    if not default_name:
-        return
-    result = apply_saved_config(default_name, launch=False)
-    if result.get('ok'):
-        print(f'[llm-manager] Applied default saved config: {default_name}', flush=True)
-    else:
+    if default_name:
         print(
-            f'[llm-manager] Could not apply default saved config {default_name}: {result.get("error", "unknown")}',
+            f'[llm-manager] Default saved config is {default_name}; not applying it on manager startup.',
             flush=True,
         )
 

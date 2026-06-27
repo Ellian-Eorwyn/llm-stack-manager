@@ -29,19 +29,78 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 /* -- Header -- */
 header {
   background: var(--surface); border-bottom: 1px solid var(--border);
-  padding: 0 24px; display: flex; align-items: center; gap: 20px;
-  height: 58px; position: sticky; top: 0; z-index: 100;
+  padding: 10px 18px; display: flex; align-items: stretch; gap: 14px;
+  min-height: 58px; position: sticky; top: 0; z-index: 100;
+  flex-wrap: wrap;
 }
-.hdr-title { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.sidebar-toggle {
+  width: 38px;
+  min-height: 36px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+.sidebar-toggle:hover { border-color: var(--accent); }
+.hdr-title { font-size: 15px; font-weight: 700; white-space: nowrap; display: flex; align-items: center; }
 .hdr-title span { color: var(--accent); }
-.hdr-gpus  { display: flex; gap: 18px; flex: 1; overflow: hidden; }
-.gpu-chip  { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--dim); flex-shrink: 0; }
-.gpu-label { font-weight: 600; color: var(--text); }
-.bar-wrap  { width: 72px; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.hdr-gpus  {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 10px;
+  flex: 1 1 520px;
+  min-width: 280px;
+}
+.gpu-card  {
+  background: rgba(11,15,26,.58);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  min-width: 0;
+}
+.gpu-card-head,
+.gpu-stat-row,
+.gpu-process-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.gpu-card-head { margin-bottom: 6px; }
+.gpu-label { font-weight: 700; color: var(--text); font-size: 12px; }
+.gpu-name { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gpu-stat-row { color: var(--dim); font-size: 11px; margin-bottom: 5px; }
+.gpu-stat-row span { white-space: nowrap; }
+.bar-wrap  { width: 100%; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
 .bar-fill  { height: 100%; border-radius: 3px; transition: width .5s; background: var(--accent); }
 .bar-fill.hi { background: var(--warning); }
 .bar-fill.max { background: var(--danger); }
-.hdr-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.gpu-process-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 7px;
+}
+.gpu-process-row {
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.gpu-process-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gpu-process-mem {
+  color: var(--accent-h);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.gpu-process-empty { color: var(--muted); font-size: 11px; }
+.hdr-actions { display: flex; gap: 8px; flex: 0 1 auto; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
 /* -- Buttons -- */
 .btn { padding: 6px 14px; border: none; border-radius: var(--radius); cursor: pointer; font-size: 13px; font-weight: 500; transition: filter .15s, opacity .15s; line-height: 1; }
@@ -57,14 +116,101 @@ header {
 .btn:disabled { opacity: .45; cursor: not-allowed; filter: none !important; }
 .btn-active-model { background: var(--success); color: #fff; border-color: var(--success); }
 
-/* -- Tab nav -- */
-.tab-nav { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; gap: 2px; }
-.tab-btn { background: none; border: none; color: var(--dim); padding: 10px 16px; cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s, border-color .15s; }
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+/* -- App shell / side nav -- */
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: calc(100vh - 58px);
+  transition: grid-template-columns .15s ease;
+}
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+.side-nav {
+  position: sticky;
+  top: 58px;
+  height: calc(100vh - 58px);
+  overflow-y: auto;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 18px 12px;
+}
+.side-nav-title {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  margin: 2px 10px 8px;
+  text-transform: uppercase;
+}
+.side-nav-group { margin-bottom: 18px; }
+.nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-icon {
+  display: none;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(99,102,241,.12);
+  color: var(--accent-h);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.tab-btn,
+.side-cfg-btn {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--dim);
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  padding: 9px 10px;
+  text-align: left;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.tab-btn:hover,
+.side-cfg-btn:hover {
+  background: rgba(99,102,241,.08);
+  border-color: var(--border);
+  color: var(--text);
+}
+.tab-btn.active,
+.side-cfg-btn.active {
+  background: rgba(99,102,241,.16);
+  border-color: rgba(99,102,241,.45);
+  color: var(--text);
+}
+.side-cfg-btn {
+  font-size: 12px;
+  padding: 7px 10px;
+}
+.app-shell.sidebar-collapsed .side-nav {
+  padding: 14px 8px;
+}
+.app-shell.sidebar-collapsed .side-nav-title,
+.app-shell.sidebar-collapsed .nav-label {
+  display: none;
+}
+.app-shell.sidebar-collapsed .nav-icon {
+  display: inline-flex;
+}
+.app-shell.sidebar-collapsed .tab-btn,
+.app-shell.sidebar-collapsed .side-cfg-btn {
+  justify-content: center;
+  padding: 8px 6px;
+}
+.side-nav-secondary { display: none; }
+.side-nav-secondary.visible { display: block; }
 
 /* -- Layout -- */
-main { padding: 24px; max-width: 1300px; margin: 0 auto; }
+main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
@@ -283,6 +429,47 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
 @media (max-width: 900px) {
   .config-toolbar { grid-template-columns: 1fr; }
 }
+@media (max-width: 760px) {
+  header {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+  .hdr-title { flex: 1 1 auto; }
+  .hdr-gpus {
+    order: 3;
+    flex-basis: 100%;
+    min-width: 0;
+    grid-template-columns: 1fr;
+  }
+  .hdr-actions {
+    order: 4;
+    width: 100%;
+    justify-content: stretch;
+  }
+  .hdr-actions .btn { flex: 1 1 150px; }
+  .app-shell { grid-template-columns: 1fr; }
+  .app-shell.sidebar-collapsed { grid-template-columns: 1fr; }
+  .side-nav {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .app-shell.sidebar-collapsed .side-nav {
+    display: none;
+  }
+  .app-shell.sidebar-collapsed .side-nav-title,
+  .app-shell.sidebar-collapsed .nav-label {
+    display: inline;
+  }
+  .app-shell.sidebar-collapsed .nav-icon {
+    display: none;
+  }
+  .side-nav-group { margin-bottom: 10px; }
+  main { padding: 16px 12px; }
+}
 
 /* -- Add model panel -- */
 .add-model-panel {
@@ -411,9 +598,48 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
   color: var(--muted);
   font-size: 11px;
 }
+.template-manager {
+  display: grid;
+  gap: 14px;
+}
+.template-manager-top {
+  display: grid;
+  grid-template-columns: minmax(220px, .8fr) minmax(0, 1fr);
+  gap: 14px;
+}
+.template-manager textarea {
+  width: 100%;
+  min-height: 420px;
+  resize: vertical;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 12px;
+}
+.template-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chat-template-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  width: 100%;
+}
 @media (max-width: 640px) {
   .custom-arg-row {
     grid-template-columns: 1fr auto auto;
+  }
+  .template-manager-top {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -480,6 +706,7 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
 
 <!-- Header -->
 <header>
+  <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle sidebar" title="Toggle sidebar">Menu</button>
   <div class="hdr-title">LLM <span>Stack</span> Manager</div>
   <div class="hdr-gpus" id="gpu-stats"></div>
   <div class="hdr-actions">
@@ -489,13 +716,25 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
   </div>
 </header>
 
-<!-- Tab nav -->
-<nav class="tab-nav">
-  <button class="tab-btn active" data-tab="services">Services</button>
-  <button class="tab-btn"        data-tab="config">Configuration</button>
-  <button class="tab-btn"        data-tab="logs">Logs</button>
-</nav>
-
+<div class="app-shell" id="app-shell">
+<aside class="side-nav">
+  <div class="side-nav-group">
+    <div class="side-nav-title">Manager</div>
+    <button class="tab-btn active" data-tab="services"><span class="nav-icon">S</span><span class="nav-label">Services</span></button>
+    <button class="tab-btn" data-tab="tts"><span class="nav-icon">T</span><span class="nav-label">TTS</span></button>
+    <button class="tab-btn" data-tab="graphiti"><span class="nav-icon">G</span><span class="nav-label">Graphiti Monitor</span></button>
+    <button class="tab-btn" data-tab="config"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
+    <button class="tab-btn" data-tab="logs"><span class="nav-icon">L</span><span class="nav-label">Logs</span></button>
+  </div>
+  <div class="side-nav-group side-nav-secondary" id="config-side-nav">
+    <div class="side-nav-title">Config Sections</div>
+    {% for section in config_sections.keys() %}
+    <button class="side-cfg-btn {% if loop.first %}active{% endif %}"
+            data-section="{{ section }}"
+            onclick="showTab('config'); showCfgSection('{{ section }}')"><span class="nav-icon">{{ section[0] }}</span><span class="nav-label">{{ section }}</span></button>
+    {% endfor %}
+  </div>
+</aside>
 <main>
 
 <!-- ====== Services tab ====== -->
@@ -601,7 +840,7 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
       <div class="custom-args-note">Example: <code>--chat-template-kwargs '{"preserve_thinking": true}'</code> or <code>--jinja</code></div>
     </div>
     <div class="add-model-actions">
-      <button class="btn btn-success" onclick="addModel()">Add Model</button>
+      <button class="btn btn-success" id="custom-model-submit-btn" onclick="addModel()">Add Model</button>
       <button class="btn btn-ghost" onclick="toggleAddModel()">Cancel</button>
     </div>
   </div>
@@ -640,7 +879,7 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
 </div>
 
 <!-- ====== TTS tab ====== -->
-<div id="tab-tts" class="tab-panel" style="display:none">
+<div id="tab-tts" class="tab-panel">
   <div class="tts-grid">
     <div class="tts-panel">
       <div class="group-hdr">Gateway</div>
@@ -682,7 +921,7 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
 </div>
 
 <!-- ====== Graphiti monitor tab ====== -->
-<div id="tab-graphiti" class="tab-panel" style="display:none">
+<div id="tab-graphiti" class="tab-panel">
   <div class="quick-bar">
     <span class="qlabel">Graphiti Monitor</span>
     <button class="btn btn-primary btn-sm" onclick="refreshGraphitiAll()">Refresh</button>
@@ -811,11 +1050,17 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
 
 <!-- ====== Configuration tab ====== -->
 {% macro render_config_field(f, section) -%}
-<div class="field {% if f.type in ('path', 'custom_args') %}wide{% endif %}">
+<div class="field {% if f.type in ('path', 'executable_path', 'custom_args', 'template_manager') %}wide{% endif %}">
   <label for="cfg-{{ f.key }}">{{ f.label }}</label>
   {% if f.type == 'select' %}
   <select id="cfg-{{ f.key }}" name="{{ f.key }}" onchange="markDirty('{{ section }}')">
-    {% for opt in f.options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+    {% for opt in f.options %}
+    {% if opt is mapping %}
+    <option value="{{ opt.value }}">{{ opt.label }}</option>
+    {% else %}
+    <option value="{{ opt }}">{{ opt }}</option>
+    {% endif %}
+    {% endfor %}
   </select>
   {% elif f.type == 'custom_args' %}
   <input id="cfg-{{ f.key }}" name="{{ f.key }}" type="hidden" value="[]">
@@ -823,6 +1068,40 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
   <div class="custom-args-note">
     One flag per row. Example:
     <code>--chat-template-kwargs '{"preserve_thinking": true}'</code>
+  </div>
+  {% elif f.type == 'chat_template' %}
+  <select id="cfg-{{ f.key }}" name="{{ f.key }}" class="chat-template-select" onchange="markDirty('{{ section }}')">
+    <option value="">Model default</option>
+  </select>
+  {% elif f.type == 'template_manager' %}
+  <div class="template-manager" id="chat-template-manager">
+    <div class="template-manager-top">
+      <div class="field">
+        <label for="chat-template-list">Saved Templates</label>
+        <select id="chat-template-list" class="chat-template-select" onchange="selectChatTemplateForEdit(this.value)">
+          <option value="">-- Select template --</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="chat-template-name">Template Name</label>
+        <input id="chat-template-name" type="text" placeholder="e.g. Qwen cache fix">
+      </div>
+      <div class="field wide">
+        <label for="chat-template-description">Description</label>
+        <input id="chat-template-description" type="text" placeholder="Short note about what this template changes">
+      </div>
+    </div>
+    <div class="field wide">
+      <label for="chat-template-content">Jinja Template</label>
+      <textarea id="chat-template-content" spellcheck="false" placeholder="Paste llama.cpp Jinja chat template content here"></textarea>
+    </div>
+    <div class="template-actions">
+      <button class="btn btn-success btn-sm" type="button" onclick="saveChatTemplate(this)">Save Template</button>
+      <button class="btn btn-primary btn-sm" type="button" onclick="newChatTemplate()">New Template</button>
+      <button class="btn btn-danger btn-sm" type="button" onclick="deleteChatTemplate(this)">Delete Template</button>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="loadChatTemplates()">Refresh</button>
+      <span class="active-indicator" id="chat-template-status"></span>
+    </div>
   </div>
   {% elif f.type == 'path' %}
   <div class="path-picker">
@@ -834,6 +1113,11 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
            placeholder="{{ f.get('hint','') }}"
            oninput="markDirty('{{ section }}')">
   </div>
+  {% elif f.type == 'executable_path' %}
+  <input id="cfg-{{ f.key }}" name="{{ f.key }}"
+         type="text" class="mono"
+         placeholder="{{ f.get('hint','') }}"
+         oninput="markDirty('{{ section }}')">
   {% elif f.type == 'transcript_model' %}
   <div class="path-picker">
     <select class="transcript-model-select" data-target="cfg-{{ f.key }}" data-engine-id="{{ f.get('engine_id', '') }}" onchange="transcriptModelSelectChanged(this, 'cfg-{{ f.key }}'); markDirty('{{ section }}')">
@@ -861,11 +1145,15 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
   <div class="config-toolbar">
     <div class="saved-bar" style="margin-bottom:0;">
       <span class="qlabel" style="margin-right:4px;">Saved Configs</span>
-      <select id="saved-config-select">
+      <select id="saved-config-select" onchange="updateSavedConfigMeta()">
         <option value="">-- Select saved config --</option>
       </select>
-      <button class="btn btn-primary btn-sm" onclick="loadSavedConfig()">Load</button>
+      <button class="btn btn-primary btn-sm" onclick="loadSavedConfig(false)">Apply</button>
+      <button class="btn btn-success btn-sm" onclick="loadSavedConfig(true)">Apply + Launch</button>
+      <button class="btn btn-ghost btn-sm" onclick="setDefaultSavedConfig()">Set Default</button>
+      <button class="btn btn-ghost btn-sm" onclick="clearDefaultSavedConfig()">Clear Default</button>
       <button class="btn btn-danger btn-sm" onclick="deleteSavedConfig()">Delete</button>
+      <span class="active-indicator" id="saved-config-meta"></span>
       <div class="qdivider"></div>
       <input type="text" id="save-config-name" placeholder="Config name..." style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:var(--radius);font-size:13px;width:180px;">
       <button class="btn btn-success btn-sm" onclick="saveCurrentConfig()">Save Current</button>
@@ -905,6 +1193,8 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
             Tune the smaller task model used for fast utility work and background tasks.
             {% elif section == 'OCR' %}
             Configure the standalone GLM-OCR multimodal backend and its default extraction behavior.
+            {% elif section == 'Chat Templates' %}
+            Create and edit reusable llama.cpp Jinja templates, then select them in Shared Backend or Task Model.
             {% else %}
             Update this section and save it independently. Changes apply to the environment file used by the stack manager.
             {% endif %}
@@ -915,7 +1205,7 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
       {% if section == 'Shared Backend' %}
       {% set dense_keys = ['CHAT_DENSE_LABEL', 'CHAT_DENSE_MODEL_NAME', 'CHAT_DENSE_MODEL_PATH', 'CHAT_DENSE_MMPROJ_PATH', 'CHAT_DENSE_CTX_SIZE'] %}
       {% set moe_keys = ['CHAT_MOE_LABEL', 'CHAT_MOE_MODEL_NAME', 'CHAT_MOE_MODEL_PATH', 'CHAT_MOE_MMPROJ_PATH', 'CHAT_MOE_CTX_SIZE'] %}
-      {% set shared_keys = ['CHAT_MODEL_NAME', 'CHAT_N_PARALLEL', 'CHAT_BATCH_SIZE', 'CHAT_UBATCH_SIZE', 'CHAT_FLASH_ATTN', 'CHAT_JINJA', 'CHAT_FIT'] %}
+      {% set shared_keys = ['CHAT_MODEL_NAME', 'CHAT_N_PARALLEL', 'CHAT_BATCH_SIZE', 'CHAT_UBATCH_SIZE', 'CHAT_FLASH_ATTN', 'CHAT_JINJA', 'CHAT_TEMPLATE_ID', 'CHAT_FIT'] %}
       {% set gpu_keys = ['CHAT_GPU_VISIBLE_DEVICES', 'CHAT_DEVICE', 'CHAT_N_GPU_LAYERS', 'CHAT_MAIN_GPU', 'CHAT_TENSOR_SPLIT', 'CHAT_SPLIT_MODE', 'CHAT_KV_OFFLOAD', 'CHAT_OP_OFFLOAD', 'CHAT_MMPROJ_OFFLOAD', 'CHAT_CACHE_TYPE_K', 'CHAT_CACHE_TYPE_V', 'CHAT_NO_MMAP', 'CHAT_MLOCK'] %}
       {% set behavior_keys = ['CHAT_TEMP', 'CHAT_TOP_P', 'CHAT_TOP_K', 'CHAT_MIN_P', 'CHAT_REASONING_FORMAT'] %}
       {% set spec_keys = ['CHAT_SPEC_METHOD', 'CHAT_SPEC_NGRAM_MOD', 'CHAT_SPEC_DRAFT_MODEL_PATH', 'CHAT_SPEC_DRAFT_N_GPU_LAYERS', 'CHAT_SPEC_DRAFT_DEVICES', 'CHAT_SPEC_DRAFT_CTX_SIZE', 'CHAT_SPEC_DRAFT_N_MAX', 'CHAT_SPEC_DRAFT_N_MIN', 'CHAT_SPEC_DRAFT_P_MIN', 'CHAT_SPEC_DRAFT_P_SPLIT', 'CHAT_SPEC_NGRAM_MOD_N_MATCH', 'CHAT_SPEC_NGRAM_MOD_N_MIN', 'CHAT_SPEC_NGRAM_MOD_N_MAX'] %}
@@ -1025,7 +1315,7 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
       </div>
       {% elif section == 'Task Model' %}
       {% set task_identity_keys = ['TASK_MODEL_NAME', 'TASK_MODEL_PATH', 'TASK_MMPROJ_PATH', 'TASK_CTX_SIZE'] %}
-      {% set task_runtime_keys = ['TASK_N_PARALLEL', 'TASK_BATCH_SIZE', 'TASK_UBATCH_SIZE', 'TASK_FLASH_ATTN', 'TASK_JINJA', 'TASK_THINKING', 'TASK_REASONING_FORMAT', 'TASK_FIT'] %}
+      {% set task_runtime_keys = ['TASK_N_PARALLEL', 'TASK_BATCH_SIZE', 'TASK_UBATCH_SIZE', 'TASK_FLASH_ATTN', 'TASK_JINJA', 'TASK_CHAT_TEMPLATE_ID', 'TASK_THINKING', 'TASK_REASONING_FORMAT', 'TASK_FIT'] %}
       {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
       {% set task_sampling_keys = ['TASK_TEMP', 'TASK_TOP_P', 'TASK_TOP_K', 'TASK_MIN_P', 'TASK_PRESENCE_PENALTY', 'TASK_REPEAT_PENALTY'] %}
       <div class="cfg-panel-grid">
@@ -1370,6 +1660,7 @@ main { padding: 24px; max-width: 1300px; margin: 0 auto; }
 </div>
 
 </main>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -1395,24 +1686,63 @@ let transcriptRepoInfoByEngine = {};
 let transcriptDownloadJobIdByEngine = {};
 const builtInChatVariants = {{ builtin_chat_variants|tojson }};
 const builtInChatVariantMap = Object.fromEntries(builtInChatVariants.map(v => [v.id, v]));
+let savedConfigs = [];
+let chatTemplates = [];
+let editingChatTemplateId = '';
+
+// -- sidebar --
+function preferredSidebarCollapsed() {
+  const saved = localStorage.getItem('llmStackSidebarCollapsed');
+  if (saved !== null) return saved === '1';
+  return window.matchMedia('(max-width: 760px)').matches;
+}
+
+function setSidebarCollapsed(collapsed) {
+  const shell = document.getElementById('app-shell');
+  const btn = document.getElementById('sidebar-toggle');
+  if (!shell) return;
+  shell.classList.toggle('sidebar-collapsed', collapsed);
+  localStorage.setItem('llmStackSidebarCollapsed', collapsed ? '1' : '0');
+  if (btn) {
+    btn.textContent = collapsed ? 'Open' : 'Menu';
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+}
+
+function toggleSidebar() {
+  const shell = document.getElementById('app-shell');
+  setSidebarCollapsed(!shell?.classList.contains('sidebar-collapsed'));
+}
+
+function initSidebar() {
+  setSidebarCollapsed(preferredSidebarCollapsed());
+}
 
 // -- tabs --
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'config' && !Object.keys(cfgCurrent).length) loadConfig();
-    if (btn.dataset.tab === 'graphiti') initGraphitiTab();
+function showTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
   });
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  const panel = document.getElementById('tab-' + tab);
+  if (panel) panel.classList.add('active');
+  const configSideNav = document.getElementById('config-side-nav');
+  if (configSideNav) configSideNav.classList.toggle('visible', tab === 'config');
+  if (tab === 'config' && !Object.keys(cfgCurrent).length) loadConfig();
+  if (tab === 'graphiti') initGraphitiTab();
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => showTab(btn.dataset.tab));
 });
 
 function showCfgSection(name) {
   document.querySelectorAll('.cfg-tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.side-cfg-btn').forEach(b => b.classList.toggle('active', b.dataset.section === name));
   document.querySelectorAll('.cfg-section').forEach(s => s.classList.remove('active'));
-  document.querySelector(`.cfg-tab-btn[data-section="${name}"]`).classList.add('active');
-  document.getElementById('cfgsec-' + name.replace(/ /g, '-')).classList.add('active');
+  document.querySelectorAll(`.cfg-tab-btn[data-section="${name}"]`).forEach(b => b.classList.add('active'));
+  const section = document.getElementById('cfgsec-' + name.replace(/ /g, '-'));
+  if (section) section.classList.add('active');
 }
 
 function refreshBuiltInModelButtons(updates) {
@@ -1459,16 +1789,43 @@ function applyStatuses(statuses) {
 }
 
 function applyGpus(gpus) {
-  document.getElementById('gpu-stats').innerHTML = gpus.map(g => `
-    <div class="gpu-chip">
-      <span class="gpu-label">GPU${g.index}</span>
-      <div class="bar-wrap" title="${g.mem_used}/${g.mem_total} MiB | ${g.util}% | ${g.temp} C">
-        <div class="bar-fill ${g.mem_pct>90?'max':g.mem_pct>70?'hi':''}" style="width:${g.mem_pct}%"></div>
+  const el = document.getElementById('gpu-stats');
+  if (!el) return;
+  if (!gpus?.length) {
+    el.innerHTML = '<div class="gpu-card"><div class="gpu-process-empty">No GPU stats available</div></div>';
+    return;
+  }
+  el.innerHTML = gpus.map(g => {
+    const used = Number(g.mem_used || 0);
+    const total = Number(g.mem_total || 0);
+    const pct = Math.max(0, Math.min(100, Number(g.mem_pct || 0)));
+    const processRows = (g.processes || []).length
+      ? (g.processes || []).map(p => `
+        <div class="gpu-process-row" title="${escapeHtml(p.process_name || '')} pid ${escapeHtml(p.pid || '')}">
+          <span class="gpu-process-name">${escapeHtml(p.name || p.process_name || 'process')}</span>
+          <span class="gpu-process-mem">${escapeHtml(p.used_memory || 0)} MiB</span>
+        </div>`).join('')
+      : '<div class="gpu-process-empty">No compute processes</div>';
+    return `
+      <div class="gpu-card">
+        <div class="gpu-card-head">
+          <span class="gpu-label">GPU${escapeHtml(g.index)}</span>
+          <span class="gpu-name" title="${escapeHtml(g.name || '')}">${escapeHtml(g.name || '')}</span>
+        </div>
+        <div class="gpu-stat-row">
+          <span>${used}/${total} MiB (${pct}%)</span>
+          <span>${escapeHtml(g.util || 0)}% util</span>
+          <span>${escapeHtml(g.temp || 0)} C</span>
+        </div>
+        <div class="bar-wrap" title="${used}/${total} MiB | ${escapeHtml(g.util || 0)}% | ${escapeHtml(g.temp || 0)} C">
+          <div class="bar-fill ${pct>90?'max':pct>70?'hi':''}" style="width:${pct}%"></div>
+        </div>
+        <div class="gpu-process-list">
+          ${processRows}
+        </div>
       </div>
-      <span>${g.mem_used}/${g.mem_total}&nbsp;MiB</span>
-      <span>${g.util}%</span>
-      <span>${g.temp} C</span>
-    </div>`).join('');
+    `;
+  }).join('');
 }
 
 // -- tts --
@@ -1719,6 +2076,27 @@ function fillCustomModelIdentityFromPath(path = '', overwrite = false) {
     model.value = slugFromFilename(filename);
   }
   scheduleCustomArgPresetRefresh();
+}
+
+function ensureCustomModelIdentity() {
+  const selectedHfPath = document.getElementById('hf-model-file-select')?.value || '';
+  const modelPath = document.getElementById('new-model-path')?.value || '';
+  const identitySource = modelPath || selectedHfPath;
+  if (identitySource) {
+    fillCustomModelIdentityFromPath(identitySource);
+  }
+  const display = document.getElementById('new-display-name');
+  const model = document.getElementById('new-model-name');
+  if (!display.value.trim() && identitySource) {
+    display.value = displayNameFromFilename(identitySource);
+  }
+  if (!model.value.trim() && display.value.trim()) {
+    model.value = slugFromFilename(display.value.trim());
+  }
+  return {
+    displayName: display.value.trim(),
+    modelName: model.value.trim(),
+  };
 }
 
 async function initGraphitiTab() {
@@ -2206,6 +2584,152 @@ function initConfigArgEditors() {
   });
 }
 
+function setChatTemplateStatus(message = '') {
+  const el = document.getElementById('chat-template-status');
+  if (el) el.textContent = message;
+}
+
+function populateChatTemplateSelect(select, currentValue = '') {
+  if (!select) return;
+  select.innerHTML = '';
+  chatTemplates.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.id || '';
+    opt.textContent = t.id ? `${t.name || t.id} (${t.id})` : (t.name || 'Model default');
+    select.appendChild(opt);
+  });
+  select.value = currentValue || '';
+}
+
+function refreshChatTemplateSelects() {
+  document.querySelectorAll('.chat-template-select[name]').forEach(select => {
+    populateChatTemplateSelect(select, select.value);
+  });
+
+  const list = document.getElementById('chat-template-list');
+  if (list) {
+    list.innerHTML = '<option value="">-- Select template --</option>';
+    chatTemplates.filter(t => t.id).forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = `${t.name || t.id} (${t.id})`;
+      list.appendChild(opt);
+    });
+    list.value = editingChatTemplateId || '';
+  }
+}
+
+async function loadChatTemplates() {
+  try {
+    chatTemplates = await fetchJSON('/api/chat-templates');
+    refreshChatTemplateSelects();
+    setChatTemplateStatus(`${Math.max(chatTemplates.length - 1, 0)} saved templates`);
+  } catch (e) {
+    setChatTemplateStatus('Could not load templates');
+    toast('Could not load chat templates: ' + e, 'err');
+  }
+}
+
+function newChatTemplate() {
+  editingChatTemplateId = '';
+  const list = document.getElementById('chat-template-list');
+  if (list) list.value = '';
+  document.getElementById('chat-template-name').value = '';
+  document.getElementById('chat-template-description').value = '';
+  document.getElementById('chat-template-content').value = '';
+  setChatTemplateStatus('New template');
+}
+
+async function selectChatTemplateForEdit(templateId) {
+  editingChatTemplateId = templateId || '';
+  if (!editingChatTemplateId) {
+    newChatTemplate();
+    return;
+  }
+  try {
+    const d = await fetchJSON(`/api/chat-templates/${encodeURIComponent(editingChatTemplateId)}`);
+    if (!d.ok) {
+      toast(d.error || 'Template not found', 'err');
+      return;
+    }
+    document.getElementById('chat-template-name').value = d.name || editingChatTemplateId;
+    document.getElementById('chat-template-description').value = d.description || '';
+    document.getElementById('chat-template-content').value = d.content || '';
+    setChatTemplateStatus(`Editing ${editingChatTemplateId}`);
+  } catch (e) {
+    toast('Could not load template: ' + e, 'err');
+  }
+}
+
+async function saveChatTemplate(btn) {
+  const name = document.getElementById('chat-template-name').value.trim();
+  const description = document.getElementById('chat-template-description').value.trim();
+  const content = document.getElementById('chat-template-content').value;
+  if (!name || !content.trim()) {
+    toast('Template name and content are required', 'err');
+    return;
+  }
+  const orig = btn?.textContent || 'Save Template';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Saving...';
+  }
+  try {
+    const method = editingChatTemplateId ? 'PUT' : 'POST';
+    const url = editingChatTemplateId
+      ? `/api/chat-templates/${encodeURIComponent(editingChatTemplateId)}`
+      : '/api/chat-templates';
+    const d = await fetchJSON(url, method, { name, description, content });
+    if (!d.ok) {
+      toast(d.error || 'Could not save template', 'err');
+      return;
+    }
+    editingChatTemplateId = d.id || editingChatTemplateId;
+    await loadChatTemplates();
+    const list = document.getElementById('chat-template-list');
+    if (list) list.value = editingChatTemplateId;
+    setChatTemplateStatus(`Saved ${editingChatTemplateId}`);
+    toast('Chat template saved', 'ok');
+  } catch (e) {
+    toast('Could not save template: ' + e, 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  }
+}
+
+async function deleteChatTemplate(btn) {
+  if (!editingChatTemplateId) {
+    toast('Select a saved template first', 'err');
+    return;
+  }
+  if (!confirm(`Delete chat template "${editingChatTemplateId}"?`)) return;
+  const orig = btn?.textContent || 'Delete Template';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Deleting...';
+  }
+  try {
+    const d = await fetchJSON(`/api/chat-templates/${encodeURIComponent(editingChatTemplateId)}`, 'DELETE');
+    if (!d.ok) {
+      toast(d.error || 'Could not delete template', 'err');
+      return;
+    }
+    newChatTemplate();
+    await loadChatTemplates();
+    toast('Chat template deleted', 'ok');
+  } catch (e) {
+    toast('Could not delete template: ' + e, 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  }
+}
+
 // -- custom models --
 function setCustomArgFamilyBadge(familyLabel = '', source = '') {
   const badge = document.getElementById('custom-arg-family-badge');
@@ -2275,7 +2799,7 @@ function resetCustomModelForm() {
   document.getElementById('new-model-gguf-select').selectedIndex = 0;
   document.getElementById('new-mmproj-gguf-select').selectedIndex = 0;
   document.getElementById('add-model-title-text').textContent = 'Add Chat Model';
-  const addBtn = document.querySelector('#add-model-panel .btn-success');
+  const addBtn = document.getElementById('custom-model-submit-btn');
   if (addBtn) {
     addBtn.textContent = 'Add Model';
     addBtn.onclick = addModel;
@@ -2369,21 +2893,7 @@ async function loadHuggingFaceRepoFiles(btn) {
       setHfStatus(d.error || 'Failed to load repo files', 'err');
       return;
     }
-    huggingFaceRepoFiles = d.model_files || [];
-    const sel = document.getElementById('hf-model-file-select');
-    sel.innerHTML = '<option value="">-- Select model file --</option>';
-    huggingFaceRepoFiles.forEach(file => {
-      const opt = document.createElement('option');
-      opt.value = file.path;
-      const sizePart = file.size ? ` · ${formatBytes(file.size)}` : '';
-      opt.textContent = `${file.name}${sizePart}`;
-      sel.appendChild(opt);
-    });
-    document.getElementById('hf-download-meta').innerHTML = [
-      `<span class="meta-chip">Repo: ${escapeHtml(d.repo_id || '-')}</span>`,
-      `<span class="meta-chip">Revision: ${escapeHtml(d.revision || 'main')}</span>`,
-      `<span class="meta-chip">Models: ${escapeHtml(huggingFaceRepoFiles.length)}</span>`,
-    ].join('');
+    populateHuggingFaceRepoFiles(d);
     setHfStatus(huggingFaceRepoFiles.length ? 'Select a GGUF file to download' : 'No non-MMProj GGUF files found in this repo', huggingFaceRepoFiles.length ? 'ok' : 'err');
   } catch (e) {
     setHfStatus(`Failed to load repo files: ${e}`, 'err');
@@ -2391,6 +2901,44 @@ async function loadHuggingFaceRepoFiles(btn) {
     btn.disabled = false;
     btn.textContent = orig;
   }
+}
+
+function populateHuggingFaceRepoFiles(d) {
+  huggingFaceRepoFiles = d.model_files || [];
+  const sel = document.getElementById('hf-model-file-select');
+  sel.innerHTML = '<option value="">-- Select model file --</option>';
+  huggingFaceRepoFiles.forEach(file => {
+    const opt = document.createElement('option');
+    opt.value = file.path;
+    const sizePart = file.size ? ` · ${formatBytes(file.size)}` : '';
+    opt.textContent = `${file.name}${sizePart}`;
+    sel.appendChild(opt);
+  });
+  document.getElementById('hf-download-meta').innerHTML = [
+    `<span class="meta-chip">Repo: ${escapeHtml(d.repo_id || '-')}</span>`,
+    `<span class="meta-chip">Revision: ${escapeHtml(d.revision || 'main')}</span>`,
+    `<span class="meta-chip">Models: ${escapeHtml(huggingFaceRepoFiles.length)}</span>`,
+  ].join('');
+}
+
+async function loadHuggingFaceRepoFilesForAdd() {
+  const repoUrl = document.getElementById('hf-repo-url').value.trim();
+  if (!repoUrl) return false;
+  setHfStatus('Loading Hugging Face repo files...', '');
+  const d = await fetchJSON('/api/huggingface/repo-files', 'POST', { repo_url: repoUrl });
+  if (!d.ok) {
+    setHfStatus(d.error || 'Failed to load repo files', 'err');
+    return false;
+  }
+  populateHuggingFaceRepoFiles(d);
+  if (huggingFaceRepoFiles.length === 1) {
+    const sel = document.getElementById('hf-model-file-select');
+    sel.value = huggingFaceRepoFiles[0].path;
+    handleHuggingFaceModelSelection();
+    return true;
+  }
+  setHfStatus(huggingFaceRepoFiles.length ? 'Choose a GGUF file, then click Add Model again' : 'No non-MMProj GGUF files found in this repo', huggingFaceRepoFiles.length ? '' : 'err');
+  return false;
 }
 
 function handleHuggingFaceModelSelection() {
@@ -2409,6 +2957,7 @@ function handleHuggingFaceModelSelection() {
   if (mmprojRename) mmprojRename.value = file.renamed_mmproj || '';
   if (downloadBtn) downloadBtn.disabled = false;
   fillCustomModelIdentityFromPath(file.name || file.path);
+  scheduleCustomArgPresetRefresh();
   setHfStatus(file.matched_mmproj ? 'Model and MMProj ready to download' : 'Model ready to download; no MMProj found', 'ok');
 }
 
@@ -2779,6 +3328,60 @@ async function downloadSelectedHuggingFaceModel(btn) {
   }
 }
 
+async function ensureSelectedHuggingFaceModelDownloaded() {
+  const existingPath = document.getElementById('new-model-path').value.trim();
+  if (existingPath) {
+    ensureCustomModelIdentity();
+    return true;
+  }
+
+  const repoUrl = document.getElementById('hf-repo-url').value.trim();
+  let modelFile = document.getElementById('hf-model-file-select').value;
+  if (repoUrl && (!huggingFaceRepoFiles.length || !modelFile)) {
+    const ready = await loadHuggingFaceRepoFilesForAdd();
+    modelFile = document.getElementById('hf-model-file-select').value;
+    if (!ready && !modelFile) {
+      return false;
+    }
+  }
+  const match = huggingFaceRepoFiles.find(item => item.path === modelFile);
+  if (!repoUrl || !modelFile || !match) {
+    return false;
+  }
+
+  ensureCustomModelIdentity();
+  setHfStatus('Downloading selected model before adding it...', '');
+  const d = await fetchJSON('/api/huggingface/downloads', 'POST', {
+    repo_url: repoUrl,
+    model_file: modelFile,
+    mmproj_file: match.matched_mmproj || '',
+  });
+  if (!d.ok || !d.job) {
+    throw new Error(d.error || 'Failed to start download');
+  }
+
+  huggingFaceDownloadJobId = d.job.id;
+  const job = await pollHuggingFaceDownload(d.job.id);
+  if (!job || !job.result) {
+    throw new Error('Download did not complete');
+  }
+
+  await loadGgufFiles();
+
+  const downloadedModelPath = job.result.model_path || '';
+  const downloadedMmprojPath = job.result.mmproj_path || '';
+  const downloadedName = job.result.model_name || filenameFromPath(downloadedModelPath);
+
+  document.getElementById('new-model-path').value = downloadedModelPath;
+  document.getElementById('new-mmproj-path').value = downloadedMmprojPath;
+  fillCustomModelIdentityFromPath(downloadedName || downloadedModelPath);
+  selectGgufOption('new-model-gguf-select', downloadedModelPath);
+  selectGgufOption('new-mmproj-gguf-select', downloadedMmprojPath);
+  await maybeLoadCustomArgPreset(false);
+  setHfStatus('Download complete. Adding model...', 'ok');
+  return true;
+}
+
 async function loadCustomModels() {
   try {
     customModels = await fetchJSON('/api/custom-models');
@@ -2836,19 +3439,33 @@ function toggleAddModel() {
 }
 
 async function addModel() {
-  const displayName = document.getElementById('new-display-name').value.trim();
-  const modelName = document.getElementById('new-model-name').value.trim();
-  const modelPath = document.getElementById('new-model-path').value.trim();
-  const mmprojPath = document.getElementById('new-mmproj-path').value.trim();
-  const ctxSize = document.getElementById('new-ctx-size').value.trim();
-  const customArgs = getCustomArgValues();
-
-  if (!displayName || !modelPath) {
-    toast('Display name and model GGUF are required', 'err');
-    return;
+  const addBtn = document.getElementById('custom-model-submit-btn');
+  const orig = addBtn?.textContent || 'Add Model';
+  if (addBtn) {
+    addBtn.disabled = true;
+    addBtn.innerHTML = '<span class="spinner"></span> Adding...';
   }
 
   try {
+    const hasModelPath = await ensureSelectedHuggingFaceModelDownloaded();
+    if (!hasModelPath) {
+      toast('Select a local GGUF or load a Hugging Face repo and choose a model file', 'err');
+      return;
+    }
+
+    const identity = ensureCustomModelIdentity();
+    const displayName = identity.displayName;
+    const modelName = identity.modelName;
+    const modelPath = document.getElementById('new-model-path').value.trim();
+    const mmprojPath = document.getElementById('new-mmproj-path').value.trim();
+    const ctxSize = document.getElementById('new-ctx-size').value.trim();
+    const customArgs = getCustomArgValues();
+
+    if (!modelPath) {
+      toast('Model GGUF is required', 'err');
+      return;
+    }
+
     const d = await fetchJSON('/api/custom-models', 'POST', {
       display_name: displayName,
       model_name: modelName || undefined,
@@ -2864,7 +3481,15 @@ async function addModel() {
     } else {
       toast('Failed: ' + (d.error || 'unknown'), 'err');
     }
-  } catch (e) { toast('Error: ' + e, 'err'); }
+  } catch (e) {
+    setHfStatus(`Download/add failed: ${e}`, 'err');
+    toast('Error: ' + e, 'err');
+  } finally {
+    if (addBtn) {
+      addBtn.disabled = false;
+      addBtn.textContent = orig;
+    }
+  }
 }
 
 async function removeCustomModel(id) {
@@ -2903,7 +3528,7 @@ function editCustomModel(id) {
   });
 
   // Replace Add button with Update
-  const addBtn = panel.querySelector('.btn-success');
+  const addBtn = document.getElementById('custom-model-submit-btn');
   addBtn.textContent = 'Update Model';
   addBtn.onclick = async function() {
     const data = {
@@ -2946,6 +3571,7 @@ function selectGgufOption(selectId, path) {
 async function loadConfig() {
   try {
     if (!ggufFiles.length) await loadGgufFiles();
+    if (!chatTemplates.length) await loadChatTemplates();
     if (!Object.keys(transcriptionModelsByEngine).length) {
       await loadTranscriptionModels('parakeet-v3');
       await loadTranscriptionModels('whisperkit-large-v3');
@@ -2961,6 +3587,11 @@ async function loadConfig() {
         if (sel) selectGgufOption(sel.id || '', val);
       }
     }
+    refreshChatTemplateSelects();
+    document.querySelectorAll('.chat-template-select[name]').forEach(sel => {
+      const key = sel.name;
+      sel.value = cfgCurrent[key] || '';
+    });
     // Sync gguf selects with current values
     document.querySelectorAll('.gguf-path-select').forEach(sel => {
       const targetId = sel.dataset.target;
@@ -2994,6 +3625,10 @@ function markDirty(section) { cfgDirty[section] = true; }
 
 async function saveCfgSection(section, btn) {
   const sec = document.getElementById('cfgsec-' + section.replace(/ /g, '-'));
+  document.querySelectorAll('.custom-args-list[data-config-target]').forEach(list => {
+    const target = document.getElementById(list.dataset.configTarget);
+    if (target && sec.contains(target)) syncConfigArgInput(list.dataset.configTarget, true);
+  });
   const updates = {};
   sec.querySelectorAll('[name]').forEach(el => { updates[el.name] = el.value; });
 
@@ -3008,6 +3643,7 @@ async function saveCfgSection(section, btn) {
       cfgDirty[section] = false;
       const hint = document.getElementById('rhint-' + section.replace(/ /g, '-'));
       const restartNeeded = d.restart_needed || [];
+      await patchSelectedSavedConfig(section, updates);
       if (section === 'Transcription' && restartNeeded.includes('transcript-backend')) {
         hint.textContent = 'Restarting transcript-backend...';
         const restart = await fetchJSON('/api/service/transcript-backend/restart', 'POST');
@@ -3033,17 +3669,62 @@ async function saveCfgSection(section, btn) {
 }
 
 // -- saved configurations --
+async function patchSelectedSavedConfig(section, updates) {
+  const sel = document.getElementById('saved-config-select');
+  const name = sel?.value || '';
+  if (!name) return;
+  try {
+    const d = await fetchJSON(`/api/saved-configs/${name}/patch`, 'POST', { updates });
+    if (d.ok) {
+      await loadSavedConfigsList();
+      toast(`Updated saved profile "${name}" with ${section}`, 'ok');
+    } else if (d.error !== 'Config not found') {
+      toast(`Saved ${section}, but profile update failed: ${d.error || 'unknown'}`, 'err');
+    }
+  } catch (e) {
+    toast(`Saved ${section}, but profile update failed: ${e}`, 'err');
+  }
+}
+
+function savedConfigModelLabel(config) {
+  const active = config?.active_chat_model || {};
+  if (!active || !active.variant) return '';
+  if (active.label) return active.label;
+  if (active.kind === 'custom') return `Custom: ${active.variant}`;
+  return active.variant;
+}
+
+function updateSavedConfigMeta() {
+  const sel = document.getElementById('saved-config-select');
+  const meta = document.getElementById('saved-config-meta');
+  if (!sel || !meta) return;
+  const item = savedConfigs.find(c => c.name === sel.value);
+  if (!item) {
+    meta.textContent = '';
+    return;
+  }
+  const bits = [];
+  if (item.is_default) bits.push('default');
+  const model = savedConfigModelLabel(item);
+  if (model) bits.push(`model: ${model}`);
+  meta.textContent = bits.join(' | ');
+}
+
 async function loadSavedConfigsList() {
   try {
-    const configs = await fetchJSON('/api/saved-configs');
+    savedConfigs = await fetchJSON('/api/saved-configs');
     const sel = document.getElementById('saved-config-select');
+    const previous = sel.value;
     while (sel.options.length > 1) sel.remove(1);
-    configs.forEach(c => {
+    savedConfigs.forEach(c => {
       const opt = document.createElement('option');
       opt.value = c.name;
-      opt.textContent = c.display_name + (c.description ? ` - ${c.description}` : '');
+      const model = savedConfigModelLabel(c);
+      opt.textContent = `${c.is_default ? '* ' : ''}${c.display_name}${model ? ` [${model}]` : ''}${c.description ? ` - ${c.description}` : ''}`;
       sel.appendChild(opt);
     });
+    if (previous && savedConfigs.some(c => c.name === previous)) sel.value = previous;
+    updateSavedConfigMeta();
   } catch (e) { console.error('Failed to load saved configs:', e); }
 }
 
@@ -3059,6 +3740,8 @@ async function saveCurrentConfig() {
       toast(`Saved config: ${name}`, 'ok');
       document.getElementById('save-config-name').value = '';
       await loadSavedConfigsList();
+      document.getElementById('saved-config-select').value = d.name || name;
+      updateSavedConfigMeta();
     } else {
       toast('Failed: ' + (d.error || 'unknown'), 'err');
     }
@@ -3076,21 +3759,54 @@ function collectConfigFormValues() {
   return values;
 }
 
-async function loadSavedConfig() {
+async function loadSavedConfig(launch = false) {
   const sel = document.getElementById('saved-config-select');
   const name = sel.value;
   if (!name) { toast('Select a config to load', 'err'); return; }
 
-  if (!confirm(`Apply saved config "${name}"? This will overwrite current settings.`)) return;
+  const action = launch ? 'apply and launch' : 'apply';
+  if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} saved config "${name}"? This will overwrite current settings.`)) return;
 
   try {
-    const d = await fetchJSON(`/api/saved-configs/${name}/apply`, 'POST');
+    const d = await fetchJSON(`/api/saved-configs/${name}/apply`, 'POST', { launch });
     if (d.ok) {
-      toast('Config applied. Reloading values...', 'ok');
+      toast(launch ? 'Config applied and backend launch requested.' : 'Config applied. Reloading values...', 'ok');
       await loadConfig();
+      await refreshActiveModel();
+      await loadSavedConfigsList();
       if (d.restart_needed && d.restart_needed.length) {
         toast('Restart needed: ' + d.restart_needed.join(', '), 'info');
       }
+    } else {
+      toast('Failed: ' + (d.error || 'unknown'), 'err');
+    }
+  } catch (e) { toast('Error: ' + e, 'err'); }
+}
+
+async function setDefaultSavedConfig() {
+  const sel = document.getElementById('saved-config-select');
+  const name = sel.value;
+  if (!name) { toast('Select a config first', 'err'); return; }
+  try {
+    const d = await fetchJSON(`/api/saved-configs/${name}/default`, 'POST');
+    if (d.ok) {
+      toast(`Default config set: ${name}`, 'ok');
+      await loadSavedConfigsList();
+    } else {
+      toast('Failed: ' + (d.error || 'unknown'), 'err');
+    }
+  } catch (e) { toast('Error: ' + e, 'err'); }
+}
+
+async function clearDefaultSavedConfig() {
+  const sel = document.getElementById('saved-config-select');
+  const name = sel.value;
+  if (!name) { toast('Select a config first', 'err'); return; }
+  try {
+    const d = await fetchJSON(`/api/saved-configs/${name}/default`, 'DELETE');
+    if (d.ok) {
+      toast('Default config cleared', 'ok');
+      await loadSavedConfigsList();
     } else {
       toast('Failed: ' + (d.error || 'unknown'), 'err');
     }
@@ -3209,6 +3925,7 @@ async function fetchJSON(url, method = 'GET', body = null) {
 
 // -- boot --
 async function boot() {
+  initSidebar();
   initCollapsibleSections();
   initCustomModelForm();
   startPolling();

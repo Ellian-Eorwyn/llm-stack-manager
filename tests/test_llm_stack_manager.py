@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -26,9 +27,37 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertEqual(sections["CHAT_BEE_MODEL_PATH"], "BeeLLaMA Backend")
         self.assertEqual(sections["BEELLAMA_SERVER_BIN"], "BeeLLaMA Backend")
 
+    def test_beellama_spec_method_exposes_draft_mtp(self):
+        fields = {f["key"]: f for f in manager.CONFIG_FIELDS}
+        self.assertIn("draft-mtp", fields["CHAT_BEE_SPEC_METHOD"]["options"])
+
     def test_ocr_fields_restart_ocr_only(self):
         self.assertEqual(manager.RESTART_HINTS["OCR_MODEL_PATH"], ["ocr"])
         self.assertEqual(manager.RESTART_HINTS["OCR_PORT"], ["ocr"])
+
+    def test_ocr_gpu_placement_fields_are_exposed(self):
+        fields = {f["key"]: f for f in manager.CONFIG_FIELDS}
+        for key in (
+            "OCR_GPU_VISIBLE_DEVICES",
+            "OCR_MAIN_GPU",
+            "OCR_DEVICE",
+            "OCR_SPLIT_MODE",
+            "OCR_TENSOR_SPLIT",
+        ):
+            self.assertIn(key, fields)
+            self.assertEqual(manager.RESTART_HINTS[key], ["ocr"])
+        self.assertIn("0,1", fields["OCR_GPU_VISIBLE_DEVICES"].get("hint", ""))
+        self.assertIn("none", fields["OCR_SPLIT_MODE"]["options"])
+
+    def test_ocr_gpu_default_follows_chat_gpu_devices(self):
+        env = manager.normalize_env_keys({"CHAT_GPU_VISIBLE_DEVICES": "0,1"})
+        self.assertEqual(env["OCR_GPU_VISIBLE_DEVICES"], "0,1")
+
+    def test_chat_template_fields_are_exposed(self):
+        fields = {f["key"]: f for f in manager.CONFIG_FIELDS}
+        self.assertEqual(fields["CHAT_TEMPLATE_MANAGER"]["type"], "template_manager")
+        self.assertEqual(fields["CHAT_TEMPLATE_ID"]["type"], "chat_template")
+        self.assertEqual(fields["TASK_CHAT_TEMPLATE_ID"]["type"], "chat_template")
 
     def test_glmocr_sdk_fields_restart_sdk_only(self):
         self.assertIn("GLM-OCR SDK", manager.CORE_CONFIG_SECTIONS)
@@ -55,6 +84,19 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertTrue(manager.is_mmproj_gguf("mmproj-Qwen3.5-27B-f16.gguf", 800 * 1024**2))
         self.assertTrue(manager.is_mmproj_gguf("Qwen3.5-27B.projector.gguf", 800 * 1024**2))
         self.assertTrue(manager.is_mmproj_gguf("vision-clip.gguf", 800 * 1024**2))
+
+    def test_update_env_values_does_not_write_unrelated_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = pathlib.Path(tmp) / "llm-stack.env"
+            config_file.write_text("CHAT_TEMP=1.0\n")
+            with patch.object(manager, "CONFIG_FILE", config_file):
+                manager.update_env_values({"CHAT_TEMP": "0.6"})
+
+            content = config_file.read_text()
+
+        self.assertIn("CHAT_TEMP=0.6", content)
+        self.assertNotIn("CHAT_BEE_LABEL=", content)
+        self.assertNotIn("CHAT_DENSE_LABEL=", content)
 
 
 class OcrExtractTests(unittest.TestCase):
@@ -182,6 +224,26 @@ class OcrExtractTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["images"], ["data:application/pdf;base64,abc"])
 
 
+class ChatTemplateTests(unittest.TestCase):
+    def test_list_chat_templates_includes_jinja_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            template_dir = pathlib.Path(tmp)
+            (template_dir / "custom.jinja").write_text("{{ messages }}")
+            (template_dir / "templates.json").write_text(json.dumps({
+                "custom": {"name": "Custom Template", "description": "desc", "updated_at": 123}
+            }))
+            with (
+                patch.object(manager, "CHAT_TEMPLATES_DIR", template_dir),
+                patch.object(manager, "CHAT_TEMPLATES_META_FILE", template_dir / "templates.json"),
+            ):
+                templates = manager.list_chat_templates()
+
+        self.assertEqual(templates[0]["id"], "")
+        self.assertIn("custom", {item["id"] for item in templates})
+        custom = next(item for item in templates if item["id"] == "custom")
+        self.assertEqual(custom["name"], "Custom Template")
+
+
 class HuggingFaceRepoFileTests(unittest.TestCase):
     def test_repo_files_split_model_and_mmproj_candidates(self):
         repo_ref = {
@@ -206,6 +268,46 @@ class HuggingFaceRepoFileTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in body["model_files"]], ["Qwen3.5-27B-Q4_K_M.gguf"])
         self.assertEqual([item["name"] for item in body["mmproj_files"]], ["mmproj-Qwen3.5-27B-f16.gguf"])
         self.assertEqual(body["model_files"][0]["matched_mmproj"], "mmproj-Qwen3.5-27B-f16.gguf")
+
+
+class CustomModelApiTests(unittest.TestCase):
+    def test_add_custom_model_derives_names_from_model_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            custom_models_file = pathlib.Path(tmp) / "custom-models.json"
+            with (
+                manager.app.test_client() as client,
+                patch.object(manager, "CUSTOM_MODELS_FILE", custom_models_file),
+            ):
+                resp = client.post(
+                    "/api/custom-models",
+                    json={"model_path": "/models/Qwen3.5-27B-Q4_K_M.gguf"},
+                )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["model"]["display_name"], "Qwen3.5-27B-Q4_K_M")
+        self.assertEqual(body["model"]["model_name"], "qwen3.5-27b-q4_k_m")
+
+
+class SavedConfigTests(unittest.TestCase):
+    def test_patch_saved_config_updates_only_supplied_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_dir = pathlib.Path(tmp)
+            saved_path = saved_dir / "Default.json"
+            saved_path.write_text(json.dumps({
+                "CHAT_TEMP": "1.0",
+                "CHAT_TOP_K": "20",
+                "_name": "Default",
+            }))
+            with patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir):
+                result = manager.update_saved_config_values("Default", {"CHAT_TEMP": "0.6"})
+            data = json.loads(saved_path.read_text())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(data["CHAT_TEMP"], "0.6")
+        self.assertEqual(data["CHAT_TOP_K"], "20")
+        self.assertEqual(data["_name"], "Default")
 
 
 if __name__ == "__main__":

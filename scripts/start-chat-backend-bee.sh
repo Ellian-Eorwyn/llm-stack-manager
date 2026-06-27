@@ -11,6 +11,15 @@ source "${STACK_DIR}/config/llm-stack.env"
 
 BEE_SERVER_BIN="${BEELLAMA_SERVER_BIN:-${STACK_DIR}/deps/beellama.cpp/build/bin/llama-server}"
 BEE_SERVER_DIR="${BEE_SERVER_BIN%/*}"
+if [[ "${BEE_SERVER_BIN}" == *.gguf ]]; then
+    echo "[chat-backend-bee] BEELLAMA_SERVER_BIN points to a GGUF model, not the BeeLLaMA llama-server binary: ${BEE_SERVER_BIN}" >&2
+    echo "[chat-backend-bee] Set BEELLAMA_SERVER_BIN=${STACK_DIR}/deps/beellama.cpp/build/bin/llama-server and CHAT_BEE_MODEL_PATH to the model GGUF." >&2
+    exit 126
+fi
+if [[ ! -x "${BEE_SERVER_BIN}" ]]; then
+    echo "[chat-backend-bee] BeeLLaMA binary is not executable or does not exist: ${BEE_SERVER_BIN}" >&2
+    exit 126
+fi
 export LD_LIBRARY_PATH="${BEE_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
 export CUDA_VISIBLE_DEVICES="${CHAT_GPU_VISIBLE_DEVICES}"
 
@@ -123,6 +132,7 @@ fi
 
 SPEC_ARGS=()
 SPEC_METHOD="${CHAT_BEE_SPEC_METHOD:-off}"
+[[ "${SPEC_METHOD}" == "mtp" ]] && SPEC_METHOD="draft-mtp"
 if [[ "${SPEC_METHOD}" != "off" && "${SPEC_METHOD}" != "none" ]]; then
     SPEC_ARGS+=(--spec-type "${SPEC_METHOD}")
     if [[ -n "${CHAT_BEE_SPEC_DRAFT_MODEL_PATH:-}" ]]; then
