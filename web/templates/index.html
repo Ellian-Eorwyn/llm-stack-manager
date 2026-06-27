@@ -48,7 +48,7 @@ header {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
-  padding: 12px 24px; display: flex; align-items: stretch; gap: 16px;
+  padding: 12px 24px; display: flex; align-items: center; gap: 16px;
   min-height: 64px; z-index: 100;
   flex-shrink: 0;
   flex-wrap: wrap;
@@ -257,7 +257,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 .collapsed > .collapsible-body {
   display: none;
 }
-.svc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
+.svc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 12px; }
 .tts-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; margin-bottom: 24px; }
 .tts-panel {
   background: var(--surface); border: 1px solid var(--border);
@@ -870,11 +870,11 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         <div class="card-acts">
           <button class="btn btn-success btn-sm" onclick="svcAction('{{ svc.name }}','start',this)">Start</button>
           <button class="btn btn-danger  btn-sm" onclick="svcAction('{{ svc.name }}','stop',this)">Stop</button>
-          <button class="btn btn-ghost   btn-sm" onclick="svcAction('{{ svc.name }}','restart',this)">Restart</button>
-          <button class="btn btn-ghost   btn-sm" onclick="openLogs('{{ svc.name }}')">Logs</button>
           {% if svc.config_section %}
           <button class="btn btn-primary btn-sm" onclick="openServiceConfig('{{ svc.config_section }}')">Config</button>
           {% endif %}
+          <button class="btn btn-ghost   btn-sm" onclick="svcAction('{{ svc.name }}','restart',this)">Restart</button>
+          <button class="btn btn-ghost   btn-sm" onclick="openLogs('{{ svc.name }}')">Logs</button>
         </div>
       </div>
       {% endfor %}
