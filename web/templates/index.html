@@ -1823,6 +1823,10 @@ function getProcessColor(name) {
   return _processColors[name];
 }
 
+function formatG(mib) {
+  return (Number(mib) / 1000).toFixed(1) + 'G';
+}
+
 function applyGpus(gpus) {
   const el = document.getElementById('gpu-stats');
   if (!el) return;
@@ -1847,11 +1851,11 @@ function applyGpus(gpus) {
         knownUsed += pUsed;
         const pPct = total > 0 ? (pUsed / total * 100) : 0;
         
-        segmentsHtml += `<div class="bar-segment" style="width:${pPct}%; background-color:${color};" title="${escapeHtml(name)}: ${pUsed} MiB"></div>`;
+        segmentsHtml += `<div class="bar-segment" style="width:${pPct}%; background-color:${color};" title="${escapeHtml(name)}: ${formatG(pUsed)}"></div>`;
         itemsHtml += `<div class="gpu-process-item" title="${escapeHtml(name)} pid ${escapeHtml(p.pid || '')}">
           <span class="gpu-process-dot" style="background-color:${color};"></span>
           <span style="color:var(--text);">${escapeHtml(name)}</span>
-          <span style="font-family:var(--mono);">${pUsed}M</span>
+          <span style="font-family:var(--mono);">${formatG(pUsed)}</span>
         </div>`;
       });
     }
@@ -1859,12 +1863,12 @@ function applyGpus(gpus) {
     const otherUsed = Math.max(0, used - knownUsed);
     if (otherUsed > 0 && total > 0) {
       const otherPct = (otherUsed / total * 100);
-      segmentsHtml += `<div class="bar-segment" style="width:${otherPct}%; background-color:var(--dim);" title="Other: ${otherUsed} MiB"></div>`;
+      segmentsHtml += `<div class="bar-segment" style="width:${otherPct}%; background-color:var(--dim);" title="Other: ${formatG(otherUsed)}"></div>`;
       if (itemsHtml) {
         itemsHtml += `<div class="gpu-process-item" title="Other non-llm processes">
           <span class="gpu-process-dot" style="background-color:var(--dim);"></span>
           <span style="color:var(--text);">Other</span>
-          <span style="font-family:var(--mono);">${otherUsed}M</span>
+          <span style="font-family:var(--mono);">${formatG(otherUsed)}</span>
         </div>`;
       }
     }
@@ -1882,11 +1886,11 @@ function applyGpus(gpus) {
           <span class="gpu-name" title="${escapeHtml(g.name || '')}">${escapeHtml(g.name || '')}</span>
         </div>
         <div class="gpu-stat-row">
-          <span>${used}/${total} MiB (${pct}%)</span>
+          <span>${formatG(used)}/${formatG(total)} (${pct}%)</span>
           <span>${escapeHtml(g.util || 0)}% util</span>
           <span>${escapeHtml(g.temp || 0)} C</span>
         </div>
-        <div class="bar-wrap" title="${used}/${total} MiB | ${escapeHtml(g.util || 0)}% | ${escapeHtml(g.temp || 0)} C">
+        <div class="bar-wrap" title="${formatG(used)}/${formatG(total)} | ${escapeHtml(g.util || 0)}% | ${escapeHtml(g.temp || 0)} C">
           ${segmentsHtml}
         </div>
         ${itemsHtml}
