@@ -11,16 +11,20 @@
 # =============================================================================
 set -euo pipefail
 
+STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/cross-platform.sh
+source "${STACK_DIR}/scripts/cross-platform.sh"
+
 VARIANT="${1:-}"
 
 if [[ "${VARIANT}" != "dense" && "${VARIANT}" != "moe" && "${VARIANT}" != "bee" ]]; then
     echo "Usage: sudo bash switch-chat-model.sh [dense|moe|bee]"
     echo ""
     echo "Current status:"
-    systemctl is-active chat-backend-dense 2>/dev/null && echo "  chat-backend-dense: active" || echo "  chat-backend-dense: inactive"
-    systemctl is-active chat-backend-moe 2>/dev/null && echo "  chat-backend-moe: active" || echo "  chat-backend-moe: inactive"
-    systemctl is-active chat-backend-bee 2>/dev/null && echo "  chat-backend-bee: active" || echo "  chat-backend-bee: inactive"
-    systemctl is-active chat-proxy       2>/dev/null && echo "  chat-proxy:       active" || echo "  chat-proxy:       inactive"
+    svc_is_active chat-backend-dense 2>/dev/null && echo "  chat-backend-dense: active" || echo "  chat-backend-dense: inactive"
+    svc_is_active chat-backend-moe 2>/dev/null && echo "  chat-backend-moe: active" || echo "  chat-backend-moe: inactive"
+    svc_is_active chat-backend-bee 2>/dev/null && echo "  chat-backend-bee: active" || echo "  chat-backend-bee: inactive"
+    svc_is_active chat-proxy       2>/dev/null && echo "  chat-proxy:       active" || echo "  chat-proxy:       inactive"
     exit 1
 fi
 
@@ -47,15 +51,15 @@ CHAT_BACKENDS=(
 echo "[1/2] Stopping other chat backends..."
 for svc in "${CHAT_BACKENDS[@]}"; do
     [[ "${svc}" == "${START_UNIT}" ]] && continue
-    if systemctl is-active --quiet "${svc}" 2>/dev/null; then
+    if svc_is_active "${svc}" 2>/dev/null; then
         echo "  stopping ${svc}..."
-        systemctl stop "${svc}"
+        svc_stop "${svc}"
     fi
 done
 
 # Start the requested variant
 echo "[2/2] Starting ${START_UNIT}..."
-systemctl start "${START_UNIT}"
+svc_start "${START_UNIT}"
 echo "  started."
 
 echo ""
@@ -63,4 +67,8 @@ echo "=== Done. Chat endpoints are loading the ${VARIANT} model. ==="
 echo ""
 echo "The proxy on ports 8003/8004 will return 503 until the model finishes"
 echo "loading. Watch progress with:"
-echo "  journalctl -u ${START_UNIT} -f"
+if is_linux; then
+    echo "  journalctl -u ${START_UNIT} -f"
+else
+    echo "  tail -f ${STACK_DIR}/logs/${START_UNIT}.stdout.log"
+fi

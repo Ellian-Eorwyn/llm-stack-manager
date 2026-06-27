@@ -25,6 +25,100 @@ from urllib import request as urlrequest
 from urllib.parse import quote, unquote, urlparse
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
+import sys
+
+class ServiceManager:
+    IS_MAC = sys.platform == 'darwin'
+
+    @classmethod
+    def run_cmd(cls, cmd, timeout=30):
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    @classmethod
+    def is_active(cls, name: str) -> bool:
+        if cls.IS_MAC:
+            r = cls.run_cmd(["launchctl", "list", f"com.llmstack.{name}"], timeout=5)
+            if r.returncode != 0:
+                return False
+            try:
+                import json
+                data = json.loads(r.stdout.strip())
+                return int(data.get("PID", 0)) > 0
+            except Exception:
+                return False
+        else:
+            r = cls.run_cmd(["systemctl", "is-active", name], timeout=5)
+            return r.stdout.strip() == "active"
+
+    @classmethod
+    def start(cls, name: str, timeout=30) -> subprocess.CompletedProcess:
+        if cls.IS_MAC:
+            label = f"com.llmstack.{name}"
+            plist = f"/Library/LaunchDaemons/{label}.plist"
+            cls.run_cmd(["launchctl", "bootout", f"system/{label}"])
+            return cls.run_cmd(["launchctl", "bootstrap", "system", plist], timeout=timeout)
+        else:
+            return cls.run_cmd(["systemctl", "start", name], timeout=timeout)
+
+    @classmethod
+    def stop(cls, name: str, timeout=30) -> subprocess.CompletedProcess:
+        if cls.IS_MAC:
+            label = f"com.llmstack.{name}"
+            return cls.run_cmd(["launchctl", "bootout", f"system/{label}"], timeout=timeout)
+        else:
+            return cls.run_cmd(["systemctl", "stop", name], timeout=timeout)
+
+    @classmethod
+    def restart(cls, name: str, timeout=120) -> tuple[int, str]:
+        if cls.IS_MAC:
+            cls.stop(name, timeout=timeout)
+            r = cls.start(name, timeout=timeout)
+            return r.returncode, (r.stdout + r.stderr).strip()
+        else:
+            r = cls.run_cmd(["systemctl", "restart", name], timeout=timeout)
+            return r.returncode, (r.stdout + r.stderr).strip()
+
+    @classmethod
+    def action(cls, act: str, name: str, timeout=30) -> tuple[int, str]:
+        if act == "start":
+            r = cls.start(name, timeout=timeout)
+            return r.returncode, (r.stdout + r.stderr).strip()
+        elif act == "stop":
+            r = cls.stop(name, timeout=timeout)
+            return r.returncode, (r.stdout + r.stderr).strip()
+        elif act == "restart":
+            return cls.restart(name, timeout=timeout)
+        else:
+            return 1, "unsupported action"
+
+    @classmethod
+    def get_pid(cls, name: str) -> int:
+        if cls.IS_MAC:
+            label = f"com.llmstack.{name}"
+            r = cls.run_cmd(["launchctl", "list", label], timeout=2)
+            if r.returncode == 0:
+                try:
+                    import json
+                    return int(json.loads(r.stdout.strip()).get("PID", 0))
+                except Exception:
+                    return 0
+            return 0
+        else:
+            r = cls.run_cmd(["systemctl", "show", name, "--property=MainPID", "--value"], timeout=2)
+            try:
+                return int((r.stdout or "0").strip() or "0")
+            except Exception:
+                return 0
+
+    @classmethod
+    def is_installed(cls, name: str) -> bool:
+        if cls.IS_MAC:
+            from pathlib import Path
+            plist = Path(f"/Library/LaunchDaemons/com.llmstack.{name}.plist")
+            return plist.exists()
+        else:
+            r = cls.run_cmd(["systemctl", "show", name, "--property=LoadState", "--value"], timeout=5)
+            return r.returncode == 0 and r.stdout.strip() != "not-found"
 
 app = Flask(__name__)
 
@@ -135,16 +229,16 @@ TTS_BACKEND_SERVICES = []
 TTS_MANAGED_SERVICES = []
 TRANSCRIPT_MANAGED_SERVICE = ""
 SERVICES = [
-    {"group": "chat",      "name": "chat-backend-dense", "label": "Backend Dense", "desc": "Dense model preset - shared backend", "ports": "8010 (internal)"},
-    {"group": "chat",      "name": "chat-backend-moe", "label": "Backend MoE",   "desc": "MoE model preset - shared backend",   "ports": "8010 (internal)"},
-    {"group": "chat",      "name": "chat-backend-bee", "label": "Backend BeeLLaMA", "desc": "BeeLLaMA DFlash/TurboQuant backend", "ports": "8010 (internal)"},
-    {"group": "chat",      "name": "chat-backend",     "label": "Backend (Custom)", "desc": "Custom model - shared backend",  "ports": "8010 (internal)"},
+    {"group": "chat",      "name": "chat-backend-dense", "label": "Backend Dense", "desc": "Dense model preset - shared backend", "ports": "8010 (internal)", "config_section": "Shared Backend"},
+    {"group": "chat",      "name": "chat-backend-moe", "label": "Backend MoE",   "desc": "MoE model preset - shared backend",   "ports": "8010 (internal)", "config_section": "Shared Backend"},
+    {"group": "chat",      "name": "chat-backend-bee", "label": "Backend BeeLLaMA", "desc": "BeeLLaMA DFlash/TurboQuant backend", "ports": "8010 (internal)", "config_section": "BeeLLaMA Backend"},
+    {"group": "chat",      "name": "chat-backend",     "label": "Backend (Custom)", "desc": "Custom model - shared backend",  "ports": "8010 (internal)", "config_section": "Shared Backend"},
     {"group": "chat",      "name": "chat-proxy",       "label": "Chat Proxy",   "desc": "Routes think/chat/code from one backend", "ports": "8003 / 8004 / 8008"},
-    {"group": "auxiliary", "name": "embed",        "label": "Embedding",    "desc": "Embedding model",                   "ports": "8005"},
-    {"group": "auxiliary", "name": "rerank",         "label": "Reranker",     "desc": "Reranker model",                    "ports": "8006"},
-    {"group": "auxiliary", "name": "task",             "label": "Task",         "desc": "Small fast task model",             "ports": "8007"},
-    {"group": "auxiliary", "name": "ocr",              "label": "OCR Model",    "desc": "GLM-OCR llama.cpp model backend",      "ports": "8009"},
-    {"group": "auxiliary", "name": "glmocr-sdk",       "label": "OCR SDK",      "desc": "Local GLM-OCR layout/PDF parser",       "ports": "5002"},
+    {"group": "auxiliary", "name": "embed",        "label": "Embedding",    "desc": "Embedding model",                   "ports": "8005", "config_section": "Embedding"},
+    {"group": "auxiliary", "name": "rerank",         "label": "Reranker",     "desc": "Reranker model",                    "ports": "8006", "config_section": "Reranker"},
+    {"group": "auxiliary", "name": "task",             "label": "Task",         "desc": "Small fast task model",             "ports": "8007", "config_section": "Task Model"},
+    {"group": "auxiliary", "name": "ocr",              "label": "OCR Model",    "desc": "GLM-OCR llama.cpp model backend",      "ports": "8009", "config_section": "OCR"},
+    {"group": "auxiliary", "name": "glmocr-sdk",       "label": "OCR SDK",      "desc": "Local GLM-OCR layout/PDF parser",       "ports": "5002", "config_section": "GLM-OCR SDK"},
     {"group": "auxiliary", "name": "honcho-api",       "label": "Honcho API",   "desc": "Local Honcho memory API",           "ports": "8090"},
     {"group": "auxiliary", "name": "honcho-deriver",   "label": "Honcho Worker", "desc": "Local Honcho background deriver",   "ports": "worker"},
 ]
@@ -1363,11 +1457,12 @@ def get_service_status(name: str) -> str:
             return output.strip() or 'unknown'
         return 'failed'
     try:
-        r = subprocess.run(
-            ['systemctl', 'is-active', name],
-            capture_output=True, text=True, timeout=5,
-        )
-        return r.stdout.strip()
+        if ServiceManager.is_active(name):
+            return 'active'
+        elif ServiceManager.is_installed(name):
+            return 'inactive'
+        else:
+            return 'unknown'
     except Exception:
         return 'unknown'
 
@@ -1441,15 +1536,14 @@ def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str
         return ok, output, [BUILTIN_CHAT_VARIANT_BY_ID[variant]["service"], "chat-proxy"]
 
     if service != "chat-backend":
-        subprocess.run(['systemctl', 'start', 'chat-proxy'], capture_output=True, timeout=30)
+        ServiceManager.start('chat-proxy')
         return True, "No saved chat backend was active; left chat backend unchanged.", []
 
     for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend-bee', 'chat-backend',
                 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
-        subprocess.run(['systemctl', 'stop', svc], capture_output=True, timeout=30)
-    r = subprocess.run(['systemctl', 'start', 'chat-backend'],
-                       capture_output=True, text=True, timeout=30)
-    subprocess.run(['systemctl', 'start', 'chat-proxy'], capture_output=True, timeout=30)
+        ServiceManager.stop(svc)
+    r = ServiceManager.start('chat-backend')
+    ServiceManager.start('chat-proxy')
     return r.returncode == 0, (r.stdout + r.stderr).strip(), ["chat-backend", "chat-proxy"]
 
 
@@ -1460,11 +1554,7 @@ def service_main_pids() -> dict[int, str]:
         if not name:
             continue
         try:
-            r = subprocess.run(
-                ["systemctl", "show", name, "--property=MainPID", "--value"],
-                capture_output=True, text=True, timeout=2,
-            )
-            pid = int((r.stdout or "0").strip() or "0")
+            pid = ServiceManager.get_pid(name)
             if pid > 0:
                 mapping[pid] = name
         except Exception:
@@ -1906,8 +1996,8 @@ def update_llamacpp_and_restart_active_services() -> tuple[bool, str, list[str]]
         restart_failures: list[str] = []
 
         for svc in active_model_services:
-            cmd = ["systemctl", "restart", svc]
-            rc, out = run_command(cmd, timeout=120)
+            cmd = ["ServiceManager.restart", svc]
+            rc, out = ServiceManager.restart(svc, timeout=120)
             append_command_log(lines, cmd, rc, out)
             if rc == 0:
                 restarted.append(svc)
@@ -1915,8 +2005,8 @@ def update_llamacpp_and_restart_active_services() -> tuple[bool, str, list[str]]
                 restart_failures.append(svc)
 
         if get_service_status(LLAMACPP_PROXY_SERVICE) == "active":
-            cmd = ["systemctl", "restart", LLAMACPP_PROXY_SERVICE]
-            rc, out = run_command(cmd, timeout=120)
+            cmd = ["ServiceManager.restart", LLAMACPP_PROXY_SERVICE]
+            rc, out = ServiceManager.restart(LLAMACPP_PROXY_SERVICE, timeout=120)
             append_command_log(lines, cmd, rc, out)
             if rc == 0:
                 restarted.append(LLAMACPP_PROXY_SERVICE)
@@ -1942,13 +2032,7 @@ def is_tts_service(name: str) -> bool:
 
 def systemd_unit_exists(name: str) -> bool:
     try:
-        r = subprocess.run(
-            ['systemctl', 'show', name, '--property=LoadState', '--value'],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode != 0:
-            return False
-        return r.stdout.strip() not in ('', 'not-found', 'masked')
+        return ServiceManager.is_installed(name)
     except Exception:
         return False
 
@@ -3129,11 +3213,8 @@ def api_service_action(name, action):
         ok, output = run_tts_manager(name, action)
         return jsonify(ok=ok, output=output)
     try:
-        r = subprocess.run(
-            ['systemctl', action, name],
-            capture_output=True, text=True, timeout=30,
-        )
-        return jsonify(ok=(r.returncode == 0), output=(r.stdout + r.stderr).strip())
+        rc, output = ServiceManager.action(action, name, timeout=30)
+        return jsonify(ok=(rc == 0), output=output)
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
 
@@ -3326,7 +3407,7 @@ def api_switch(variant):
     if variant in BUILTIN_CHAT_VARIANT_IDS:
         # Stop generic backend if running, then use existing switch script
         for svc in ('chat-backend', 'chat-backend-bee', 'qwen-chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b'):
-            subprocess.run(['systemctl', 'stop', svc], capture_output=True, timeout=30)
+            ServiceManager.stop(svc)
         ok, output = run_script('switch-chat-model.sh', variant)
         return jsonify(ok=ok, output=output)
 
@@ -3338,7 +3419,7 @@ def api_switch(variant):
 
     # Stop all chat backends
     for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend-bee', 'chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
-        subprocess.run(['systemctl', 'stop', svc], capture_output=True, timeout=30)
+        ServiceManager.stop(svc)
 
     # Update env with custom model paths
     updates = {

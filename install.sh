@@ -3,13 +3,16 @@
 set -euo pipefail
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/cross-platform.sh
+source "${STACK_DIR}/scripts/cross-platform.sh"
+
 CONFIG_DIR="${STACK_DIR}/config"
 CONFIG_FILE="${CONFIG_DIR}/llm-stack.env"
 EXAMPLE_CONFIG="${CONFIG_DIR}/llm-stack.env.example"
 HONCHO_ENV_TEMPLATE="${CONFIG_DIR}/honcho.env.example"
 HONCHO_ENV_FILE="${CONFIG_DIR}/honcho.env"
-SERVICE_USER="$(stat -c '%U' "${STACK_DIR}")"
-SERVICE_GROUP="$(stat -c '%G' "${STACK_DIR}")"
+SERVICE_USER="$(cp_stat_user "${STACK_DIR}")"
+SERVICE_GROUP="$(cp_stat_group "${STACK_DIR}")"
 
 if [[ "${EUID}" -ne 0 ]]; then
     echo "Run with sudo: sudo bash ${STACK_DIR}/install.sh" >&2
@@ -194,12 +197,13 @@ else
     fi
 fi
 
-install_unit() {
-    local unit_name="$1"
-    local description="$2"
-    local script="$3"
-    local timeout="${4:-300}"
-    cat > "/etc/systemd/system/${unit_name}.service" <<UNIT
+if is_linux; then
+    install_unit() {
+        local unit_name="$1"
+        local description="$2"
+        local script="$3"
+        local timeout="${4:-300}"
+        cat > "/etc/systemd/system/${unit_name}.service" <<UNIT
 [Unit]
 Description=${description}
 After=network.target
@@ -222,11 +226,11 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 UNIT
-    chmod 644 "/etc/systemd/system/${unit_name}.service"
-    echo "  installed: ${unit_name}.service"
-}
+        chmod 644 "/etc/systemd/system/${unit_name}.service"
+        echo "  installed: ${unit_name}.service"
+    }
 
-cat > /etc/systemd/system/llm-manager.service <<UNIT
+    cat > /etc/systemd/system/llm-manager.service <<UNIT
 [Unit]
 Description=LLM Stack Manager - web UI
 After=network.target
@@ -249,65 +253,144 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 UNIT
-chmod 644 /etc/systemd/system/llm-manager.service
-echo "  installed: llm-manager.service"
+    chmod 644 /etc/systemd/system/llm-manager.service
+    echo "  installed: llm-manager.service"
 
-install_unit "think"             "LLM Chat Thinking Legacy - llama-server"          "start-think.sh"             300
-install_unit "nothink"           "LLM Chat Nothink Legacy - llama-server"          "start-nothink.sh"           300
-install_unit "chat-backend"      "LLM Chat Custom Shared Backend - llama-server"   "start-chat-backend.sh"      300
-install_unit "chat-backend-dense"  "LLM Chat Dense Shared Backend - llama-server"    "start-chat-backend-dense.sh"  300
-install_unit "chat-backend-moe"  "LLM Chat MoE Shared Backend - llama-server"      "start-chat-backend-moe.sh"  300
-install_unit "chat-backend-bee"  "LLM Chat BeeLLaMA Shared Backend - llama-server" "start-chat-backend-bee.sh"  300
-install_unit "chat-proxy"        "LLM Chat Proxy - think/chat/code ports"          "start-chat-proxy.sh"        30
-install_unit "embed"         "LLM Embedding Model - llama-server"              "start-embed.sh"         120
-install_unit "rerank"          "LLM Reranker Model - llama-server"               "start-rerank.sh"          120
-install_unit "task"              "LLM Task Model - llama-server"                   "start-task.sh"              120
-install_unit "ocr"               "LLM OCR GLM-OCR Backend - llama-server"          "start-ocr.sh"               120
-install_unit "glmocr-sdk"        "LLM OCR GLM-OCR SDK Parser"                      "start-glmocr-sdk.sh"        300
-if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-    install_unit "honcho-api"     "Local Honcho Memory API"                         "start-honcho-api.sh"        120
-    install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
+    install_unit "think"             "LLM Chat Thinking Legacy - llama-server"          "start-think.sh"             300
+    install_unit "nothink"           "LLM Chat Nothink Legacy - llama-server"          "start-nothink.sh"           300
+    install_unit "chat-backend"      "LLM Chat Custom Shared Backend - llama-server"   "start-chat-backend.sh"      300
+    install_unit "chat-backend-dense"  "LLM Chat Dense Shared Backend - llama-server"    "start-chat-backend-dense.sh"  300
+    install_unit "chat-backend-moe"  "LLM Chat MoE Shared Backend - llama-server"      "start-chat-backend-moe.sh"  300
+    install_unit "chat-backend-bee"  "LLM Chat BeeLLaMA Shared Backend - llama-server" "start-chat-backend-bee.sh"  300
+    install_unit "chat-proxy"        "LLM Chat Proxy - think/chat/code ports"          "start-chat-proxy.sh"        30
+    install_unit "embed"         "LLM Embedding Model - llama-server"              "start-embed.sh"         120
+    install_unit "rerank"          "LLM Reranker Model - llama-server"               "start-rerank.sh"          120
+    install_unit "task"              "LLM Task Model - llama-server"                   "start-task.sh"              120
+    install_unit "ocr"               "LLM OCR GLM-OCR Backend - llama-server"          "start-ocr.sh"               120
+    install_unit "glmocr-sdk"        "LLM OCR GLM-OCR SDK Parser"                      "start-glmocr-sdk.sh"        300
+    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+        install_unit "honcho-api"     "Local Honcho Memory API"                         "start-honcho-api.sh"        120
+        install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
+    fi
+
+    cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service|" /etc/systemd/system/chat-proxy.service
+    cp_sed_inplace "s|^After=network.target$|After=network.target ocr.service|" /etc/systemd/system/glmocr-sdk.service
+    cp_sed_inplace "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
+    cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
+    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+        cp_sed_inplace "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service embed.service|" /etc/systemd/system/honcho-api.service
+        cp_sed_inplace "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service embed.service" /etc/systemd/system/honcho-api.service
+        cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service embed.service|" /etc/systemd/system/honcho-deriver.service
+        cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service embed.service" /etc/systemd/system/honcho-deriver.service
+    fi
+    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
+    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
+    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-bee.service
+    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service" /etc/systemd/system/chat-backend.service
+
+    systemctl daemon-reload
+
+    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
+    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+        DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
+    fi
+    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe chat-backend-bee ocr glmocr-sdk)
+    LEGACY_SERVICES=(
+        qwen-think
+        qwen-nothink
+        qwen-chat-backend
+        qwen-chat-backend-27b
+        qwen-chat-backend-35b
+        qwen-chat-proxy
+        qwen-embedding
+        qwen-reranker
+        qwen-task
+    )
+    for svc in "${NON_DEFAULT_SERVICES[@]}" "${LEGACY_SERVICES[@]}"; do
+        systemctl disable "${svc}" 2>/dev/null || true
+    done
+    for svc in "${DEFAULT_BOOT_SERVICES[@]}"; do
+        systemctl enable "${svc}"
+    done
+elif is_mac; then
+    # --- macOS launchd installation -------------------------------------------
+    install_mac_service() {
+        local name="$1"
+        local description="$2"
+        local script="$3"
+        local _launched_wait_for="${4:-}"
+        local _launched_conflicts="${5:-}"
+
+        LAUNCHD_WAIT_FOR="${_launched_wait_for}"
+        LAUNCHD_CONFLICTS="${_launched_conflicts}"
+
+        # llm-manager runs as root; everything else runs as SERVICE_USER
+        if [[ "${name}" == "llm-manager" ]]; then
+            local _saved_user="${SERVICE_USER}"
+            local _saved_group="${SERVICE_GROUP}"
+            SERVICE_USER="root"
+            SERVICE_GROUP="wheel"
+            generate_launchd_plist "${name}" "${description}" "${script}"
+            SERVICE_USER="${_saved_user}"
+            SERVICE_GROUP="${_saved_group}"
+        else
+            generate_launchd_plist "${name}" "${description}" "${script}"
+        fi
+
+        _launchd_reset
+    }
+
+    echo "Installing launchd services..."
+
+    install_mac_service "llm-manager"        "LLM Stack Manager - web UI"                          "start-llm-manager.sh"
+    install_mac_service "think"              "LLM Chat Thinking Legacy - llama-server"             "start-think.sh"
+    install_mac_service "nothink"            "LLM Chat Nothink Legacy - llama-server"              "start-nothink.sh"
+    install_mac_service "chat-backend"       "LLM Chat Custom Shared Backend - llama-server"       "start-chat-backend.sh"
+    install_mac_service "chat-backend-dense" "LLM Chat Dense Shared Backend - llama-server"        "start-chat-backend-dense.sh" \
+        "" "chat-backend-moe chat-backend-bee chat-backend"
+    install_mac_service "chat-backend-moe"   "LLM Chat MoE Shared Backend - llama-server"          "start-chat-backend-moe.sh" \
+        "" "chat-backend-dense chat-backend-bee chat-backend"
+    install_mac_service "chat-backend-bee"   "LLM Chat BeeLLaMA Shared Backend - llama-server"     "start-chat-backend-bee.sh" \
+        "" "chat-backend-dense chat-backend-moe chat-backend"
+    install_mac_service "chat-proxy"         "LLM Chat Proxy - think/chat/code ports"              "start-chat-proxy.sh" \
+        "chat-backend chat-backend-dense chat-backend-moe chat-backend-bee"
+    install_mac_service "embed"              "LLM Embedding Model - llama-server"                  "start-embed.sh"
+    install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
+    install_mac_service "task"               "LLM Task Model - llama-server"                       "start-task.sh"
+    install_mac_service "ocr"                "LLM OCR GLM-OCR Backend - llama-server"              "start-ocr.sh"
+    install_mac_service "glmocr-sdk"         "LLM OCR GLM-OCR SDK Parser"                          "start-glmocr-sdk.sh" \
+        "ocr"
+    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+        install_mac_service "honcho-api"     "Local Honcho Memory API"                             "start-honcho-api.sh" \
+            "chat-proxy embed"
+        install_mac_service "honcho-deriver" "Local Honcho Memory Deriver"                         "start-honcho-deriver.sh" \
+            "honcho-api chat-proxy embed"
+    fi
+
+    # Fix glmocr-sdk plist for on-failure restart
+    _glmocr_plist="$(svc_plist_path "glmocr-sdk")"
+    if [[ -f "${_glmocr_plist}" ]]; then
+        cp_sed_inplace 's|<key>KeepAlive</key>|<key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key>\n        <false/>\n    </dict>|' "${_glmocr_plist}"
+        cp_sed_inplace 's|<true/>|<dict>\n        <key>SuccessfulExit</key>\n        <true/>\n    </dict>|' "${_glmocr_plist}"
+    fi
+
+    # Own wrapper scripts and plists
+    chown -R root:wheel /Library/LaunchDaemons/com.llmstack.*.plist 2>/dev/null || true
+    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${STACK_DIR}/scripts/launchd-wrapper-"*.sh 2>/dev/null || true
+
+    # Enable default services, disable non-default
+    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
+    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+        DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
+    fi
+    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe chat-backend-bee ocr glmocr-sdk)
+    for svc in "${NON_DEFAULT_SERVICES[@]}"; do
+        svc_disable "${svc}" 2>/dev/null || true
+    done
+    for svc in "${DEFAULT_BOOT_SERVICES[@]}"; do
+        svc_enable "${svc}"
+    done
 fi
-
-sed -i "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service|" /etc/systemd/system/chat-proxy.service
-sed -i "s|^After=network.target$|After=network.target ocr.service|" /etc/systemd/system/glmocr-sdk.service
-sed -i "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
-sed -i "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
-if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-    sed -i "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service embed.service|" /etc/systemd/system/honcho-api.service
-    sed -i "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service embed.service" /etc/systemd/system/honcho-api.service
-    sed -i "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service embed.service|" /etc/systemd/system/honcho-deriver.service
-    sed -i "/^After=/a Wants=honcho-api.service chat-proxy.service embed.service" /etc/systemd/system/honcho-deriver.service
-fi
-sed -i "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
-sed -i "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
-sed -i "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-bee.service
-sed -i "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service" /etc/systemd/system/chat-backend.service
-
-systemctl daemon-reload
-
-DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
-if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-    DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
-fi
-NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe chat-backend-bee ocr glmocr-sdk)
-LEGACY_SERVICES=(
-    qwen-think
-    qwen-nothink
-    qwen-chat-backend
-    qwen-chat-backend-27b
-    qwen-chat-backend-35b
-    qwen-chat-proxy
-    qwen-embedding
-    qwen-reranker
-    qwen-task
-)
-for svc in "${NON_DEFAULT_SERVICES[@]}" "${LEGACY_SERVICES[@]}"; do
-    systemctl disable "${svc}" 2>/dev/null || true
-done
-for svc in "${DEFAULT_BOOT_SERVICES[@]}"; do
-    systemctl enable "${svc}"
-done
 
 if [[ "${HONCHO_ENABLED:-off}" == "on" && "${HONCHO_CONFIGURE_HERMES:-on}" == "on" && -d "${STACK_DIR}/hermes" ]]; then
     SERVICE_USER="${SERVICE_USER}" SERVICE_GROUP="${SERVICE_GROUP}" bash "${STACK_DIR}/scripts/configure-hermes-honcho.sh" || true
@@ -315,3 +398,11 @@ fi
 
 echo "Install complete. Start the default core stack with:"
 echo "  sudo bash ${STACK_DIR}/scripts/default-mode.sh"
+
+if is_mac; then
+    echo ""
+    echo "macOS notes:"
+    echo "  - Services are managed via launchd (plist files in /Library/LaunchDaemons/)"
+    echo "  - View logs: tail -f ${STACK_DIR}/logs/<service>.stdout.log"
+    echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/default-mode.sh"
+fi

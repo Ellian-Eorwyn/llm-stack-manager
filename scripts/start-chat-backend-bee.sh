@@ -21,6 +21,7 @@ if [[ ! -x "${BEE_SERVER_BIN}" ]]; then
     exit 126
 fi
 export LD_LIBRARY_PATH="${BEE_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
+export DYLD_LIBRARY_PATH="${BEE_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 export CUDA_VISIBLE_DEVICES="${CHAT_GPU_VISIBLE_DEVICES}"
 
 log_bool_env() {

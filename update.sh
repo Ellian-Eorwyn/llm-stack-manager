@@ -180,11 +180,19 @@ fi
 if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
     bash "${STACK_DIR}/install.sh"
     if [[ "${SKIP_RESTART}" != "1" ]]; then
-        mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'think.service' 'nothink.service' 'qwen-*' 'honcho-*.service' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
+        source "${STACK_DIR}/scripts/cross-platform.sh"
+        if is_linux; then
+            mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'think.service' 'nothink.service' 'qwen-*' 'honcho-*.service' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
+        else
+            active=(llm-manager chat-backend chat-backend-dense chat-backend-moe chat-backend-bee chat-proxy embed rerank task ocr glmocr-sdk honcho-api honcho-deriver think nothink)
+        fi
+        
         for svc in "${active[@]}"; do
             case "${svc}" in
                 llm-manager|chat-backend|chat-backend-dense|chat-backend-moe|chat-backend-bee|chat-proxy|embed|rerank|task|ocr|glmocr-sdk|honcho-api|honcho-deriver|think|nothink)
-                    systemctl restart "${svc}"
+                    if is_mac || svc_is_active "${svc}"; then
+                        svc_restart "${svc}"
+                    fi
                     ;;
             esac
         done

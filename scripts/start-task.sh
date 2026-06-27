@@ -13,6 +13,7 @@ STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
 LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
 export LD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
+export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 
 # Pin to a single GPU for this small model
 export CUDA_VISIBLE_DEVICES="${TASK_GPU_VISIBLE_DEVICES}"

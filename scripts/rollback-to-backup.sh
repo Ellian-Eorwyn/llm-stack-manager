@@ -3,6 +3,15 @@
 set -euo pipefail
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/cross-platform.sh
+source "${STACK_DIR}/scripts/cross-platform.sh"
+
+if is_mac; then
+    echo "rollback-to-backup.sh is Linux-only (requires systemd)." >&2
+    echo "On macOS, services are managed via launchd plists in /Library/LaunchDaemons/." >&2
+    exit 1
+fi
+
 # shellcheck source=scripts/stack-services.sh
 source "${STACK_DIR}/scripts/stack-services.sh"
 

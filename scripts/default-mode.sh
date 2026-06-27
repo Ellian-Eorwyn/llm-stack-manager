@@ -4,6 +4,9 @@
 set -euo pipefail
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/cross-platform.sh
+source "${STACK_DIR}/scripts/cross-platform.sh"
+
 CONFIG_FILE="${STACK_DIR}/config/llm-stack.env"
 if [[ -f "${CONFIG_FILE}" ]]; then
     # shellcheck source=/dev/null
@@ -139,19 +142,18 @@ if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
     DEFAULT_SERVICES+=(honcho-api honcho-deriver)
 fi
 
-if ! systemctl is-active --quiet llm-manager 2>/dev/null; then
+if ! svc_is_active llm-manager 2>/dev/null; then
     echo "  starting llm-manager..."
-    systemctl start llm-manager
+    svc_start llm-manager
 fi
 
 echo "=== LLM Stack: Default Core Mode ==="
 echo ""
 echo "[1/2] Stopping core LLM services..."
 for svc in "${ALL_SERVICES[@]}"; do
-    state="$(systemctl is-active "${svc}" 2>/dev/null || true)"
-    if [[ "${state}" != "inactive" && "${state}" != "unknown" && "${state}" != "failed" ]]; then
+    if svc_is_active "${svc}" 2>/dev/null; then
         echo "  stopping ${svc}..."
-        systemctl stop "${svc}" || true
+        svc_stop "${svc}"
     fi
 done
 echo "  done."
@@ -160,13 +162,13 @@ echo ""
 echo "[2/2] Starting default core services..."
 for svc in "${DEFAULT_SERVICES[@]}"; do
     echo "  starting ${svc}..."
-    systemctl start "${svc}"
+    svc_start "${svc}"
 done
 echo "  done."
 
 echo ""
 echo "=== Default core mode active ==="
-systemctl status --no-pager --lines=0 "${DEFAULT_SERVICES[@]}" 2>/dev/null || true
+svc_status_all "${DEFAULT_SERVICES[@]}"
 echo ""
 echo "Endpoints:"
 echo "  http://localhost:8003/v1  - thinking"

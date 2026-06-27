@@ -3,11 +3,14 @@
 set -euo pipefail
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/cross-platform.sh
+source "${STACK_DIR}/scripts/cross-platform.sh"
+
 source "${STACK_DIR}/config/llm-stack.env"
 
-SERVICE_USER="${SERVICE_USER:-$(stat -c '%U' "${STACK_DIR}")}"
-SERVICE_GROUP="${SERVICE_GROUP:-$(stat -c '%G' "${STACK_DIR}")}"
-USER_HOME="$(getent passwd "${SERVICE_USER}" | cut -d: -f6)"
+SERVICE_USER="${SERVICE_USER:-$(cp_stat_user "${STACK_DIR}")}"
+SERVICE_GROUP="${SERVICE_GROUP:-$(cp_stat_group "${STACK_DIR}")}"
+USER_HOME="$(cp_get_home_dir "${SERVICE_USER}")"
 HERMES_HOME="${HERMES_HOME:-${USER_HOME}/.hermes}"
 HONCHO_CONFIG="${HERMES_HOME}/honcho.json"
 HERMES_CONFIG="${HERMES_HOME}/config.yaml"
