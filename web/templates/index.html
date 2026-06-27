@@ -1729,7 +1729,6 @@ function setSidebarCollapsed(collapsed) {
   shell.classList.toggle('sidebar-collapsed', collapsed);
   localStorage.setItem('llmStackSidebarCollapsed', collapsed ? '1' : '0');
   if (btn) {
-    btn.textContent = collapsed ? 'Open' : 'Menu';
     btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   }
 }
