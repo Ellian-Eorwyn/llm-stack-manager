@@ -22,6 +22,7 @@ ALL_SERVICES=(
     chat-backend-bee
     chat-proxy
     embed
+    embed2
     rerank
     task
     ocr
@@ -135,6 +136,7 @@ DEFAULT_SERVICES=(
     "${DEFAULT_CHAT_BACKEND}"
     chat-proxy
     embed
+    embed2
     rerank
     task
 )

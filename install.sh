@@ -291,7 +291,7 @@ UNIT
 
     systemctl daemon-reload
 
-    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
+    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed embed2 rerank task)
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
     fi
@@ -381,7 +381,7 @@ elif is_mac; then
     chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${STACK_DIR}/scripts/launchd-wrapper-"*.sh 2>/dev/null || true
 
     # Enable default services, disable non-default
-    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
+    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed embed2 rerank task)
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
     fi
