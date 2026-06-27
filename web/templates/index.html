@@ -30,6 +30,8 @@ body {
   margin: 0;
   overflow: hidden;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
   background-image: radial-gradient(circle at top right, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
                     radial-gradient(circle at bottom left, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
@@ -47,7 +49,8 @@ header {
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
   padding: 12px 24px; display: flex; align-items: stretch; gap: 16px;
-  min-height: 64px; position: sticky; top: 0; z-index: 100;
+  min-height: 64px; z-index: 100;
+  flex-shrink: 0;
   flex-wrap: wrap;
 }
 .sidebar-toggle {
@@ -93,32 +96,13 @@ header {
 .gpu-name { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gpu-stat-row { color: var(--dim); font-size: 11px; margin-bottom: 5px; }
 .gpu-stat-row span { white-space: nowrap; }
-.bar-wrap  { width: 100%; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
-.bar-fill  { height: 100%; border-radius: 3px; transition: width .5s; background: var(--accent); }
-.bar-fill.hi { background: var(--warning); }
-.bar-fill.max { background: var(--danger); }
-.gpu-process-list {
-  display: grid;
-  gap: 4px;
-  margin-top: 7px;
-}
-.gpu-process-row {
-  color: var(--dim);
-  font-size: 11px;
-  line-height: 1.2;
-}
-.gpu-process-name {
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.gpu-process-mem {
-  color: var(--accent-h);
-  font-family: var(--mono);
-  white-space: nowrap;
-}
-.gpu-process-empty { color: var(--muted); font-size: 11px; }
+.bar-wrap  { width: 100%; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; display: flex; }
+.bar-segment { height: 100%; transition: width .5s; }
+.gpu-process-inline-list { margin-top: 6px; font-size: 11px; color: var(--dim); line-height: 1.4; }
+.gpu-process-item { display: inline-flex; align-items: center; gap: 4px; }
+.gpu-process-item:not(:last-child)::after { content: ', '; margin-right: 2px; color: var(--muted); }
+.gpu-process-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.gpu-process-empty { color: var(--muted); font-size: 11px; margin-top: 4px; }
 .hdr-actions { display: flex; gap: 8px; flex: 0 1 auto; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
 /* -- Buttons -- */
@@ -139,7 +123,8 @@ header {
 .app-shell {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
-  height: calc(100vh - 64px);
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   transition: grid-template-columns .15s ease;
 }
@@ -147,9 +132,7 @@ header {
   grid-template-columns: 64px minmax(0, 1fr);
 }
 .side-nav {
-  position: sticky;
-  top: 64px;
-  height: calc(100vh - 64px);
+  height: 100%;
   overflow-y: auto;
   background: var(--surface);
   backdrop-filter: blur(12px);
@@ -1827,6 +1810,19 @@ function applyStatuses(statuses) {
   }
 }
 
+const PROCESS_PALETTE = [
+  '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e', '#6366f1'
+];
+const _processColors = {};
+let _processColorIdx = 0;
+function getProcessColor(name) {
+  if (!_processColors[name]) {
+    _processColors[name] = PROCESS_PALETTE[_processColorIdx % PROCESS_PALETTE.length];
+    _processColorIdx++;
+  }
+  return _processColors[name];
+}
+
 function applyGpus(gpus) {
   const el = document.getElementById('gpu-stats');
   if (!el) return;
@@ -1838,13 +1834,47 @@ function applyGpus(gpus) {
     const used = Number(g.mem_used || 0);
     const total = Number(g.mem_total || 0);
     const pct = Math.max(0, Math.min(100, Number(g.mem_pct || 0)));
-    const processRows = (g.processes || []).length
-      ? (g.processes || []).map(p => `
-        <div class="gpu-process-row" title="${escapeHtml(p.process_name || '')} pid ${escapeHtml(p.pid || '')}">
-          <span class="gpu-process-name">${escapeHtml(p.name || p.process_name || 'process')}</span>
-          <span class="gpu-process-mem">${escapeHtml(p.used_memory || 0)} MiB</span>
-        </div>`).join('')
-      : '<div class="gpu-process-empty">No compute processes</div>';
+    
+    let segmentsHtml = '';
+    let itemsHtml = '';
+    
+    let knownUsed = 0;
+    if ((g.processes || []).length) {
+      g.processes.forEach(p => {
+        const name = p.name || p.process_name || 'process';
+        const color = getProcessColor(name);
+        const pUsed = Number(p.used_memory || 0);
+        knownUsed += pUsed;
+        const pPct = total > 0 ? (pUsed / total * 100) : 0;
+        
+        segmentsHtml += `<div class="bar-segment" style="width:${pPct}%; background-color:${color};" title="${escapeHtml(name)}: ${pUsed} MiB"></div>`;
+        itemsHtml += `<div class="gpu-process-item" title="${escapeHtml(name)} pid ${escapeHtml(p.pid || '')}">
+          <span class="gpu-process-dot" style="background-color:${color};"></span>
+          <span style="color:var(--text);">${escapeHtml(name)}</span>
+          <span style="font-family:var(--mono);">${pUsed}M</span>
+        </div>`;
+      });
+    }
+    
+    const otherUsed = Math.max(0, used - knownUsed);
+    if (otherUsed > 0 && total > 0) {
+      const otherPct = (otherUsed / total * 100);
+      segmentsHtml += `<div class="bar-segment" style="width:${otherPct}%; background-color:var(--dim);" title="Other: ${otherUsed} MiB"></div>`;
+      if (itemsHtml) {
+        itemsHtml += `<div class="gpu-process-item" title="Other non-llm processes">
+          <span class="gpu-process-dot" style="background-color:var(--dim);"></span>
+          <span style="color:var(--text);">Other</span>
+          <span style="font-family:var(--mono);">${otherUsed}M</span>
+        </div>`;
+      }
+    }
+    
+    if (!itemsHtml) {
+      itemsHtml = '<div class="gpu-process-empty">No compute processes</div>';
+    } else {
+      itemsHtml = `<div class="gpu-process-inline-list">${itemsHtml}</div>`;
+    }
+
     return `
       <div class="gpu-card">
         <div class="gpu-card-head">
@@ -1857,11 +1887,9 @@ function applyGpus(gpus) {
           <span>${escapeHtml(g.temp || 0)} C</span>
         </div>
         <div class="bar-wrap" title="${used}/${total} MiB | ${escapeHtml(g.util || 0)}% | ${escapeHtml(g.temp || 0)} C">
-          <div class="bar-fill ${pct>90?'max':pct>70?'hi':''}" style="width:${pct}%"></div>
+          ${segmentsHtml}
         </div>
-        <div class="gpu-process-list">
-          ${processRows}
-        </div>
+        ${itemsHtml}
       </div>
     `;
   }).join('');
