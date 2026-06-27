@@ -3463,7 +3463,7 @@ def api_app_update():
         import os
         import signal
         # Run update synchronously
-        subprocess.run(['bash', script_path])
+        subprocess.run(['bash', script_path, '--branch', 'main'])
         # On macOS, update.sh can't restart us directly due to sudo restrictions.
         # But our launchd plist has KeepAlive=true, so we can just cleanly exit
         # and launchd will automatically boot us right back up!
