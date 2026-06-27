@@ -264,6 +264,7 @@ UNIT
     install_unit "chat-backend-bee"  "LLM Chat BeeLLaMA Shared Backend - llama-server" "start-chat-backend-bee.sh"  300
     install_unit "chat-proxy"        "LLM Chat Proxy - think/chat/code ports"          "start-chat-proxy.sh"        30
     install_unit "embed"         "LLM Embedding Model - llama-server"              "start-embed.sh"         120
+    install_unit "embed2"        "LLM Embedding 2 Model - llama-server"            "start-embed2.sh"        120
     install_unit "rerank"          "LLM Reranker Model - llama-server"               "start-rerank.sh"          120
     install_unit "task"              "LLM Task Model - llama-server"                   "start-task.sh"              120
     install_unit "ocr"               "LLM OCR GLM-OCR Backend - llama-server"          "start-ocr.sh"               120
@@ -355,6 +356,7 @@ elif is_mac; then
     install_mac_service "chat-proxy"         "LLM Chat Proxy - think/chat/code ports"              "start-chat-proxy.sh" \
         "chat-backend chat-backend-dense chat-backend-moe chat-backend-bee"
     install_mac_service "embed"              "LLM Embedding Model - llama-server"                  "start-embed.sh"
+    install_mac_service "embed2"             "LLM Embedding 2 Model - llama-server"                "start-embed2.sh"
     install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
     install_mac_service "task"               "LLM Task Model - llama-server"                       "start-task.sh"
     install_mac_service "ocr"                "LLM OCR GLM-OCR Backend - llama-server"              "start-ocr.sh"
@@ -362,9 +364,9 @@ elif is_mac; then
         "ocr"
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         install_mac_service "honcho-api"     "Local Honcho Memory API"                             "start-honcho-api.sh" \
-            "chat-proxy embed"
+            "chat-proxy embed embed2"
         install_mac_service "honcho-deriver" "Local Honcho Memory Deriver"                         "start-honcho-deriver.sh" \
-            "honcho-api chat-proxy embed"
+            "honcho-api chat-proxy embed embed2"
     fi
 
     # Fix glmocr-sdk plist for on-failure restart

@@ -9,6 +9,7 @@ STACK_CORE_SERVICES=(
   chat-backend-bee
   chat-proxy
   embed
+  embed2
   rerank
   task
   ocr
