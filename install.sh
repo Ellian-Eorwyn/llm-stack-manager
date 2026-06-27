@@ -279,10 +279,10 @@ UNIT
     cp_sed_inplace "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
     cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-        cp_sed_inplace "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service embed.service|" /etc/systemd/system/honcho-api.service
-        cp_sed_inplace "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service embed.service" /etc/systemd/system/honcho-api.service
-        cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service embed.service|" /etc/systemd/system/honcho-deriver.service
-        cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service embed.service" /etc/systemd/system/honcho-deriver.service
+        cp_sed_inplace "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service embed.service embed2.service|" /etc/systemd/system/honcho-api.service
+        cp_sed_inplace "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service embed.service embed2.service" /etc/systemd/system/honcho-api.service
+        cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service embed.service embed2.service|" /etc/systemd/system/honcho-deriver.service
+        cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service embed.service embed2.service" /etc/systemd/system/honcho-deriver.service
     fi
     cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
     cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
