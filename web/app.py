@@ -3401,8 +3401,22 @@ def api_app_update():
     script_path = os.path.join(STACK_DIR, 'update.sh')
     if not os.path.exists(script_path):
         return jsonify(ok=False, error="update.sh not found"), 404
-    import subprocess
-    subprocess.Popen(['bash', script_path], start_new_session=True)
+
+    def run_update():
+        import subprocess
+        import time
+        import os
+        import signal
+        # Run update synchronously
+        subprocess.run(['bash', script_path])
+        # On macOS, update.sh can't restart us directly due to sudo restrictions.
+        # But our launchd plist has KeepAlive=true, so we can just cleanly exit
+        # and launchd will automatically boot us right back up!
+        time.sleep(1)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    import threading
+    threading.Thread(target=run_update, daemon=True).start()
     return jsonify(ok=True)
 
 @app.route('/api/llamacpp/update', methods=['POST'])

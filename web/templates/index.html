@@ -2427,10 +2427,25 @@ async function updateApp(btn) {
       btn.textContent = orig;
       return;
     }
-    // Reload page after a delay to allow restart
+    // Wait a few seconds for the app to go down, then poll until it's back up
     setTimeout(() => {
-      window.location.reload();
-    }, 15000);
+      let attempts = 0;
+      const check = setInterval(async () => {
+        try {
+          const res = await fetch('/api/status');
+          if (res.ok) {
+            clearInterval(check);
+            window.location.reload();
+          }
+        } catch (e) {
+          // Expected while server is down
+        }
+        if (++attempts > 60) {
+          clearInterval(check);
+          toast('Update taking longer than expected. Please refresh manually later.', 'warn');
+        }
+      }, 2000);
+    }, 5000);
   } catch (e) {
     toast('Error starting update', 'err');
     btn.disabled = false;
