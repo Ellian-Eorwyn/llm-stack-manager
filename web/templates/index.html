@@ -896,12 +896,12 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   <!-- Built-in service groups -->
   <div id="svc-groups-container">
   {% for group_name, services in service_groups.items() %}
-  <div class="svc-group" id="group-{{ group_name | slugify }}">
+  <div class="svc-group" id="group-{{ group_name | lower | replace(' ', '-') | replace('/', '-') }}">
     <div class="group-hdr">
       <span class="drag-handle" title="Drag to reorder">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
       </span>
-      <span class="group-title" contenteditable="true" data-group-id="group-{{ group_name | slugify }}">{{ group_name | title }}</span>
+      <span class="group-title" contenteditable="true" data-group-id="group-{{ group_name | lower | replace(' ', '-') | replace('/', '-') }}">{{ group_name | title }}</span>
     </div>
     <div class="svc-cards">
       {% for svc in services %}
@@ -4155,17 +4155,19 @@ function initDragAndDrop() {
   
   let draggedEl = null;
 
-  // Make draggable only when clicking the handle to preserve text selection
-  container.addEventListener('mousedown', e => {
+  // Make draggable only when hovering the handle so the mouse click registers the drag
+  container.addEventListener('mouseover', e => {
     if (e.target.closest('.drag-handle')) {
       const group = e.target.closest('.svc-group');
-      if (group) group.draggable = true;
+      if (group) group.setAttribute('draggable', 'true');
     }
   });
   
-  container.addEventListener('mouseup', e => {
-    const group = e.target.closest('.svc-group');
-    if (group) group.draggable = false;
+  container.addEventListener('mouseout', e => {
+    if (e.target.closest('.drag-handle')) {
+      const group = e.target.closest('.svc-group');
+      if (group) group.removeAttribute('draggable');
+    }
   });
 
   container.addEventListener('dragstart', e => {
