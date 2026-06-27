@@ -224,7 +224,7 @@ NEW_ENV_KEY_LEGACY_ALIASES = defaultdict(list)
 for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
     NEW_ENV_KEY_LEGACY_ALIASES[new_key].append(legacy_key)
 
-SHARED_CHAT_BACKEND_RESTART = ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"]
+SHARED_CHAT_BACKEND_RESTART = ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend", "chat-backend2"]
 TTS_BACKEND_SERVICES = []
 TTS_MANAGED_SERVICES = []
 TRANSCRIPT_MANAGED_SERVICE = ""
@@ -234,6 +234,8 @@ SERVICES = [
     {"group": "chat",      "name": "chat-backend-bee", "label": "Backend BeeLLaMA", "desc": "BeeLLaMA DFlash/TurboQuant backend", "ports": "8010 (internal)", "config_section": "BeeLLaMA Backend"},
     {"group": "chat",      "name": "chat-backend",     "label": "Backend (Custom)", "desc": "Custom model - shared backend",  "ports": "8010 (internal)", "config_section": "Shared Backend"},
     {"group": "chat",      "name": "chat-proxy",       "label": "Chat Proxy",   "desc": "Routes think/chat/code from one backend", "ports": "8003 / 8004 / 8008"},
+    {"group": "chat",      "name": "chat-backend2",    "label": "Backend 2 (Custom)", "desc": "Second custom model - shared backend",  "ports": "8020 (internal)", "config_section": "Shared Backend 2"},
+    {"group": "chat",      "name": "chat-proxy2",      "label": "Chat Proxy 2", "desc": "Routes think/chat/code from backend 2", "ports": "8103 / 8104 / 8108"},
     {"group": "auxiliary", "name": "embed",        "label": "Embedding",    "desc": "Embedding model",                   "ports": "8005", "config_section": "Embedding"},
     {"group": "auxiliary", "name": "embed2",       "label": "Embedding 2",  "desc": "Second embedding backend",          "ports": "8011", "config_section": "Embedding 2"},
     {"group": "auxiliary", "name": "rerank",         "label": "Reranker",     "desc": "Reranker model",                    "ports": "8006", "config_section": "Reranker"},
@@ -246,6 +248,7 @@ SERVICES = [
 
 LLAMACPP_MODEL_SERVICES = [
     "chat-backend",
+    "chat-backend2",
     "chat-backend-dense",
     "chat-backend-moe",
     "chat-backend-bee",
@@ -259,6 +262,7 @@ LLAMACPP_PROXY_SERVICE = "chat-proxy"
 CORE_CONFIG_SECTIONS = {
     "Chat Templates",
     "Shared Backend",
+    "Shared Backend 2",
     "BeeLLaMA Backend",
     "Task Model",
     "Thinking Endpoint",
@@ -297,6 +301,16 @@ CODE_TO_CHAT_MIRRORS = {
 # ---------------------------------------------------------------------------
 CONFIG_FIELDS = [
     {"section": "Chat Templates", "key": "CHAT_TEMPLATE_MANAGER", "label": "Template Manager", "type": "template_manager", "hint": "Create and edit reusable llama.cpp Jinja chat templates"},
+
+    # Shared Backend 2
+    {"section": "Shared Backend 2", "key": "CHAT2_MODEL_NAME",            "label": "Custom Backend 2 Alias",   "type": "text",   "hint": "llama.cpp alias for the generic custom backend 2"},
+    {"section": "Shared Backend 2", "key": "CHAT2_MODEL_PATH",            "label": "Model 2 Path",             "type": "path"},
+    {"section": "Shared Backend 2", "key": "CHAT2_MMPROJ_PATH",           "label": "MMProj 2 Path",            "type": "path"},
+    {"section": "Shared Backend 2", "key": "CHAT2_CTX_SIZE",              "label": "Context 2 Size",           "type": "number"},
+    {"section": "Shared Backend 2", "key": "CHAT2_BACKEND_PORT",          "label": "Backend 2 Port",           "type": "number"},
+    {"section": "Shared Backend 2", "key": "THINK2_PORT",                 "label": "Think 2 Port",             "type": "number"},
+    {"section": "Shared Backend 2", "key": "NOTHINK2_PORT",               "label": "No-Think 2 Port",          "type": "number"},
+    {"section": "Shared Backend 2", "key": "CODE2_PORT",                  "label": "Code 2 Port",              "type": "number"},
     # Shared Backend
     {"section": "Shared Backend", "key": "CHAT_DENSE_LABEL",           "label": "Dense Slot Label",       "type": "text",   "hint": "UI label for the dense preset button/card"},
     {"section": "Shared Backend", "key": "CHAT_DENSE_MODEL_NAME",      "label": "Dense Model Alias",      "type": "text",   "hint": "llama.cpp alias for the dense preset"},
@@ -771,51 +785,51 @@ RESTART_HINTS = {
     "CHAT_MOE_MODEL_PATH":       ["chat-backend-moe"],
     "CHAT_MOE_MMPROJ_PATH":      ["chat-backend-moe"],
     "CHAT_MOE_CTX_SIZE":         ["chat-backend-moe"],
-    "CHAT_MODEL_NAME":           ["chat-backend"],
-    "CHAT_N_PARALLEL":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_THREADS":              ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_THREADS_BATCH":        ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_N_GPU_LAYERS":         ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_MAIN_GPU":             ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_DEVICE":               ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
-    "CHAT_TENSOR_SPLIT":         ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
-    "CHAT_SPLIT_MODE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
-    "CHAT_KV_OFFLOAD":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_OP_OFFLOAD":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_MMPROJ_OFFLOAD":       ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_FLASH_ATTN":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_CACHE_TYPE_K":         ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_CACHE_TYPE_V":         ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_BATCH_SIZE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_UBATCH_SIZE":          ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_NO_MMAP":              ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_MLOCK":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_GPU_VISIBLE_DEVICES":  ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
-    "CHAT_TEMP":                 ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_TOP_P":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_TOP_K":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_MIN_P":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_PRESERVE_THINKING":    ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_JINJA":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_REASONING_FORMAT":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_FIT":                  ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_METHOD":          ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_NGRAM_MOD":       ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_MODEL_PATH": ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_N_GPU_LAYERS": ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_DEVICES":   ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_CTX_SIZE":  ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_N_MAX":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_N_MIN":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_P_MIN":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_P_SPLIT":   ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_NGRAM_MOD_N_MATCH": ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_NGRAM_MOD_N_MIN": ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_NGRAM_MOD_N_MAX": ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_CACHE_RAM":            ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_CTX_CHECKPOINTS":      ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_CUSTOM_ARGS_JSON":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_TEMPLATE_ID":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
+    "CHAT_MODEL_NAME":           ["chat-backend", "chat-backend2"],
+    "CHAT_N_PARALLEL":           ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_THREADS":              ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_THREADS_BATCH":        ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_N_GPU_LAYERS":         ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_MAIN_GPU":             ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_DEVICE":               ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend", "chat-backend2"],
+    "CHAT_TENSOR_SPLIT":         ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend", "chat-backend2"],
+    "CHAT_SPLIT_MODE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend", "chat-backend2"],
+    "CHAT_KV_OFFLOAD":           ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_OP_OFFLOAD":           ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_MMPROJ_OFFLOAD":       ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_FLASH_ATTN":           ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_CACHE_TYPE_K":         ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_CACHE_TYPE_V":         ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_BATCH_SIZE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_UBATCH_SIZE":          ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_NO_MMAP":              ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_MLOCK":                ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_GPU_VISIBLE_DEVICES":  ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend", "chat-backend2"],
+    "CHAT_TEMP":                 ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_TOP_P":                ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_TOP_K":                ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_MIN_P":                ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_PRESERVE_THINKING":    ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_JINJA":                ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_REASONING_FORMAT":     ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_FIT":                  ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_METHOD":          ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_NGRAM_MOD":       ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_DRAFT_MODEL_PATH": ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_DRAFT_N_GPU_LAYERS": ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_DRAFT_DEVICES":   ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_DRAFT_CTX_SIZE":  ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_DRAFT_N_MAX":     ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_DRAFT_N_MIN":     ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_DRAFT_P_MIN":     ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_DRAFT_P_SPLIT":   ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_NGRAM_MOD_N_MATCH": ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_NGRAM_MOD_N_MIN": ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_SPEC_NGRAM_MOD_N_MAX": ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_CACHE_RAM":            ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_CTX_CHECKPOINTS":      ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_CUSTOM_ARGS_JSON":     ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
+    "CHAT_TEMPLATE_ID":           ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"],
     "CHAT_BACKEND_HOST":         ["chat-proxy"],
     "CHAT_BACKEND_PORT":         ["chat-proxy"],
     "CODE_THINKING":             ["chat-proxy"],
@@ -1031,9 +1045,9 @@ RESTART_HINTS = {
     "RERANK_PORT":               ["rerank"],
     "TASK_PORT":                 ["task"],
     "LISTEN_HOST":               ["chat-proxy", "embed", "embed2", "rerank", "task"],
-    "CHAT_MODEL_PATH":           ["chat-backend"],
-    "CHAT_MMPROJ_PATH":          ["chat-backend"],
-    "CHAT_CTX_SIZE":             ["chat-backend"],
+    "CHAT_MODEL_PATH":           ["chat-backend", "chat-backend2"],
+    "CHAT_MMPROJ_PATH":          ["chat-backend", "chat-backend2"],
+    "CHAT_CTX_SIZE":             ["chat-backend", "chat-backend2"],
     "TTS_PUBLIC_URL":            ["tts-gateway"],
     "TTS_GATEWAY_HOST":          ["tts-gateway"],
     "TTS_GATEWAY_PORT":          ["tts-gateway"],
@@ -3440,14 +3454,14 @@ def api_ocr_extract():
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 502
 
-@app.route('/api/default-mode', methods=['POST'])
+@app.route('/api/restore-active-stack', methods=['POST'])
 def api_default_mode():
     default_name = get_default_saved_config_name()
     if default_name:
         result = apply_saved_config(default_name, launch=True)
         status = 200 if result.get('ok') else 500
         return jsonify(result), status
-    ok, output = run_script('default-mode.sh')
+    ok, output = run_script('restore-active-stack.sh')
     return jsonify(ok=ok, output=output)
 
 

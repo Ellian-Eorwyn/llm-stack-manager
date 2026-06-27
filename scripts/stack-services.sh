@@ -8,6 +8,8 @@ STACK_CORE_SERVICES=(
   chat-backend-moe
   chat-backend-bee
   chat-proxy
+  chat-backend2
+  chat-proxy2
   embed
   embed2
   rerank

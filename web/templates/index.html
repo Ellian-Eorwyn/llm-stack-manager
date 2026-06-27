@@ -2547,14 +2547,14 @@ async function updateLlamaCpp(btn) {
 }
 
 // -- default mode --
-async function defaultMode(btn) {
+async function startRestoreActiveStack(btn) {
   const orig = btn.textContent;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Running...';
-  toast('Running default-mode.sh...', 'info');
+  toast('Running restore-active-stack.sh...', 'info');
   try {
-    const d = await fetchJSON('/api/default-mode', 'POST');
-    toast(d.ok ? 'Default mode active' : (d.output || 'failed'), d.ok ? 'ok' : 'err');
+    const d = await fetchJSON('/api/restore-active-stack', 'POST');
+    toast(d.ok ? 'Active stack restored' : (d.output || 'failed'), d.ok ? 'ok' : 'err');
     await poll();
   } catch (e) { toast('Error: ' + e, 'err'); }
   finally { btn.disabled = false; btn.textContent = orig; }

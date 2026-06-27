@@ -256,6 +256,26 @@ UNIT
     chmod 644 /etc/systemd/system/llm-manager.service
     echo "  installed: llm-manager.service"
 
+    cat << 'UNIT' > /etc/systemd/system/llm-stack-restore.service
+[Unit]
+Description=Restore LLM Stack active settings
+After=network.target llm-manager.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=@STACK_DIR@
+ExecStart=/bin/bash @STACK_DIR@/scripts/restore-active-stack.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sed -i "s|@STACK_DIR@|${STACK_DIR}|g" /etc/systemd/system/llm-stack-restore.service
+    chmod 644 /etc/systemd/system/llm-stack-restore.service
+    echo "  installed: llm-stack-restore.service"
+
     install_unit "think"             "LLM Chat Thinking Legacy - llama-server"          "start-think.sh"             300
     install_unit "nothink"           "LLM Chat Nothink Legacy - llama-server"          "start-nothink.sh"           300
     install_unit "chat-backend"      "LLM Chat Custom Shared Backend - llama-server"   "start-chat-backend.sh"      300
@@ -263,6 +283,8 @@ UNIT
     install_unit "chat-backend-moe"  "LLM Chat MoE Shared Backend - llama-server"      "start-chat-backend-moe.sh"  300
     install_unit "chat-backend-bee"  "LLM Chat BeeLLaMA Shared Backend - llama-server" "start-chat-backend-bee.sh"  300
     install_unit "chat-proxy"        "LLM Chat Proxy - think/chat/code ports"          "start-chat-proxy.sh"        30
+    install_unit "chat-backend2"     "LLM Chat Custom Shared Backend 2 - llama-server" "start-chat-backend2.sh"     300
+    install_unit "chat-proxy2"       "LLM Chat Proxy 2 - think/chat/code ports"        "start-chat-proxy2.sh"       30
     install_unit "embed"         "LLM Embedding Model - llama-server"              "start-embed.sh"         120
     install_unit "embed2"        "LLM Embedding 2 Model - llama-server"            "start-embed2.sh"        120
     install_unit "rerank"          "LLM Reranker Model - llama-server"               "start-rerank.sh"          120
@@ -275,6 +297,7 @@ UNIT
     fi
 
     cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service|" /etc/systemd/system/chat-proxy.service
+    cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
     cp_sed_inplace "s|^After=network.target$|After=network.target ocr.service|" /etc/systemd/system/glmocr-sdk.service
     cp_sed_inplace "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
     cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
@@ -291,11 +314,11 @@ UNIT
 
     systemctl daemon-reload
 
-    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed embed2 rerank task)
+    DEFAULT_BOOT_SERVICES=(llm-manager llm-stack-restore)
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
     fi
-    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe chat-backend-bee ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-dense chat-backend-moe chat-backend-bee chat-backend2 chat-proxy chat-proxy2 embed embed2 rerank task ocr glmocr-sdk)
     LEGACY_SERVICES=(
         qwen-think
         qwen-nothink
@@ -355,6 +378,9 @@ elif is_mac; then
         "" "chat-backend-dense chat-backend-moe chat-backend"
     install_mac_service "chat-proxy"         "LLM Chat Proxy - think/chat/code ports"              "start-chat-proxy.sh" \
         "chat-backend chat-backend-dense chat-backend-moe chat-backend-bee"
+    install_mac_service "chat-backend2"      "LLM Chat Custom Shared Backend 2 - llama-server"     "start-chat-backend2.sh"
+    install_mac_service "chat-proxy2"        "LLM Chat Proxy 2 - think/chat/code ports"            "start-chat-proxy2.sh" \
+        "chat-backend2"
     install_mac_service "embed"              "LLM Embedding Model - llama-server"                  "start-embed.sh"
     install_mac_service "embed2"             "LLM Embedding 2 Model - llama-server"                "start-embed2.sh"
     install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
@@ -398,8 +424,15 @@ if [[ "${HONCHO_ENABLED:-off}" == "on" && "${HONCHO_CONFIGURE_HERMES:-on}" == "o
     SERVICE_USER="${SERVICE_USER}" SERVICE_GROUP="${SERVICE_GROUP}" bash "${STACK_DIR}/scripts/configure-hermes-honcho.sh" || true
 fi
 
-echo "Install complete. Start the default core stack with:"
-echo "  sudo bash ${STACK_DIR}/scripts/default-mode.sh"
+echo "Install complete. The active stack will automatically be restored on reboot."
+echo "You can manually restore your saved settings at any time with:"
+echo "  sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
+echo ""
+echo "Or access the web UI at http://localhost:5001"
+echo ""
+echo "Useful Commands:"
+echo "  - Restart manager: sudo systemctl restart llm-manager"
+echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 
 if is_mac; then
     echo ""

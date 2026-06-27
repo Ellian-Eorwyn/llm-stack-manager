@@ -21,6 +21,8 @@ ALL_SERVICES=(
     chat-backend-moe
     chat-backend-bee
     chat-proxy
+    chat-backend2
+    chat-proxy2
     embed
     embed2
     rerank
@@ -135,6 +137,8 @@ fi
 DEFAULT_SERVICES=(
     "${DEFAULT_CHAT_BACKEND}"
     chat-proxy
+    chat-backend2
+    chat-proxy2
     embed
     embed2
     rerank
