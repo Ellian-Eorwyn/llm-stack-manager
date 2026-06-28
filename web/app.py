@@ -493,6 +493,9 @@ CONFIG_FIELDS = [
     {"section": "Task Model",  "key": "TASK_FLASH_ATTN",            "label": "Flash Attention",      "type": "select", "options": ["on", "off", "auto"]},
     {"section": "Task Model",  "key": "TASK_CACHE_TYPE_K",          "label": "KV Cache Key Type",    "type": "select", "options": ["q8_0", "f16", "f32", "q4_0", "q4_1", "iq4_nl"]},
     {"section": "Task Model",  "key": "TASK_CACHE_TYPE_V",          "label": "KV Cache Value Type",  "type": "select", "options": ["q8_0", "f16", "f32", "q4_0", "q4_1", "iq4_nl"]},
+    {"section": "Task Model",  "key": "TASK_CACHE_RAM",             "label": "Prompt Cache RAM",     "type": "number", "hint": "llama.cpp --cache-ram in MiB; 0 disables server prompt-cache storage"},
+    {"section": "Task Model",  "key": "TASK_CTX_CHECKPOINTS",       "label": "Context Checkpoints",  "type": "number", "hint": "llama.cpp --ctx-checkpoints; 0 disables context checkpoint creation"},
+    {"section": "Task Model",  "key": "TASK_SWA_FULL",              "label": "Full SWA KV Cache",    "type": "select", "options": ["off", "on"], "hint": "Adds llama.cpp --swa-full for SWA models; uses more KV VRAM but improves prompt-cache reuse"},
     {"section": "Task Model",  "key": "TASK_TEMP",                  "label": "Temperature",          "type": "text",   "hint": "e.g. 1.0"},
     {"section": "Task Model",  "key": "TASK_TOP_P",                 "label": "Top-P",                "type": "text",   "hint": "e.g. 0.95"},
     {"section": "Task Model",  "key": "TASK_TOP_K",                 "label": "Top-K",                "type": "number"},
@@ -952,6 +955,9 @@ RESTART_HINTS = {
     "TASK_FLASH_ATTN":           ["task"],
     "TASK_CACHE_TYPE_K":         ["task"],
     "TASK_CACHE_TYPE_V":         ["task"],
+    "TASK_CACHE_RAM":            ["task"],
+    "TASK_CTX_CHECKPOINTS":      ["task"],
+    "TASK_SWA_FULL":             ["task"],
     "TASK_TEMP":                 ["task"],
     "TASK_TOP_P":                ["task"],
     "TASK_TOP_K":                ["task"],
@@ -1321,6 +1327,9 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("TASK_CHAT_TEMPLATE_ID", "")
     normalized.setdefault("TASK_THREADS", "-1")
     normalized.setdefault("TASK_THREADS_BATCH", "-1")
+    normalized.setdefault("TASK_CACHE_RAM", "8192")
+    normalized.setdefault("TASK_CTX_CHECKPOINTS", "32")
+    normalized.setdefault("TASK_SWA_FULL", "off")
     normalized.setdefault("TASK_SPEC_METHOD", "off")
     normalized.setdefault("TASK_SPEC_NGRAM_MOD", "off")
     normalized.setdefault("TASK_SPEC_DRAFT_MODEL_PATH", "")

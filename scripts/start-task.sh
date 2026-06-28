@@ -30,6 +30,8 @@ echo "[task] Device override:  ${TASK_DEVICE:-auto}"
 echo "[task] Placement:        split=${TASK_SPLIT_MODE} kv-offload=${TASK_KV_OFFLOAD:-on} op-offload=${TASK_OP_OFFLOAD:-on} mmproj-offload=${TASK_MMPROJ_OFFLOAD:-on}"
 echo "[task] CPU threads:      ${TASK_THREADS:--1} (batch=${TASK_THREADS_BATCH:--1})"
 echo "[task] KV cache:         K=${TASK_CACHE_TYPE_K} V=${TASK_CACHE_TYPE_V}"
+echo "[task] Prompt cache:     ram=${TASK_CACHE_RAM:-8192} MiB ctx-checkpoints=${TASK_CTX_CHECKPOINTS:-32}"
+echo "[task] SWA full cache:   ${TASK_SWA_FULL:-off}"
 echo "[task] Jinja:            ${TASK_JINJA:-off}"
 echo "[task] Thinking:         ${TASK_THINKING:-off}"
 echo "[task] Reasoning format: ${TASK_REASONING_FORMAT:-none}"
@@ -46,6 +48,7 @@ OPTS=()
 [[ "${TASK_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${TASK_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${TASK_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
+[[ "${TASK_SWA_FULL:-off}" == "on" ]] && OPTS+=(--swa-full)
 [[ -n "${TASK_MMPROJ_PATH:-}" && -f "${TASK_MMPROJ_PATH}" ]] && OPTS+=(--mmproj "${TASK_MMPROJ_PATH}")
 
 CUSTOM_ARGS=()
@@ -181,6 +184,8 @@ exec "${LLAMA_SERVER_BIN}" \
     --threads-batch "${TASK_THREADS_BATCH:--1}" \
     --cache-type-k "${TASK_CACHE_TYPE_K}" \
     --cache-type-v "${TASK_CACHE_TYPE_V}" \
+    --cache-ram "${TASK_CACHE_RAM:-8192}" \
+    --ctx-checkpoints "${TASK_CTX_CHECKPOINTS:-32}" \
     --flash-attn "${TASK_FLASH_ATTN}" \
     --temp "${TASK_TEMP}" \
     --top-p "${TASK_TOP_P}" \

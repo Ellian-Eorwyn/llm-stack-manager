@@ -1396,8 +1396,9 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% elif section == 'Task Model' %}
       {% set task_identity_keys = ['TASK_MODEL_NAME', 'TASK_MODEL_PATH', 'TASK_MMPROJ_PATH', 'TASK_CTX_SIZE'] %}
       {% set task_runtime_keys = ['TASK_N_PARALLEL', 'TASK_BATCH_SIZE', 'TASK_UBATCH_SIZE', 'TASK_FLASH_ATTN', 'TASK_JINJA', 'TASK_CHAT_TEMPLATE_ID', 'TASK_THINKING', 'TASK_REASONING_FORMAT', 'TASK_FIT'] %}
-      {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
+      {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_CACHE_RAM', 'TASK_CTX_CHECKPOINTS', 'TASK_SWA_FULL', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
       {% set task_sampling_keys = ['TASK_TEMP', 'TASK_TOP_P', 'TASK_TOP_K', 'TASK_MIN_P', 'TASK_PRESENCE_PENALTY', 'TASK_REPEAT_PENALTY'] %}
+      {% set task_spec_keys = ['TASK_SPEC_METHOD', 'TASK_SPEC_NGRAM_MOD', 'TASK_SPEC_DRAFT_MODEL_PATH', 'TASK_SPEC_DRAFT_N_GPU_LAYERS', 'TASK_SPEC_DRAFT_DEVICES', 'TASK_SPEC_DRAFT_CTX_SIZE', 'TASK_SPEC_DRAFT_N_MAX', 'TASK_SPEC_DRAFT_N_MIN', 'TASK_SPEC_DRAFT_P_MIN', 'TASK_SPEC_DRAFT_P_SPLIT', 'TASK_SPEC_NGRAM_MOD_N_MATCH', 'TASK_SPEC_NGRAM_MOD_N_MIN', 'TASK_SPEC_NGRAM_MOD_N_MAX'] %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Model Identity And Files</h4>
@@ -1434,6 +1435,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
           <p>These settings shape output quality, determinism, and repetition behavior for the task model itself.</p>
           <div class="cfg-mini-grid">
             {% for f in fields if f.key in task_sampling_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Speculative Decoding</h4>
+          <p>Use llama.cpp speculative decoding to accelerate the task model. Select the base mode, then tune draft and n-gram values separately.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in task_spec_keys %}
             {{ render_config_field(f, section) }}
             {% endfor %}
           </div>
