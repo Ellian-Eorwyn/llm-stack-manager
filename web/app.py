@@ -327,6 +327,7 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend 2", "key": "CHAT2_CACHE_TYPE_V",          "label": "KV Cache Value Type",    "type": "select", "options": ["q8_0", "f16", "f32", "q4_0", "q4_1", "iq4_nl"]},
     {"section": "Shared Backend 2", "key": "CHAT2_CACHE_RAM",             "label": "Prompt Cache RAM",      "type": "number", "hint": "llama.cpp --cache-ram in MiB; 0 disables server prompt-cache storage"},
     {"section": "Shared Backend 2", "key": "CHAT2_CTX_CHECKPOINTS",       "label": "Context Checkpoints",   "type": "number", "hint": "llama.cpp --ctx-checkpoints; 0 disables context checkpoint creation"},
+    {"section": "Shared Backend 2", "key": "CHAT2_SWA_FULL",              "label": "Full SWA KV Cache",     "type": "select", "options": ["off", "on"], "hint": "Adds llama.cpp --swa-full for SWA models; uses more KV VRAM but improves prompt-cache reuse"},
     {"section": "Shared Backend 2", "key": "CHAT2_BATCH_SIZE",            "label": "Batch Size",             "type": "number", "hint": "Prefill batch (default 2048)"},
     {"section": "Shared Backend 2", "key": "CHAT2_UBATCH_SIZE",           "label": "Micro-Batch Size",       "type": "number", "hint": "Physical sub-batch (default 512)"},
     {"section": "Shared Backend 2", "key": "CHAT2_NO_MMAP",               "label": "Disable mmap",           "type": "select", "options": ["false", "true"]},
@@ -382,6 +383,7 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_CACHE_TYPE_V",          "label": "KV Cache Value Type",    "type": "select", "options": ["q8_0", "f16", "f32", "q4_0", "q4_1", "iq4_nl"]},
     {"section": "Shared Backend", "key": "CHAT_CACHE_RAM",             "label": "Prompt Cache RAM",      "type": "number", "hint": "llama.cpp --cache-ram in MiB; 0 disables server prompt-cache storage"},
     {"section": "Shared Backend", "key": "CHAT_CTX_CHECKPOINTS",       "label": "Context Checkpoints",   "type": "number", "hint": "llama.cpp --ctx-checkpoints; 0 disables context checkpoint creation"},
+    {"section": "Shared Backend", "key": "CHAT_SWA_FULL",              "label": "Full SWA KV Cache",     "type": "select", "options": ["off", "on"], "hint": "Adds llama.cpp --swa-full for SWA models; uses more KV VRAM but improves prompt-cache reuse"},
     {"section": "Shared Backend", "key": "CHAT_BATCH_SIZE",            "label": "Batch Size",             "type": "number", "hint": "Prefill batch (default 2048)"},
     {"section": "Shared Backend", "key": "CHAT_UBATCH_SIZE",           "label": "Micro-Batch Size",       "type": "number", "hint": "Physical sub-batch (default 512)"},
     {"section": "Shared Backend", "key": "CHAT_NO_MMAP",               "label": "Disable mmap",           "type": "select", "options": ["false", "true"]},
@@ -866,10 +868,15 @@ RESTART_HINTS = {
     "CHAT_SPEC_NGRAM_MOD_N_MAX": ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_CACHE_RAM":            ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_CTX_CHECKPOINTS":      ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
+    "CHAT_SWA_FULL":             ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_CUSTOM_ARGS_JSON":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_TEMPLATE_ID":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_BACKEND_HOST":         ["chat-proxy"],
     "CHAT_BACKEND_PORT":         ["chat-proxy"],
+    "CHAT2_CACHE_RAM":           ["chat-backend2"],
+    "CHAT2_CTX_CHECKPOINTS":     ["chat-backend2"],
+    "CHAT2_SWA_FULL":            ["chat-backend2"],
+    "CHAT2_CUSTOM_ARGS_JSON":    ["chat-backend2"],
     "CODE_THINKING":             ["chat-proxy"],
     "CODE_PRESERVE_THINKING":    ["chat-proxy"],
     "CODE_REASONING_STREAM_MODE": ["chat-proxy"],
@@ -1259,6 +1266,11 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CHAT_THREADS_BATCH", "-1")
     normalized.setdefault("CHAT_CACHE_RAM", "8192")
     normalized.setdefault("CHAT_CTX_CHECKPOINTS", "32")
+    normalized.setdefault("CHAT_SWA_FULL", "off")
+    normalized.setdefault("CHAT2_CACHE_RAM", "8192")
+    normalized.setdefault("CHAT2_CTX_CHECKPOINTS", "32")
+    normalized.setdefault("CHAT2_SWA_FULL", "off")
+    normalized.setdefault("CHAT2_CUSTOM_ARGS_JSON", "[]")
     normalized.setdefault("CHAT_SPEC_METHOD", "off")
     normalized.setdefault("CHAT_SPEC_NGRAM_MOD", "off")
     normalized.setdefault("CHAT_SPEC_DRAFT_MODEL_PATH", "")

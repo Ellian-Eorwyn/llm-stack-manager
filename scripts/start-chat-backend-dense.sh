@@ -29,6 +29,7 @@ echo "[chat-backend-dense] Placement:        split=${CHAT_SPLIT_MODE} kv-offload
 echo "[chat-backend-dense] CPU threads:      ${CHAT_THREADS:--1} (batch=${CHAT_THREADS_BATCH:--1})"
 echo "[chat-backend-dense] KV cache:         K=${CHAT_CACHE_TYPE_K} V=${CHAT_CACHE_TYPE_V}"
 echo "[chat-backend-dense] Prompt cache:     ram=${CHAT_CACHE_RAM:-8192} MiB ctx-checkpoints=${CHAT_CTX_CHECKPOINTS:-32}"
+echo "[chat-backend-dense] SWA full cache:   ${CHAT_SWA_FULL:-off}"
 echo "[chat-backend-dense] Reasoning format: ${CHAT_REASONING_FORMAT:-deepseek}"
 echo "[chat-backend-dense] Fit to VRAM:      ${CHAT_FIT:-on}"
 echo "[chat-backend-dense] Speculative:      ${CHAT_SPEC_METHOD:-off}"
@@ -42,6 +43,7 @@ OPTS=()
 [[ "${CHAT_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
+[[ "${CHAT_SWA_FULL:-off}" == "on" ]] && OPTS+=(--swa-full)
 
 CUSTOM_ARGS=()
 if [[ -n "${CHAT_CUSTOM_ARGS_JSON:-}" && "${CHAT_CUSTOM_ARGS_JSON}" != "[]" ]]; then

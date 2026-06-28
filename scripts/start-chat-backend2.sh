@@ -32,6 +32,7 @@ echo "[chat-backend2] Device override: ${CHAT2_DEVICE:-auto}"
 echo "[chat-backend2] Placement: split=${CHAT2_SPLIT_MODE} kv-offload=${CHAT2_KV_OFFLOAD:-on} op-offload=${CHAT2_OP_OFFLOAD:-on} mmproj-offload=${CHAT2_MMPROJ_OFFLOAD:-on}"
 echo "[chat-backend2] CPU threads:      ${CHAT2_THREADS:--1} (batch=${CHAT2_THREADS_BATCH:--1})"
 echo "[chat-backend2] KV cache: K=${CHAT2_CACHE_TYPE_K} V=${CHAT2_CACHE_TYPE_V}"
+echo "[chat-backend2] SWA full cache:    ${CHAT2_SWA_FULL:-off}"
 echo "[chat-backend2] Reasoning format: ${CHAT2_REASONING_FORMAT:-deepseek}"
 echo "[chat-backend2] Fit to VRAM:      ${CHAT2_FIT:-on}"
 echo "[chat-backend2] Public ports: ${THINK_PORT} (think) ${NOTHINK_PORT} (nothink) via proxy"
@@ -46,6 +47,7 @@ OPTS=()
 [[ "${CHAT2_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT2_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT2_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
+[[ "${CHAT2_SWA_FULL:-off}" == "on" ]] && OPTS+=(--swa-full)
 
 CUSTOM_ARGS=()
 if [[ -n "${CHAT2_CUSTOM_ARGS_JSON:-}" && "${CHAT2_CUSTOM_ARGS_JSON}" != "[]" ]]; then
