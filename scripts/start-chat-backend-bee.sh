@@ -22,7 +22,7 @@ if [[ ! -x "${BEE_SERVER_BIN}" ]]; then
 fi
 export LD_LIBRARY_PATH="${BEE_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
 export DYLD_LIBRARY_PATH="${BEE_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
-export CUDA_VISIBLE_DEVICES="${CHAT_GPU_VISIBLE_DEVICES}"
+export CUDA_VISIBLE_DEVICES="${CHAT_BEE_GPU_VISIBLE_DEVICES:-${CHAT_GPU_VISIBLE_DEVICES}}"
 
 log_bool_env() {
     local env_name="$1"
@@ -54,8 +54,10 @@ echo "[chat-backend-bee] Model:            ${CHAT_BEE_MODEL_PATH}"
 echo "[chat-backend-bee] MMProj:           ${CHAT_BEE_MMPROJ_PATH:-(none)}"
 echo "[chat-backend-bee] Port:             ${CHAT_BACKEND_PORT} (localhost only)"
 echo "[chat-backend-bee] Context:          ${CHAT_BEE_CTX_SIZE}"
-echo "[chat-backend-bee] Main GPU:         ${CHAT_MAIN_GPU}"
-echo "[chat-backend-bee] GPUs:             ${CUDA_VISIBLE_DEVICES} (split ${CHAT_TENSOR_SPLIT})"
+echo "[chat-backend-bee] Main GPU:         ${CHAT_BEE_MAIN_GPU:-${CHAT_MAIN_GPU}}"
+echo "[chat-backend-bee] GPUs:             ${CUDA_VISIBLE_DEVICES} (split ${CHAT_BEE_TENSOR_SPLIT:-${CHAT_TENSOR_SPLIT}})"
+echo "[chat-backend-bee] Device override:  ${CHAT_BEE_DEVICE:-${CHAT_DEVICE:-auto}}"
+echo "[chat-backend-bee] Placement:        split=${CHAT_BEE_SPLIT_MODE:-${CHAT_SPLIT_MODE}} ngl=${CHAT_BEE_N_GPU_LAYERS:-${CHAT_N_GPU_LAYERS}}"
 echo "[chat-backend-bee] KV cache:         K=${CHAT_BEE_CACHE_TYPE_K:-${CHAT_CACHE_TYPE_K}} V=${CHAT_BEE_CACHE_TYPE_V:-${CHAT_CACHE_TYPE_V}}"
 echo "[chat-backend-bee] Speculative:      ${CHAT_BEE_SPEC_METHOD:-off}"
 echo "[chat-backend-bee] Reasoning guard:  ${CHAT_BEE_REASONING_LOOP_GUARD:-force-close}"
@@ -67,7 +69,7 @@ OPTS=()
 [[ -n "${CHAT_BEE_VERBOSITY:-}" ]] && OPTS+=(--verbosity "${CHAT_BEE_VERBOSITY}")
 [[ "${CHAT_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${CHAT_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
-[[ -n "${CHAT_DEVICE:-}" ]] && OPTS+=(--device "${CHAT_DEVICE}")
+[[ -n "${CHAT_BEE_DEVICE:-${CHAT_DEVICE:-}}" ]] && OPTS+=(--device "${CHAT_BEE_DEVICE:-${CHAT_DEVICE}}")
 [[ "${CHAT_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
@@ -160,6 +162,16 @@ if [[ "${SPEC_METHOD}" != "off" && "${SPEC_METHOD}" != "none" ]]; then
         --spec-draft-p-min "${CHAT_BEE_SPEC_DRAFT_P_MIN:-0.0}"
         --spec-draft-p-split "${CHAT_BEE_SPEC_DRAFT_P_SPLIT:-0.10}"
     )
+    if [[ ",${SPEC_METHOD}," == *,ngram-mod,* ]]; then
+        echo "[chat-backend-bee] N-gram mod:       match=${CHAT_BEE_SPEC_NGRAM_MOD_N_MATCH:-24} min=${CHAT_BEE_SPEC_NGRAM_MOD_N_MIN:-48} max=${CHAT_BEE_SPEC_NGRAM_MOD_N_MAX:-64}"
+        SPEC_ARGS+=(
+            --spec-ngram-mod-n-match "${CHAT_BEE_SPEC_NGRAM_MOD_N_MATCH:-24}"
+            --spec-ngram-mod-n-min "${CHAT_BEE_SPEC_NGRAM_MOD_N_MIN:-48}"
+            --spec-ngram-mod-n-max "${CHAT_BEE_SPEC_NGRAM_MOD_N_MAX:-64}"
+        )
+    elif [[ "${CHAT_BEE_SPEC_NGRAM_MOD:-off}" == "on" ]]; then
+        echo "[chat-backend-bee] N-gram mod assist requested, but this BeeLLaMA build only accepts ngram-mod as a standalone --spec-type; leaving --spec-type=${SPEC_METHOD}."
+    fi
 fi
 if [[ "${SPEC_METHOD}" == "dflash" ]]; then
     SPEC_ARGS+=(
@@ -195,10 +207,10 @@ exec "${BEE_SERVER_BIN}" \
     --host "${CHAT_BACKEND_HOST}" \
     --port "${CHAT_BACKEND_PORT}" \
     --ctx-size "${CHAT_BEE_CTX_SIZE}" \
-    --main-gpu "${CHAT_MAIN_GPU}" \
-    --n-gpu-layers "${CHAT_N_GPU_LAYERS}" \
-    --split-mode "${CHAT_SPLIT_MODE}" \
-    --tensor-split "${CHAT_TENSOR_SPLIT}" \
+    --main-gpu "${CHAT_BEE_MAIN_GPU:-${CHAT_MAIN_GPU}}" \
+    --n-gpu-layers "${CHAT_BEE_N_GPU_LAYERS:-${CHAT_N_GPU_LAYERS}}" \
+    --split-mode "${CHAT_BEE_SPLIT_MODE:-${CHAT_SPLIT_MODE}}" \
+    --tensor-split "${CHAT_BEE_TENSOR_SPLIT:-${CHAT_TENSOR_SPLIT}}" \
     --batch-size "${CHAT_BATCH_SIZE}" \
     --ubatch-size "${CHAT_UBATCH_SIZE}" \
     --parallel "${CHAT_N_PARALLEL}" \
