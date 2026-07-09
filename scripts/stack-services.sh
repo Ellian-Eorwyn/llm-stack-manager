@@ -16,6 +16,7 @@ STACK_CORE_SERVICES=(
   task
   ocr
   glmocr-sdk
+  playwright-server
   honcho-api
   honcho-deriver
   think

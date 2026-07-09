@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import threading
 import time
@@ -25,7 +26,14 @@ from urllib import request as urlrequest
 from urllib.parse import quote, unquote, urlparse
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
+from flask import has_request_context
 import sys
+try:
+    import grp
+    import pwd
+except ImportError:
+    grp = None
+    pwd = None
 
 class ServiceManager:
     IS_MAC = sys.platform == 'darwin'
@@ -245,6 +253,8 @@ SERVICES = [
     {"group": "auxiliary", "name": "glmocr-sdk",       "label": "OCR SDK",      "desc": "Local GLM-OCR layout/PDF parser",       "ports": "5002", "config_section": "GLM-OCR SDK"},
     {"group": "auxiliary", "name": "honcho-api",       "label": "Honcho API",   "desc": "Local Honcho memory API",           "ports": "8090"},
     {"group": "auxiliary", "name": "honcho-deriver",   "label": "Honcho Worker", "desc": "Local Honcho background deriver",   "ports": "worker"},
+    {"group": "auxiliary", "name": "searxng",          "label": "SearXNG",      "desc": "Local metasearch engine via uWSGI/nginx", "ports": "/searxng", "config_section": "SearXNG"},
+    {"group": "auxiliary", "name": "playwright-server", "label": "Playwright",   "desc": "Remote browser automation WebSocket server", "ports": "3001", "config_section": "Playwright"},
 ]
 
 LLAMACPP_MODEL_SERVICES = [
@@ -274,6 +284,8 @@ CORE_CONFIG_SECTIONS = {
     "Reranker",
     "OCR",
     "GLM-OCR SDK",
+    "SearXNG",
+    "Playwright",
     "Ports",
 }
 
@@ -300,6 +312,9 @@ CODE_TO_CHAT_MIRRORS = {
 # ---------------------------------------------------------------------------
 # Config fields exposed in the UI
 # ---------------------------------------------------------------------------
+LLAMA_SPEC_METHOD_OPTIONS = ["off", "draft-model", "draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"]
+LLAMA_CACHE_IDLE_OPTIONS = ["on", "off"]
+
 CONFIG_FIELDS = [
     {"section": "Chat Templates", "key": "CHAT_TEMPLATE_MANAGER", "label": "Template Manager", "type": "template_manager", "hint": "Create and edit reusable llama.cpp Jinja chat templates"},
 
@@ -337,12 +352,17 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend 2", "key": "CHAT2_JINJA",                 "label": "Backend Jinja Support",  "type": "select", "options": ["off", "on"], "hint": "Enables --jinja on the shared backend so proxy ports can expose tool calling"},
     {"section": "Shared Backend 2", "key": "CHAT2_TEMPLATE_ID",           "label": "Effective Chat Template", "type": "chat_template", "hint": "Custom Jinja template file passed to the shared backend; model default leaves GGUF metadata unchanged"},
     {"section": "Shared Backend 2", "key": "CHAT2_FIT",                   "label": "Auto-Fit to VRAM",       "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": ["off", "draft-model", "draft-mtp", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"], "hint": "Base llama.cpp speculative decoding mode for the shared backend"},
+    {"section": "Shared Backend 2", "key": "CHAT2_FIT_TARGET",            "label": "Fit Target MiB",         "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
+    {"section": "Shared Backend 2", "key": "CHAT2_FIT_CTX",               "label": "Minimum Fit Context",    "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
+    {"section": "Shared Backend 2", "key": "CHAT2_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",       "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
+    {"section": "Shared Backend 2", "key": "CHAT2_CACHE_REUSE",           "label": "Cache Reuse Chunk",      "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
+    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash; BeeLLaMA dflash-draft GGUFs must use the BeeLLaMA backend."},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",       "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",     "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",          "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_CTX_SIZE",   "label": "Draft Context Size",     "type": "number", "hint": "0 = let llama.cpp load the draft model's default context"},
+    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_TYPE_K",     "label": "Draft KV Key Type",      "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-k"},
+    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_TYPE_V",     "label": "Draft KV Value Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-v"},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_N_MAX",      "label": "Draft Max Tokens",       "type": "number", "hint": "llama.cpp --spec-draft-n-max (recommended 6 for MTP)"},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_N_MIN",      "label": "Draft Min Tokens",       "type": "number", "hint": "llama.cpp --spec-draft-n-min (default 0)"},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_P_MIN",      "label": "Draft Min Probability",  "type": "text",   "hint": "llama.cpp --spec-draft-p-min (default 0.75)"},
@@ -350,6 +370,9 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MOD_N_MATCH","label": "N-Gram Match Tokens",    "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-match (default 24)"},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MOD_N_MIN",  "label": "N-Gram Min Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-min (default 48)"},
     {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MOD_N_MAX",  "label": "N-Gram Max Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-max (default 64)"},
+    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_SIZE_N",     "label": "N-Gram Lookup Size",     "type": "number", "hint": "llama.cpp --spec-ngram-*-size-n for ngram-simple/map modes"},
+    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_SIZE_M",     "label": "N-Gram Draft Size",      "type": "number", "hint": "llama.cpp --spec-ngram-*-size-m for ngram-simple/map modes"},
+    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",        "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
     {"section": "Shared Backend 2", "key": "CHAT2_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",       "type": "custom_args", "hint": "Extra llama.cpp flags applied to all shared chat backends"},
     # Shared Backend
     {"section": "Shared Backend", "key": "CHAT_DENSE_LABEL",           "label": "Dense Slot Label",       "type": "text",   "hint": "UI label for the dense preset button/card"},
@@ -393,12 +416,17 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_JINJA",                 "label": "Backend Jinja Support",  "type": "select", "options": ["off", "on"], "hint": "Enables --jinja on the shared backend so proxy ports can expose tool calling"},
     {"section": "Shared Backend", "key": "CHAT_TEMPLATE_ID",           "label": "Effective Chat Template", "type": "chat_template", "hint": "Custom Jinja template file passed to the shared backend; model default leaves GGUF metadata unchanged"},
     {"section": "Shared Backend", "key": "CHAT_FIT",                   "label": "Auto-Fit to VRAM",       "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
-    {"section": "Shared Backend", "key": "CHAT_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": ["off", "draft-model", "draft-mtp", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"], "hint": "Base llama.cpp speculative decoding mode for the shared backend"},
+    {"section": "Shared Backend", "key": "CHAT_FIT_TARGET",            "label": "Fit Target MiB",         "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
+    {"section": "Shared Backend", "key": "CHAT_FIT_CTX",               "label": "Minimum Fit Context",    "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
+    {"section": "Shared Backend", "key": "CHAT_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",       "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
+    {"section": "Shared Backend", "key": "CHAT_CACHE_REUSE",           "label": "Cache Reuse Chunk",      "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
+    {"section": "Shared Backend", "key": "CHAT_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash; BeeLLaMA dflash-draft GGUFs must use the BeeLLaMA backend."},
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",       "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",     "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",          "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
-    {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_CTX_SIZE",   "label": "Draft Context Size",     "type": "number", "hint": "0 = let llama.cpp load the draft model's default context"},
+    {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_TYPE_K",     "label": "Draft KV Key Type",      "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-k"},
+    {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_TYPE_V",     "label": "Draft KV Value Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-v"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_N_MAX",      "label": "Draft Max Tokens",       "type": "number", "hint": "llama.cpp --spec-draft-n-max (recommended 6 for MTP)"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_N_MIN",      "label": "Draft Min Tokens",       "type": "number", "hint": "llama.cpp --spec-draft-n-min (default 0)"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_P_MIN",      "label": "Draft Min Probability",  "type": "text",   "hint": "llama.cpp --spec-draft-p-min (default 0.75)"},
@@ -406,6 +434,9 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD_N_MATCH","label": "N-Gram Match Tokens",    "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-match (default 24)"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD_N_MIN",  "label": "N-Gram Min Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-min (default 48)"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD_N_MAX",  "label": "N-Gram Max Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-max (default 64)"},
+    {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_SIZE_N",     "label": "N-Gram Lookup Size",     "type": "number", "hint": "llama.cpp --spec-ngram-*-size-n for ngram-simple/map modes"},
+    {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_SIZE_M",     "label": "N-Gram Draft Size",      "type": "number", "hint": "llama.cpp --spec-ngram-*-size-m for ngram-simple/map modes"},
+    {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",        "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
     {"section": "Shared Backend", "key": "CHAT_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",       "type": "custom_args", "hint": "Extra llama.cpp flags applied to all shared chat backends"},
     {"section": "Shared Backend", "key": "BEELLAMA_SERVER_BIN",                  "label": "BeeLLaMA Binary",       "type": "executable_path", "hint": "Path to deps/beellama.cpp build/bin/llama-server"},
     {"section": "Shared Backend", "key": "CHAT_BEE_GPU_VISIBLE_DEVICES",         "label": "Bee GPU Devices",      "type": "text", "hint": "CUDA_VISIBLE_DEVICES for chat-backend-bee; e.g. 0,1"},
@@ -518,13 +549,18 @@ CONFIG_FIELDS = [
     {"section": "Task Model",  "key": "TASK_THINKING",              "label": "Thinking",             "type": "select", "options": ["off", "on"], "hint": "Enable/disable thinking/reasoning for the task model"},
     {"section": "Task Model",  "key": "TASK_REASONING_FORMAT",      "label": "Reasoning Format",     "type": "select", "options": ["none", "deepseek", "deepseek-legacy"], "hint": "How thinking content appears in API responses"},
     {"section": "Task Model",  "key": "TASK_FIT",                   "label": "Auto-Fit to VRAM",     "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
+    {"section": "Task Model",  "key": "TASK_FIT_TARGET",            "label": "Fit Target MiB",       "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
+    {"section": "Task Model",  "key": "TASK_FIT_CTX",               "label": "Minimum Fit Context",  "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
+    {"section": "Task Model",  "key": "TASK_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",     "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
+    {"section": "Task Model",  "key": "TASK_CACHE_REUSE",           "label": "Cache Reuse Chunk",    "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
     {"section": "Task Model",  "key": "TASK_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",     "type": "custom_args", "hint": "Extra llama.cpp flags applied to the task model launcher"},
-    {"section": "Task Model",  "key": "TASK_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": ["off", "draft-model", "draft-mtp", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"], "hint": "Speculative decoding mode for the task model"},
+    {"section": "Task Model",  "key": "TASK_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash; BeeLLaMA dflash-draft GGUFs must use the BeeLLaMA backend."},
     {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types"},
     {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",       "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
     {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",     "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
     {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",          "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
-    {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_CTX_SIZE",   "label": "Draft Context Size",     "type": "number", "hint": "0 = let llama.cpp load the draft model's default context"},
+    {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_TYPE_K",     "label": "Draft KV Key Type",      "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-k"},
+    {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_TYPE_V",     "label": "Draft KV Value Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-v"},
     {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_N_MAX",      "label": "Draft Max Tokens",       "type": "number", "hint": "llama.cpp --spec-draft-n-max (recommended 6 for MTP)"},
     {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_N_MIN",      "label": "Draft Min Tokens",       "type": "number", "hint": "llama.cpp --spec-draft-n-min (default 0)"},
     {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_P_MIN",      "label": "Draft Min Probability",  "type": "text",   "hint": "llama.cpp --spec-draft-p-min (default 0.75)"},
@@ -532,6 +568,9 @@ CONFIG_FIELDS = [
     {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_MOD_N_MATCH","label": "N-Gram Match Tokens",    "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-match (default 24)"},
     {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_MOD_N_MIN",  "label": "N-Gram Min Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-min (default 48)"},
     {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_MOD_N_MAX",  "label": "N-Gram Max Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-max (default 64)"},
+    {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_SIZE_N",     "label": "N-Gram Lookup Size",     "type": "number", "hint": "llama.cpp --spec-ngram-*-size-n for ngram-simple/map modes"},
+    {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_SIZE_M",     "label": "N-Gram Draft Size",      "type": "number", "hint": "llama.cpp --spec-ngram-*-size-m for ngram-simple/map modes"},
+    {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",        "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
     # Thinking Endpoint (proxied request-time overrides)
     {"section": "Thinking Endpoint", "key": "THINK_MODEL_NAME",          "label": "Thinking Model Name",   "type": "text",   "hint": "Advertised on /v1/models for the thinking endpoint"},
     {"section": "Thinking Endpoint", "key": "THINK_PRESERVE_THINKING",   "label": "Preserve Thinking",     "type": "select", "options": ["on", "off"], "hint": "Injects chat_template_kwargs.preserve_thinking into thinking requests"},
@@ -754,6 +793,35 @@ CONFIG_FIELDS = [
     {"section": "Graphiti",    "key": "GRAPHITI_NEO4J_DATABASE",    "label": "Neo4j Database",       "type": "text"},
     {"section": "Graphiti",    "key": "GRAPHITI_NEO4J_BOLT_PORT",   "label": "Neo4j Bolt Port",      "type": "number"},
     {"section": "Graphiti",    "key": "GRAPHITI_NEO4J_HTTP_PORT",   "label": "Neo4j HTTP Port",      "type": "number"},
+    # SearXNG
+    {"section": "SearXNG",     "key": "SEARXNG_ENABLED",            "label": "Install On Stack Setup", "type": "select", "options": ["on", "off"]},
+    {"section": "SearXNG",     "key": "SEARXNG_PUBLIC_URL",         "label": "Public URL",             "type": "text", "hint": "URL clients and the manager should use"},
+    {"section": "SearXNG",     "key": "SEARXNG_BASE_URL",           "label": "Base URL",               "type": "text", "hint": "URL passed through to SearXNG when needed"},
+    {"section": "SearXNG",     "key": "SEARXNG_URL_PATH",           "label": "Nginx URL Path",         "type": "text", "hint": "Path mounted into the default nginx server block"},
+    {"section": "SearXNG",     "key": "SEARXNG_INSTANCE_NAME",      "label": "Instance Name",          "type": "text"},
+    {"section": "SearXNG",     "key": "SEARXNG_SAFE_SEARCH",        "label": "Safe Search",            "type": "select", "options": ["0", "1", "2"]},
+    {"section": "SearXNG",     "key": "SEARXNG_AUTOCOMPLETE",       "label": "Autocomplete",           "type": "text"},
+    {"section": "SearXNG",     "key": "SEARXNG_FORMATS",            "label": "Search Formats",         "type": "text", "hint": "Comma-separated: html,json,csv,rss"},
+    {"section": "SearXNG",     "key": "SEARXNG_LIMITER",            "label": "Limiter",                "type": "select", "options": ["false", "true"]},
+    {"section": "SearXNG",     "key": "SEARXNG_IMAGE_PROXY",        "label": "Image Proxy",            "type": "select", "options": ["true", "false"]},
+    {"section": "SearXNG",     "key": "SEARXNG_VALKEY_URL",         "label": "Valkey URL",             "type": "text"},
+    {"section": "SearXNG",     "key": "SEARXNG_HOME",               "label": "Install Directory",      "type": "path"},
+    {"section": "SearXNG",     "key": "SEARXNG_SETTINGS_PATH",      "label": "Settings File",          "type": "path"},
+    {"section": "SearXNG",     "key": "SEARXNG_UWSGI_INI",          "label": "uWSGI Config",           "type": "path"},
+    {"section": "SearXNG",     "key": "SEARXNG_UWSGI_SOCKET",       "label": "uWSGI Socket",           "type": "path"},
+    {"section": "SearXNG",     "key": "SEARXNG_NGINX_CONF",         "label": "Nginx Config",           "type": "path"},
+    # Playwright
+    {"section": "Playwright",  "key": "PLAYWRIGHT_ENABLED",         "label": "Install On Stack Setup", "type": "select", "options": ["on", "off"]},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_PUBLIC_WS_URL",   "label": "Public WS URL",          "type": "text", "hint": "Use with playwright.chromium.connect(...)"},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_PUBLIC_HTTP_URL", "label": "Public HTTP URL",        "type": "text", "hint": "Same listener exposed as HTTP/WebSocket"},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_URL_PATH",        "label": "Nginx URL Path",         "type": "text", "hint": "Path mounted into the default nginx server block"},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_HOST",            "label": "Listen Host",            "type": "text"},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_PORT",            "label": "Port",                   "type": "number"},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_BROWSER",         "label": "Browser",                "type": "select", "options": ["chromium", "firefox", "webkit"]},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_INSTALL_BROWSERS", "label": "Install Browser Binaries", "type": "select", "options": ["on", "off"]},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_BROWSERS_PATH",   "label": "Browser Cache Path",     "type": "path"},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_NODE_ENV",        "label": "Node Environment",       "type": "text"},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_NGINX_CONF",      "label": "Nginx Config",           "type": "path"},
     # Ports
     {"section": "Ports",       "key": "THINK_PORT",                 "label": "Thinking Port",        "type": "number"},
     {"section": "Ports",       "key": "NOTHINK_PORT",               "label": "Chat Port",            "type": "number"},
@@ -872,7 +940,6 @@ RESTART_HINTS = {
     "CHAT_SPEC_DRAFT_MODEL_PATH": ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_SPEC_DRAFT_N_GPU_LAYERS": ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_SPEC_DRAFT_DEVICES":   ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_SPEC_DRAFT_CTX_SIZE":  ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_SPEC_DRAFT_N_MAX":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_SPEC_DRAFT_N_MIN":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_SPEC_DRAFT_P_MIN":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
@@ -986,7 +1053,6 @@ RESTART_HINTS = {
     "TASK_SPEC_DRAFT_MODEL_PATH":   ["task"],
     "TASK_SPEC_DRAFT_N_GPU_LAYERS": ["task"],
     "TASK_SPEC_DRAFT_DEVICES":      ["task"],
-    "TASK_SPEC_DRAFT_CTX_SIZE":     ["task"],
     "TASK_SPEC_DRAFT_N_MAX":        ["task"],
     "TASK_SPEC_DRAFT_N_MIN":        ["task"],
     "TASK_SPEC_DRAFT_P_MIN":        ["task"],
@@ -1172,6 +1238,10 @@ for _field in CONFIG_FIELDS:
         RESTART_HINTS.setdefault(_key, ["ocr"])
     if _key.startswith("GLMOCR_"):
         RESTART_HINTS.setdefault(_key, ["glmocr-sdk"])
+    if _key.startswith("SEARXNG_"):
+        RESTART_HINTS.setdefault(_key, ["searxng"])
+    if _key.startswith("PLAYWRIGHT_"):
+        RESTART_HINTS.setdefault(_key, ["playwright-server"])
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1293,17 +1363,26 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CHAT_THREADS_BATCH", "-1")
     normalized.setdefault("CHAT_CACHE_RAM", "8192")
     normalized.setdefault("CHAT_CTX_CHECKPOINTS", "32")
+    normalized.setdefault("CHAT_CACHE_IDLE_SLOTS", "on")
+    normalized.setdefault("CHAT_CACHE_REUSE", "0")
     normalized.setdefault("CHAT_SWA_FULL", "off")
+    normalized.setdefault("CHAT_FIT_TARGET", "")
+    normalized.setdefault("CHAT_FIT_CTX", "4096")
     normalized.setdefault("CHAT2_CACHE_RAM", "8192")
     normalized.setdefault("CHAT2_CTX_CHECKPOINTS", "32")
+    normalized.setdefault("CHAT2_CACHE_IDLE_SLOTS", "on")
+    normalized.setdefault("CHAT2_CACHE_REUSE", "0")
     normalized.setdefault("CHAT2_SWA_FULL", "off")
+    normalized.setdefault("CHAT2_FIT_TARGET", "")
+    normalized.setdefault("CHAT2_FIT_CTX", "4096")
     normalized.setdefault("CHAT2_CUSTOM_ARGS_JSON", "[]")
     normalized.setdefault("CHAT_SPEC_METHOD", "off")
     normalized.setdefault("CHAT_SPEC_NGRAM_MOD", "off")
     normalized.setdefault("CHAT_SPEC_DRAFT_MODEL_PATH", "")
     normalized.setdefault("CHAT_SPEC_DRAFT_N_GPU_LAYERS", "auto")
     normalized.setdefault("CHAT_SPEC_DRAFT_DEVICES", "")
-    normalized.setdefault("CHAT_SPEC_DRAFT_CTX_SIZE", "0")
+    normalized.setdefault("CHAT_SPEC_DRAFT_TYPE_K", "f16")
+    normalized.setdefault("CHAT_SPEC_DRAFT_TYPE_V", "f16")
     normalized.setdefault("CHAT_SPEC_DRAFT_N_MAX", "6")
     normalized.setdefault("CHAT_SPEC_DRAFT_N_MIN", "0")
     normalized.setdefault("CHAT_SPEC_DRAFT_P_MIN", "0.75")
@@ -1311,6 +1390,26 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CHAT_SPEC_NGRAM_MOD_N_MATCH", "24")
     normalized.setdefault("CHAT_SPEC_NGRAM_MOD_N_MIN", "48")
     normalized.setdefault("CHAT_SPEC_NGRAM_MOD_N_MAX", "64")
+    normalized.setdefault("CHAT_SPEC_NGRAM_SIZE_N", "12")
+    normalized.setdefault("CHAT_SPEC_NGRAM_SIZE_M", "48")
+    normalized.setdefault("CHAT_SPEC_NGRAM_MIN_HITS", "1")
+    normalized.setdefault("CHAT2_SPEC_METHOD", "off")
+    normalized.setdefault("CHAT2_SPEC_NGRAM_MOD", "off")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_MODEL_PATH", "")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_N_GPU_LAYERS", "auto")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_DEVICES", "")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_TYPE_K", "f16")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_TYPE_V", "f16")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_N_MAX", "6")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_N_MIN", "0")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_P_MIN", "0.75")
+    normalized.setdefault("CHAT2_SPEC_DRAFT_P_SPLIT", "0.10")
+    normalized.setdefault("CHAT2_SPEC_NGRAM_MOD_N_MATCH", "24")
+    normalized.setdefault("CHAT2_SPEC_NGRAM_MOD_N_MIN", "48")
+    normalized.setdefault("CHAT2_SPEC_NGRAM_MOD_N_MAX", "64")
+    normalized.setdefault("CHAT2_SPEC_NGRAM_SIZE_N", "12")
+    normalized.setdefault("CHAT2_SPEC_NGRAM_SIZE_M", "48")
+    normalized.setdefault("CHAT2_SPEC_NGRAM_MIN_HITS", "1")
     normalized.setdefault("THINK_MODEL_NAME", "think")
     normalized.setdefault("NOTHINK_MODEL_NAME", "chat")
     normalized.setdefault("CODE_MODEL_NAME", "code")
@@ -1350,13 +1449,18 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("TASK_THREADS_BATCH", "-1")
     normalized.setdefault("TASK_CACHE_RAM", "8192")
     normalized.setdefault("TASK_CTX_CHECKPOINTS", "32")
+    normalized.setdefault("TASK_CACHE_IDLE_SLOTS", "on")
+    normalized.setdefault("TASK_CACHE_REUSE", "0")
     normalized.setdefault("TASK_SWA_FULL", "off")
+    normalized.setdefault("TASK_FIT_TARGET", "")
+    normalized.setdefault("TASK_FIT_CTX", "4096")
     normalized.setdefault("TASK_SPEC_METHOD", "off")
     normalized.setdefault("TASK_SPEC_NGRAM_MOD", "off")
     normalized.setdefault("TASK_SPEC_DRAFT_MODEL_PATH", "")
     normalized.setdefault("TASK_SPEC_DRAFT_N_GPU_LAYERS", "auto")
     normalized.setdefault("TASK_SPEC_DRAFT_DEVICES", "")
-    normalized.setdefault("TASK_SPEC_DRAFT_CTX_SIZE", "0")
+    normalized.setdefault("TASK_SPEC_DRAFT_TYPE_K", "f16")
+    normalized.setdefault("TASK_SPEC_DRAFT_TYPE_V", "f16")
     normalized.setdefault("TASK_SPEC_DRAFT_N_MAX", "6")
     normalized.setdefault("TASK_SPEC_DRAFT_N_MIN", "0")
     normalized.setdefault("TASK_SPEC_DRAFT_P_MIN", "0.75")
@@ -1364,6 +1468,9 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("TASK_SPEC_NGRAM_MOD_N_MATCH", "24")
     normalized.setdefault("TASK_SPEC_NGRAM_MOD_N_MIN", "48")
     normalized.setdefault("TASK_SPEC_NGRAM_MOD_N_MAX", "64")
+    normalized.setdefault("TASK_SPEC_NGRAM_SIZE_N", "12")
+    normalized.setdefault("TASK_SPEC_NGRAM_SIZE_M", "48")
+    normalized.setdefault("TASK_SPEC_NGRAM_MIN_HITS", "1")
     normalized.setdefault("EMBED_MODEL_NAME", "embed")
     normalized.setdefault("EMBED2_MODEL_NAME", "embed2")
     normalized.setdefault("EMBED_THREADS", "-1")
@@ -1451,6 +1558,34 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("GLMOCR_PROMPT_TABLE", "Table Recognition:")
     normalized.setdefault("GLMOCR_PROMPT_FORMULA", "Formula Recognition:")
     normalized.setdefault("GLMOCR_ADVANCED_CONFIG_JSON", "{}")
+    normalized.setdefault("SEARXNG_ENABLED", "on")
+    normalized.setdefault("SEARXNG_URL_PATH", "/searxng")
+    normalized.setdefault("SEARXNG_BASE_URL", "http://127.0.0.1/searxng/")
+    normalized.setdefault("SEARXNG_PUBLIC_URL", normalized.get("SEARXNG_BASE_URL", "http://127.0.0.1/searxng/"))
+    normalized.setdefault("SEARXNG_INSTANCE_NAME", "SearXNG")
+    normalized.setdefault("SEARXNG_SAFE_SEARCH", "2")
+    normalized.setdefault("SEARXNG_AUTOCOMPLETE", "duckduckgo")
+    normalized.setdefault("SEARXNG_FORMATS", "html,json")
+    normalized.setdefault("SEARXNG_LIMITER", "false")
+    normalized.setdefault("SEARXNG_IMAGE_PROXY", "true")
+    normalized.setdefault("SEARXNG_SECRET", "")
+    normalized.setdefault("SEARXNG_VALKEY_URL", "valkey://localhost:6379/0")
+    normalized.setdefault("SEARXNG_HOME", "/usr/local/searxng")
+    normalized.setdefault("SEARXNG_SETTINGS_PATH", "/etc/searxng/settings.yml")
+    normalized.setdefault("SEARXNG_UWSGI_INI", "/etc/uwsgi/apps-available/searxng.ini")
+    normalized.setdefault("SEARXNG_UWSGI_SOCKET", "/usr/local/searxng/run/socket")
+    normalized.setdefault("SEARXNG_NGINX_CONF", "/etc/nginx/default.apps-available/searxng.conf")
+    normalized.setdefault("PLAYWRIGHT_ENABLED", "on")
+    normalized.setdefault("PLAYWRIGHT_HOST", "0.0.0.0")
+    normalized.setdefault("PLAYWRIGHT_PORT", "3001")
+    normalized.setdefault("PLAYWRIGHT_URL_PATH", "/playwright")
+    normalized.setdefault("PLAYWRIGHT_PUBLIC_WS_URL", "ws://127.0.0.1/playwright/")
+    normalized.setdefault("PLAYWRIGHT_PUBLIC_HTTP_URL", "http://127.0.0.1/playwright/")
+    normalized.setdefault("PLAYWRIGHT_BROWSER", "chromium")
+    normalized.setdefault("PLAYWRIGHT_INSTALL_BROWSERS", "on")
+    normalized.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(STACK_DIR / "playwright" / "browsers"))
+    normalized.setdefault("PLAYWRIGHT_NODE_ENV", "production")
+    normalized.setdefault("PLAYWRIGHT_NGINX_CONF", "/etc/nginx/default.apps-available/playwright.conf")
     shared_transcript_model = normalized.get("TRANSCRIPT_LOCAL_MODEL")
     shared_transcript_legacy = normalized.get("TRANSCRIPT_LOCAL_MODEL_SIZE", "large-v3")
     normalized.setdefault("PARAKEET_V3_BACKEND_TYPE", "upstream")
@@ -1595,6 +1730,11 @@ def patch_service_labels(env: dict | None = None) -> list[dict]:
 
 
 def get_service_status(name: str) -> str:
+    if is_searxng_service(name):
+        ok, output = run_searxng_manager('status')
+        if ok:
+            return output.strip() or 'unknown'
+        return 'failed'
     if should_use_local_transcript_manager(name):
         ok, output = run_transcript_manager('status')
         if ok:
@@ -2218,6 +2358,43 @@ def run_transcript_manager(action: str) -> tuple:
         return False, 'Transcript manager action timed out'
     except Exception as e:
         return False, str(e)
+
+
+def is_searxng_service(name: str) -> bool:
+    return name == "searxng"
+
+
+def run_searxng_manager(action: str) -> tuple[bool, str]:
+    if action == "status":
+        uwsgi = get_service_status("uwsgi")
+        nginx = get_service_status("nginx")
+        socket_path = Path(read_env().get("SEARXNG_UWSGI_SOCKET", "/usr/local/searxng/run/socket"))
+        if uwsgi == "active" and nginx == "active" and socket_path.exists():
+            return True, "active"
+        if uwsgi == "failed" or nginx == "failed":
+            return True, "failed"
+        return True, "inactive"
+    try:
+        if action == "start":
+            ServiceManager.start("nginx")
+            r = ServiceManager.start("uwsgi")
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+        if action == "stop":
+            r = ServiceManager.stop("uwsgi")
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+        if action == "restart":
+            rc, output = ServiceManager.restart("uwsgi")
+            ServiceManager.run_cmd(["nginx", "-t"], timeout=10)
+            ServiceManager.run_cmd(["systemctl", "reload", "nginx"], timeout=10)
+            return rc == 0, output
+        if action == "install":
+            r = subprocess.run(["bash", str(SCRIPTS_DIR / "install-searxng.sh")], capture_output=True, text=True, timeout=900)
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return False, "SearXNG manager action timed out"
+    except Exception as exc:
+        return False, str(exc)
+    return False, "unsupported action"
 
 
 def tts_log_file(name: str) -> Path:
@@ -3355,6 +3532,9 @@ def api_service_action(name, action):
         return jsonify(ok=False, error='Unknown action'), 400
     if name not in {s['name'] for s in patch_service_labels()}:
         return jsonify(ok=False, error='Unknown service'), 400
+    if is_searxng_service(name):
+        ok, output = run_searxng_manager(action)
+        return jsonify(ok=ok, output=output)
     if should_use_local_transcript_manager(name):
         ok, output = run_transcript_manager(action)
         return jsonify(ok=ok, output=output)
@@ -3366,6 +3546,55 @@ def api_service_action(name, action):
         return jsonify(ok=(rc == 0), output=output)
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
+
+
+@app.route('/api/searxng/status')
+def api_searxng_status():
+    cfg = searxng_config()
+    checks = {
+        "uwsgi": {"ok": get_service_status("uwsgi") == "active", "status": get_service_status("uwsgi")},
+        "nginx": {"ok": get_service_status("nginx") == "active", "status": get_service_status("nginx")},
+        "settings": {"ok": Path(cfg["settings_path"]).exists(), "path": cfg["settings_path"]},
+        "uwsgi_ini": {"ok": Path(cfg["uwsgi_ini"]).exists(), "path": cfg["uwsgi_ini"]},
+        "socket": {"ok": Path(cfg["uwsgi_socket"]).exists(), "path": cfg["uwsgi_socket"]},
+        "nginx_conf": {"ok": Path(cfg["nginx_conf"]).exists(), "path": cfg["nginx_conf"]},
+        "search_api": {"ok": False, "error": ""},
+    }
+    try:
+        result = http_json(f"{cfg['local_url']}search?q=llm-stack&format=json", timeout=8)
+        checks["search_api"]["ok"] = isinstance(result, dict) and "results" in result
+        checks["search_api"]["result_count"] = len(result.get("results", [])) if isinstance(result, dict) else 0
+    except Exception as exc:
+        checks["search_api"]["error"] = str(exc)
+    return jsonify(ok=True, service_status=get_service_status("searxng"), config=cfg, checks=checks, last_refresh=int(time.time()))
+
+
+@app.route('/api/searxng/install', methods=['POST'])
+def api_searxng_install():
+    ok, output = run_searxng_manager("install")
+    return jsonify(ok=ok, output=output)
+
+
+@app.route('/api/playwright/status')
+def api_playwright_status():
+    cfg = playwright_config()
+    port_ok, port_error = tcp_port_open(cfg["host"], cfg["port"])
+    checks = {
+        "service": {"ok": get_service_status("playwright-server") == "active", "status": get_service_status("playwright-server")},
+        "unit": {"ok": Path(cfg["service_unit"]).exists(), "path": cfg["service_unit"]},
+        "package_json": {"ok": Path(cfg["package_json"]).exists(), "path": cfg["package_json"]},
+        "node_modules": {"ok": Path(cfg["node_modules"]).exists(), "path": cfg["node_modules"]},
+        "browser_cache": playwright_browser_cache_status(cfg),
+        "nginx_conf": {"ok": Path(cfg["nginx_conf"]).exists(), "path": cfg["nginx_conf"]},
+        "tcp_listener": {"ok": port_ok, "error": port_error, "endpoint": cfg["public_ws_url"]},
+    }
+    return jsonify(ok=True, service_status=get_service_status("playwright-server"), config=cfg, checks=checks, last_refresh=int(time.time()))
+
+
+@app.route('/api/playwright/install', methods=['POST'])
+def api_playwright_install():
+    ok, output = run_playwright_install()
+    return jsonify(ok=ok, output=output)
 
 
 
@@ -3390,6 +3619,252 @@ def _glmocr_backend_url(env: dict) -> str:
         host = "127.0.0.1"
     port = env.get("GLMOCR_SDK_PORT", "5002")
     return f"http://{host}:{port}/glmocr/parse"
+
+
+def request_origin_for_tool(ws: bool = False) -> str:
+    if not has_request_context():
+        return "ws://127.0.0.1" if ws else "http://127.0.0.1"
+    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.host)
+    parsed_host = urlparse(f"//{host}")
+    hostname = parsed_host.hostname or host
+    port = parsed_host.port
+    manager_port = str(read_env().get("LLM_MANAGER_PORT", "8077"))
+    if port and str(port) != manager_port:
+        host = f"{hostname}:{port}"
+    else:
+        host = hostname
+    if ws:
+        scheme = "wss" if scheme == "https" else "ws"
+    return f"{scheme}://{host}"
+
+
+def browser_tool_url(configured: str, url_path: str, ws: bool = False) -> str:
+    configured = (configured or "").strip()
+    if configured:
+        parsed = urlparse(configured)
+        if parsed.hostname not in {"127.0.0.1", "localhost", "0.0.0.0"}:
+            return configured if configured.endswith("/") else configured + "/"
+    path = url_path if url_path.startswith("/") else f"/{url_path}"
+    return f"{request_origin_for_tool(ws)}{path}/"
+
+
+def searxng_config(env: dict | None = None) -> dict:
+    env = env or read_env()
+    url_path = env.get("SEARXNG_URL_PATH", "/searxng") or "/searxng"
+    if not url_path.startswith("/"):
+        url_path = "/" + url_path
+    configured_public_url = env.get("SEARXNG_PUBLIC_URL") or env.get("SEARXNG_BASE_URL") or f"http://127.0.0.1{url_path}/"
+    public_url = browser_tool_url(configured_public_url, url_path)
+    if not public_url.endswith("/"):
+        public_url += "/"
+    endpoints = {
+        "html": public_url,
+        "json_search": f"{public_url}search?q=<query>&format=json",
+        "html_search": f"{public_url}search?q=<query>",
+        "opensearch": f"{public_url}opensearch.xml",
+        "preferences": f"{public_url}preferences",
+    }
+    return {
+        "enabled": env.get("SEARXNG_ENABLED", "on"),
+        "public_url": public_url,
+        "base_url": env.get("SEARXNG_BASE_URL", public_url),
+        "local_url": f"http://127.0.0.1{url_path}/",
+        "url_path": url_path,
+        "settings_path": env.get("SEARXNG_SETTINGS_PATH", "/etc/searxng/settings.yml"),
+        "uwsgi_ini": env.get("SEARXNG_UWSGI_INI", "/etc/uwsgi/apps-available/searxng.ini"),
+        "uwsgi_socket": env.get("SEARXNG_UWSGI_SOCKET", "/usr/local/searxng/run/socket"),
+        "nginx_conf": env.get("SEARXNG_NGINX_CONF", "/etc/nginx/default.apps-available/searxng.conf"),
+        "home": env.get("SEARXNG_HOME", "/usr/local/searxng"),
+        "formats": env.get("SEARXNG_FORMATS", "html,json"),
+        "endpoints": endpoints,
+    }
+
+
+def playwright_config(env: dict | None = None) -> dict:
+    env = env or read_env()
+    port = env.get("PLAYWRIGHT_PORT", "3001")
+    url_path = env.get("PLAYWRIGHT_URL_PATH", "/playwright") or "/playwright"
+    if not url_path.startswith("/"):
+        url_path = "/" + url_path
+    public_ws = browser_tool_url(env.get("PLAYWRIGHT_PUBLIC_WS_URL") or f"ws://127.0.0.1{url_path}/", url_path, ws=True)
+    public_http = browser_tool_url(env.get("PLAYWRIGHT_PUBLIC_HTTP_URL") or f"http://127.0.0.1{url_path}/", url_path)
+    if not public_ws.endswith("/"):
+        public_ws += "/"
+    if not public_http.endswith("/"):
+        public_http += "/"
+    endpoints = {
+        "websocket": public_ws,
+        "http": public_http,
+        "node_connect": f"const browser = await playwright.chromium.connect('{public_ws}');",
+        "python_connect": f"browser = playwright.chromium.connect('{public_ws}')",
+    }
+    return {
+        "enabled": env.get("PLAYWRIGHT_ENABLED", "on"),
+        "host": env.get("PLAYWRIGHT_HOST", "0.0.0.0"),
+        "port": port,
+        "url_path": url_path,
+        "browser": env.get("PLAYWRIGHT_BROWSER", "chromium"),
+        "install_browsers": env.get("PLAYWRIGHT_INSTALL_BROWSERS", "on"),
+        "browsers_path": env.get("PLAYWRIGHT_BROWSERS_PATH", str(STACK_DIR / "playwright" / "browsers")),
+        "node_env": env.get("PLAYWRIGHT_NODE_ENV", "production"),
+        "public_ws_url": public_ws,
+        "public_http_url": public_http,
+        "server_dir": str(STACK_DIR / "playwright"),
+        "package_json": str(STACK_DIR / "playwright" / "package.json"),
+        "node_modules": str(STACK_DIR / "playwright" / "node_modules"),
+        "service_unit": "/etc/systemd/system/playwright-server.service",
+        "nginx_conf": env.get("PLAYWRIGHT_NGINX_CONF", "/etc/nginx/default.apps-available/playwright.conf"),
+        "endpoints": endpoints,
+    }
+
+
+def tcp_port_open(host: str, port: str | int, timeout: float = 1.5) -> tuple[bool, str]:
+    try:
+        target_host = "127.0.0.1" if host in {"0.0.0.0", "::", ""} else host
+        with socket.create_connection((target_host, int(port)), timeout=timeout):
+            return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def playwright_browser_cache_candidates(cfg: dict) -> list[Path]:
+    candidates = [Path(cfg["browsers_path"])]
+    home = os.environ.get("HOME")
+    if home:
+        candidates.append(Path(home) / ".cache" / "ms-playwright")
+    try:
+        user, _ = stack_owner_user_group()
+        if pwd is not None:
+            candidates.append(Path(pwd.getpwnam(user).pw_dir) / ".cache" / "ms-playwright")
+    except Exception:
+        pass
+    deduped = []
+    seen = set()
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            deduped.append(path)
+            seen.add(key)
+    return deduped
+
+
+def playwright_browser_cache_status(cfg: dict) -> dict:
+    candidates = playwright_browser_cache_candidates(cfg)
+    for path in candidates:
+        if path.exists() and any(path.iterdir()):
+            return {"ok": True, "path": str(path), "configured_path": cfg["browsers_path"]}
+    return {
+        "ok": False,
+        "path": cfg["browsers_path"],
+        "candidates": [str(path) for path in candidates],
+        "error": "No installed Playwright browser cache found",
+    }
+
+
+def stack_owner_user_group() -> tuple[str, str]:
+    if pwd is None or grp is None:
+        return os.environ.get("USER", "root"), os.environ.get("USER", "root")
+    stat = STACK_DIR.stat()
+    return pwd.getpwuid(stat.st_uid).pw_name, grp.getgrgid(stat.st_gid).gr_name
+
+
+def write_playwright_systemd_unit(cfg: dict | None = None) -> None:
+    cfg = cfg or playwright_config()
+    user, group = stack_owner_user_group()
+    unit = f"""[Unit]
+Description=Playwright WebSocket Server
+After=network.target
+
+[Service]
+Type=simple
+User={user}
+Group={group}
+WorkingDirectory={STACK_DIR / 'playwright'}
+EnvironmentFile={CONFIG_FILE}
+Environment=NODE_ENV={cfg['node_env']}
+ExecStart={STACK_DIR / 'playwright' / 'start.sh'}
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=playwright-server
+
+[Install]
+WantedBy=multi-user.target
+"""
+    unit_path = Path(cfg["service_unit"])
+    unit_path.write_text(unit, encoding="utf-8")
+    unit_path.chmod(0o644)
+    ServiceManager.run_cmd(["systemctl", "daemon-reload"], timeout=15)
+
+
+def write_playwright_nginx_conf(cfg: dict | None = None) -> None:
+    cfg = cfg or playwright_config()
+    conf_path = Path(cfg["nginx_conf"])
+    conf_path.parent.mkdir(parents=True, exist_ok=True)
+    Path("/etc/nginx/default.d").mkdir(parents=True, exist_ok=True)
+    content = f"""location {cfg['url_path']} {{
+    proxy_pass http://127.0.0.1:{cfg['port']};
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix {cfg['url_path']};
+    proxy_set_header X-Script-Name {cfg['url_path']};
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}}
+"""
+    conf_path.write_text(content, encoding="utf-8")
+    conf_path.chmod(0o644)
+    link_path = Path("/etc/nginx/default.d/playwright.conf")
+    if link_path.exists() or link_path.is_symlink():
+        link_path.unlink()
+    link_path.symlink_to(conf_path)
+    nginx_test = ServiceManager.run_cmd(["nginx", "-t"], timeout=15)
+    if nginx_test.returncode != 0:
+        raise RuntimeError((nginx_test.stdout + nginx_test.stderr).strip())
+    ServiceManager.run_cmd(["systemctl", "reload", "nginx"], timeout=15)
+
+
+def run_playwright_install() -> tuple[bool, str]:
+    cfg = playwright_config()
+    env = os.environ.copy()
+    env.update({
+        "PLAYWRIGHT_ENABLED": cfg["enabled"],
+        "PLAYWRIGHT_BROWSER": cfg["browser"],
+        "PLAYWRIGHT_INSTALL_BROWSERS": cfg["install_browsers"],
+        "PLAYWRIGHT_BROWSERS_PATH": cfg["browsers_path"],
+    })
+    cmd = ["bash", str(SCRIPTS_DIR / "install-playwright.sh")]
+    try:
+        if os.geteuid() == 0 and pwd is not None:
+            user, _ = stack_owner_user_group()
+            cmd = [
+                "sudo", "-u", user, "env",
+                f"PLAYWRIGHT_ENABLED={cfg['enabled']}",
+                f"PLAYWRIGHT_BROWSER={cfg['browser']}",
+                f"PLAYWRIGHT_INSTALL_BROWSERS={cfg['install_browsers']}",
+                f"PLAYWRIGHT_BROWSERS_PATH={cfg['browsers_path']}",
+                *cmd,
+            ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env=env)
+        output = (r.stdout + r.stderr).strip()
+        if r.returncode != 0:
+            return False, output
+        if not ServiceManager.IS_MAC and os.geteuid() == 0:
+            write_playwright_systemd_unit(cfg)
+            write_playwright_nginx_conf(cfg)
+        return True, output
+    except subprocess.TimeoutExpired:
+        return False, "Playwright install timed out"
+    except Exception as exc:
+        return False, str(exc)
 
 
 def _normalize_ocr_parse_response(payload: dict) -> dict:
@@ -4905,8 +5380,9 @@ def api_logs(name):
                 proc.wait()
             return
 
+        journal_unit = "uwsgi" if is_searxng_service(name) else name
         proc = subprocess.Popen(
-            ['journalctl', '-u', name, '-f', '-n', '100',
+            ['journalctl', '-u', journal_unit, '-f', '-n', '100',
              '--no-pager', '--output=short-iso'],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )

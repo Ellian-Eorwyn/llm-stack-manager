@@ -1,0 +1,20 @@
+[Unit]
+Description=Playwright WebSocket Server
+After=network.target
+
+[Service]
+Type=simple
+User=ellie
+Group=ellie
+WorkingDirectory=/mnt/LLMs/llamacpp/llm-stack-git/playwright
+EnvironmentFile=/mnt/LLMs/llamacpp/llm-stack-git/config/llm-stack.env
+ExecStart=/mnt/LLMs/llamacpp/llm-stack-git/playwright/start.sh
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=playwright-server
+
+[Install]
+WantedBy=multi-user.target

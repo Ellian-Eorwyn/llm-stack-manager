@@ -25,6 +25,7 @@ echo "Service user:    ${SERVICE_USER}:${SERVICE_GROUP}"
 
 mkdir -p "${STACK_DIR}/models" "${STACK_DIR}/logs" "${STACK_DIR}/deps" "${CONFIG_DIR}" "${CONFIG_DIR}/saved" "${CONFIG_DIR}/chat-templates"
 chmod 755 "${STACK_DIR}/scripts"/*.sh "${STACK_DIR}/validate.sh" "${STACK_DIR}/scripts/install-dependencies.py"
+chmod 755 "${STACK_DIR}/playwright"/*.sh 2>/dev/null || true
 
 if [[ ! -f "${CONFIG_FILE}" ]]; then
     echo "Creating local config: ${CONFIG_FILE}"
@@ -197,7 +198,44 @@ else
     fi
 fi
 
+if [[ "${SEARXNG_ENABLED:-on}" == "on" ]]; then
+    echo "Installing/configuring local SearXNG..."
+    bash "${STACK_DIR}/scripts/install-searxng.sh"
+fi
+
+if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
+    echo "Installing/configuring local Playwright server..."
+    sudo -u "${SERVICE_USER}" env PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${STACK_DIR}/playwright/browsers}" bash "${STACK_DIR}/scripts/install-playwright.sh"
+fi
+
 if is_linux; then
+    install_playwright_nginx_conf() {
+        local url_path="${PLAYWRIGHT_URL_PATH:-/playwright}"
+        local nginx_conf="${PLAYWRIGHT_NGINX_CONF:-/etc/nginx/default.apps-available/playwright.conf}"
+        local port="${PLAYWRIGHT_PORT:-3001}"
+        [[ "${url_path}" == /* ]] || url_path="/${url_path}"
+        mkdir -p "$(dirname "${nginx_conf}")" /etc/nginx/default.d
+        cat > "${nginx_conf}" <<NGINX
+location ${url_path} {
+    proxy_pass http://127.0.0.1:${port};
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_set_header X-Forwarded-Prefix ${url_path};
+    proxy_set_header X-Script-Name ${url_path};
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+NGINX
+        chmod 644 "${nginx_conf}"
+        ln -sfn "${nginx_conf}" /etc/nginx/default.d/playwright.conf
+        echo "  installed: nginx playwright location ${url_path}"
+    }
+
     install_unit() {
         local unit_name="$1"
         local description="$2"
@@ -291,6 +329,34 @@ UNIT
     install_unit "task"              "LLM Task Model - llama-server"                   "start-task.sh"              120
     install_unit "ocr"               "LLM OCR GLM-OCR Backend - llama-server"          "start-ocr.sh"               120
     install_unit "glmocr-sdk"        "LLM OCR GLM-OCR SDK Parser"                      "start-glmocr-sdk.sh"        300
+    if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
+        install_playwright_nginx_conf
+        cat > /etc/systemd/system/playwright-server.service <<UNIT
+[Unit]
+Description=Playwright WebSocket Server
+After=network.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
+WorkingDirectory=${STACK_DIR}/playwright
+EnvironmentFile=${CONFIG_FILE}
+Environment=NODE_ENV=${PLAYWRIGHT_NODE_ENV:-production}
+ExecStart=${STACK_DIR}/playwright/start.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=playwright-server
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        chmod 644 /etc/systemd/system/playwright-server.service
+        echo "  installed: playwright-server.service"
+    fi
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         install_unit "honcho-api"     "Local Honcho Memory API"                         "start-honcho-api.sh"        120
         install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
@@ -317,6 +383,9 @@ UNIT
     DEFAULT_BOOT_SERVICES=(llm-manager llm-stack-restore)
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
+    fi
+    if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
+        DEFAULT_BOOT_SERVICES+=(playwright-server)
     fi
     NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-dense chat-backend-moe chat-backend-bee chat-backend2 chat-proxy chat-proxy2 embed embed2 rerank task ocr glmocr-sdk)
     LEGACY_SERVICES=(

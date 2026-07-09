@@ -16,6 +16,8 @@
 /logs/
 /backups/
 /hermes/
+/playwright/node_modules/
+/playwright/logs/
 
 # Python/runtime artifacts
 .venv/

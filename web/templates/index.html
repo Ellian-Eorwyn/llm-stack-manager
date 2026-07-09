@@ -793,6 +793,8 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   <div class="side-nav-group">
     <div class="side-nav-title">Manager</div>
     <button class="tab-btn active" data-tab="services"><span class="nav-icon">S</span><span class="nav-label">Services</span></button>
+    <button class="tab-btn" data-tab="searxng"><span class="nav-icon">X</span><span class="nav-label">SearXNG</span></button>
+    <button class="tab-btn" data-tab="playwright"><span class="nav-icon">P</span><span class="nav-label">Playwright</span></button>
     <button class="tab-btn" data-tab="config"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
     <button class="tab-btn" data-tab="logs"><span class="nav-icon">L</span><span class="nav-label">Logs</span></button>
   </div>
@@ -997,6 +999,96 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   <div class="svc-group">
     <div class="group-hdr">Backends</div>
     <div class="svc-cards" id="tts-backend-cards"></div>
+  </div>
+</div>
+
+<!-- ====== SearXNG tab ====== -->
+<div id="tab-searxng" class="tab-panel">
+  <div class="quick-bar">
+    <span class="qlabel">SearXNG</span>
+    <button class="btn btn-primary btn-sm" onclick="loadSearxngStatus()">Refresh</button>
+    <button class="btn btn-success btn-sm" onclick="svcAction('searxng','start',this)">Start</button>
+    <button class="btn btn-danger btn-sm" onclick="svcAction('searxng','stop',this)">Stop</button>
+    <button class="btn btn-ghost btn-sm" onclick="svcAction('searxng','restart',this)">Restart</button>
+    <button class="btn btn-ghost btn-sm" onclick="installSearxng(this)">Install/Update</button>
+    <button class="btn btn-ghost btn-sm" onclick="openServiceConfig('SearXNG')">Config</button>
+    <span id="searxng-last-refresh" class="active-indicator">Last refresh: -</span>
+  </div>
+
+  <div class="tts-grid">
+    <div class="tts-panel">
+      <div class="group-hdr">Endpoint</div>
+      <div class="tts-summary">
+        <span>Status: <strong id="searxng-service-status">-</strong></span>
+        <span>URL: <strong id="searxng-public-url">-</strong></span>
+      </div>
+      <div class="meta-list" id="searxng-meta-list"></div>
+      <div class="card-acts" style="margin-top:12px;">
+        <a class="btn btn-primary btn-sm" id="searxng-open-link" href="#" target="_blank" rel="noreferrer">Open SearXNG</a>
+        <button class="btn btn-ghost btn-sm" onclick="openLogs('searxng')">Logs</button>
+      </div>
+    </div>
+    <div class="tts-panel">
+      <div class="group-hdr">Install Layout</div>
+      <div class="meta-list" id="searxng-path-list"></div>
+    </div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Health Checks</div>
+    <div class="svc-cards" id="searxng-status-cards"></div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Endpoints</div>
+    <div class="meta-list" id="searxng-endpoint-list"></div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Embedded UI</div>
+    <iframe id="searxng-frame" title="SearXNG" style="width:100%;height:620px;border:1px solid var(--border);border-radius:var(--radius);background:#fff;"></iframe>
+  </div>
+</div>
+
+<!-- ====== Playwright tab ====== -->
+<div id="tab-playwright" class="tab-panel">
+  <div class="quick-bar">
+    <span class="qlabel">Playwright</span>
+    <button class="btn btn-primary btn-sm" onclick="loadPlaywrightStatus()">Refresh</button>
+    <button class="btn btn-success btn-sm" onclick="svcAction('playwright-server','start',this)">Start</button>
+    <button class="btn btn-danger btn-sm" onclick="svcAction('playwright-server','stop',this)">Stop</button>
+    <button class="btn btn-ghost btn-sm" onclick="svcAction('playwright-server','restart',this)">Restart</button>
+    <button class="btn btn-ghost btn-sm" onclick="installPlaywright(this)">Install/Update</button>
+    <button class="btn btn-ghost btn-sm" onclick="openServiceConfig('Playwright')">Config</button>
+    <span id="playwright-last-refresh" class="active-indicator">Last refresh: -</span>
+  </div>
+
+  <div class="tts-grid">
+    <div class="tts-panel">
+      <div class="group-hdr">Endpoint</div>
+      <div class="tts-summary">
+        <span>Status: <strong id="playwright-service-status">-</strong></span>
+        <span>WS: <strong id="playwright-ws-url">-</strong></span>
+      </div>
+      <div class="meta-list" id="playwright-meta-list"></div>
+      <div class="card-acts" style="margin-top:12px;">
+        <button class="btn btn-ghost btn-sm" onclick="openLogs('playwright-server')">Logs</button>
+      </div>
+    </div>
+    <div class="tts-panel">
+      <div class="group-hdr">Install Layout</div>
+      <div class="meta-list" id="playwright-path-list"></div>
+    </div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Health Checks</div>
+    <div class="svc-cards" id="playwright-status-cards"></div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Endpoints</div>
+    <div class="meta-list" id="playwright-endpoint-list"></div>
   </div>
 </div>
 
@@ -1285,10 +1377,10 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% if section == 'Shared Backend' %}
       {% set dense_keys = ['CHAT_DENSE_LABEL', 'CHAT_DENSE_MODEL_NAME', 'CHAT_DENSE_MODEL_PATH', 'CHAT_DENSE_MMPROJ_PATH', 'CHAT_DENSE_CTX_SIZE'] %}
       {% set moe_keys = ['CHAT_MOE_LABEL', 'CHAT_MOE_MODEL_NAME', 'CHAT_MOE_MODEL_PATH', 'CHAT_MOE_MMPROJ_PATH', 'CHAT_MOE_CTX_SIZE'] %}
-      {% set shared_keys = ['CHAT_MODEL_NAME', 'CHAT_N_PARALLEL', 'CHAT_BATCH_SIZE', 'CHAT_UBATCH_SIZE', 'CHAT_FLASH_ATTN', 'CHAT_JINJA', 'CHAT_TEMPLATE_ID', 'CHAT_FIT'] %}
-      {% set gpu_keys = ['CHAT_GPU_VISIBLE_DEVICES', 'CHAT_DEVICE', 'CHAT_N_GPU_LAYERS', 'CHAT_MAIN_GPU', 'CHAT_TENSOR_SPLIT', 'CHAT_SPLIT_MODE', 'CHAT_KV_OFFLOAD', 'CHAT_OP_OFFLOAD', 'CHAT_MMPROJ_OFFLOAD', 'CHAT_CACHE_TYPE_K', 'CHAT_CACHE_TYPE_V', 'CHAT_CACHE_RAM', 'CHAT_CTX_CHECKPOINTS', 'CHAT_SWA_FULL', 'CHAT_NO_MMAP', 'CHAT_MLOCK'] %}
+      {% set shared_keys = ['CHAT_MODEL_NAME', 'CHAT_N_PARALLEL', 'CHAT_BATCH_SIZE', 'CHAT_UBATCH_SIZE', 'CHAT_FLASH_ATTN', 'CHAT_JINJA', 'CHAT_TEMPLATE_ID', 'CHAT_FIT', 'CHAT_FIT_TARGET', 'CHAT_FIT_CTX'] %}
+      {% set gpu_keys = ['CHAT_GPU_VISIBLE_DEVICES', 'CHAT_DEVICE', 'CHAT_N_GPU_LAYERS', 'CHAT_MAIN_GPU', 'CHAT_TENSOR_SPLIT', 'CHAT_SPLIT_MODE', 'CHAT_KV_OFFLOAD', 'CHAT_OP_OFFLOAD', 'CHAT_MMPROJ_OFFLOAD', 'CHAT_CACHE_TYPE_K', 'CHAT_CACHE_TYPE_V', 'CHAT_CACHE_RAM', 'CHAT_CTX_CHECKPOINTS', 'CHAT_CACHE_IDLE_SLOTS', 'CHAT_CACHE_REUSE', 'CHAT_SWA_FULL', 'CHAT_NO_MMAP', 'CHAT_MLOCK'] %}
       {% set behavior_keys = ['CHAT_TEMP', 'CHAT_TOP_P', 'CHAT_TOP_K', 'CHAT_MIN_P', 'CHAT_REASONING_FORMAT'] %}
-      {% set spec_keys = ['CHAT_SPEC_METHOD', 'CHAT_SPEC_NGRAM_MOD', 'CHAT_SPEC_DRAFT_MODEL_PATH', 'CHAT_SPEC_DRAFT_N_GPU_LAYERS', 'CHAT_SPEC_DRAFT_DEVICES', 'CHAT_SPEC_DRAFT_CTX_SIZE', 'CHAT_SPEC_DRAFT_N_MAX', 'CHAT_SPEC_DRAFT_N_MIN', 'CHAT_SPEC_DRAFT_P_MIN', 'CHAT_SPEC_DRAFT_P_SPLIT', 'CHAT_SPEC_NGRAM_MOD_N_MATCH', 'CHAT_SPEC_NGRAM_MOD_N_MIN', 'CHAT_SPEC_NGRAM_MOD_N_MAX'] %}
+      {% set spec_keys = ['CHAT_SPEC_METHOD', 'CHAT_SPEC_NGRAM_MOD', 'CHAT_SPEC_DRAFT_MODEL_PATH', 'CHAT_SPEC_DRAFT_N_GPU_LAYERS', 'CHAT_SPEC_DRAFT_DEVICES', 'CHAT_SPEC_DRAFT_TYPE_K', 'CHAT_SPEC_DRAFT_TYPE_V', 'CHAT_SPEC_DRAFT_N_MAX', 'CHAT_SPEC_DRAFT_N_MIN', 'CHAT_SPEC_DRAFT_P_MIN', 'CHAT_SPEC_DRAFT_P_SPLIT', 'CHAT_SPEC_NGRAM_MOD_N_MATCH', 'CHAT_SPEC_NGRAM_MOD_N_MIN', 'CHAT_SPEC_NGRAM_MOD_N_MAX', 'CHAT_SPEC_NGRAM_SIZE_N', 'CHAT_SPEC_NGRAM_SIZE_M', 'CHAT_SPEC_NGRAM_MIN_HITS'] %}
 
       <div class="cfg-panel" style="margin-bottom:20px;">
         <h4>Download GGUFs From Hugging Face</h4>
@@ -1395,10 +1487,10 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       </div>
       {% elif section == 'Task Model' %}
       {% set task_identity_keys = ['TASK_MODEL_NAME', 'TASK_MODEL_PATH', 'TASK_MMPROJ_PATH', 'TASK_CTX_SIZE'] %}
-      {% set task_runtime_keys = ['TASK_N_PARALLEL', 'TASK_BATCH_SIZE', 'TASK_UBATCH_SIZE', 'TASK_FLASH_ATTN', 'TASK_JINJA', 'TASK_CHAT_TEMPLATE_ID', 'TASK_THINKING', 'TASK_REASONING_FORMAT', 'TASK_FIT'] %}
-      {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_CACHE_RAM', 'TASK_CTX_CHECKPOINTS', 'TASK_SWA_FULL', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
+      {% set task_runtime_keys = ['TASK_N_PARALLEL', 'TASK_BATCH_SIZE', 'TASK_UBATCH_SIZE', 'TASK_FLASH_ATTN', 'TASK_JINJA', 'TASK_CHAT_TEMPLATE_ID', 'TASK_THINKING', 'TASK_REASONING_FORMAT', 'TASK_FIT', 'TASK_FIT_TARGET', 'TASK_FIT_CTX'] %}
+      {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_CACHE_RAM', 'TASK_CTX_CHECKPOINTS', 'TASK_CACHE_IDLE_SLOTS', 'TASK_CACHE_REUSE', 'TASK_SWA_FULL', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
       {% set task_sampling_keys = ['TASK_TEMP', 'TASK_TOP_P', 'TASK_TOP_K', 'TASK_MIN_P', 'TASK_PRESENCE_PENALTY', 'TASK_REPEAT_PENALTY'] %}
-      {% set task_spec_keys = ['TASK_SPEC_METHOD', 'TASK_SPEC_NGRAM_MOD', 'TASK_SPEC_DRAFT_MODEL_PATH', 'TASK_SPEC_DRAFT_N_GPU_LAYERS', 'TASK_SPEC_DRAFT_DEVICES', 'TASK_SPEC_DRAFT_CTX_SIZE', 'TASK_SPEC_DRAFT_N_MAX', 'TASK_SPEC_DRAFT_N_MIN', 'TASK_SPEC_DRAFT_P_MIN', 'TASK_SPEC_DRAFT_P_SPLIT', 'TASK_SPEC_NGRAM_MOD_N_MATCH', 'TASK_SPEC_NGRAM_MOD_N_MIN', 'TASK_SPEC_NGRAM_MOD_N_MAX'] %}
+      {% set task_spec_keys = ['TASK_SPEC_METHOD', 'TASK_SPEC_NGRAM_MOD', 'TASK_SPEC_DRAFT_MODEL_PATH', 'TASK_SPEC_DRAFT_N_GPU_LAYERS', 'TASK_SPEC_DRAFT_DEVICES', 'TASK_SPEC_DRAFT_TYPE_K', 'TASK_SPEC_DRAFT_TYPE_V', 'TASK_SPEC_DRAFT_N_MAX', 'TASK_SPEC_DRAFT_N_MIN', 'TASK_SPEC_DRAFT_P_MIN', 'TASK_SPEC_DRAFT_P_SPLIT', 'TASK_SPEC_NGRAM_MOD_N_MATCH', 'TASK_SPEC_NGRAM_MOD_N_MIN', 'TASK_SPEC_NGRAM_MOD_N_MAX', 'TASK_SPEC_NGRAM_SIZE_N', 'TASK_SPEC_NGRAM_SIZE_M', 'TASK_SPEC_NGRAM_MIN_HITS'] %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Model Identity And Files</h4>
@@ -1766,6 +1858,8 @@ let customModels = [];
 let activeModel = null;
 let ttsOverview = null;
 let graphitiLoaded = false;
+let searxngLoaded = false;
+let playwrightLoaded = false;
 let customArgsDirty = false;
 let customArgPresetTimer = null;
 let huggingFaceRepoFiles = [];
@@ -1821,6 +1915,8 @@ function showTab(tab) {
   if (configSideNav) configSideNav.classList.toggle('visible', tab === 'config');
   if (tab === 'config' && !Object.keys(cfgCurrent).length) loadConfig();
   if (tab === 'graphiti') initGraphitiTab();
+  if (tab === 'searxng') initSearxngTab();
+  if (tab === 'playwright') initPlaywrightTab();
 }
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -2098,6 +2194,158 @@ async function runTtsTest(btn) {
     toast('Speech generated', 'ok');
   } catch (e) {
     toast('TTS test failed: ' + e, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+// -- searxng --
+function renderEndpointList(targetId, endpoints = {}) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  el.innerHTML = Object.entries(endpoints).map(([name, value]) =>
+    `<span class="meta-chip"><strong>${escapeHtml(name)}:</strong> <code>${escapeHtml(value)}</code></span>`
+  ).join('') || '<span class="meta-chip">No endpoints configured</span>';
+}
+
+async function initSearxngTab() {
+  if (searxngLoaded) return;
+  searxngLoaded = true;
+  await loadSearxngStatus();
+}
+
+async function loadSearxngStatus() {
+  try {
+    const d = await fetchJSON('/api/searxng/status');
+    const cfg = d.config || {};
+    document.getElementById('searxng-last-refresh').textContent = `Last refresh: ${fmtEpoch(d.last_refresh)}`;
+    document.getElementById('searxng-service-status').textContent = d.service_status || '-';
+    document.getElementById('searxng-public-url').textContent = cfg.public_url || '-';
+    const link = document.getElementById('searxng-open-link');
+    const frame = document.getElementById('searxng-frame');
+    if (cfg.public_url) {
+      link.href = cfg.public_url;
+      frame.src = cfg.public_url;
+    }
+    document.getElementById('searxng-meta-list').innerHTML = [
+      `Enabled: ${cfg.enabled || '-'}`,
+      `Formats: ${cfg.formats || '-'}`,
+      `Path: ${cfg.url_path || '-'}`,
+      `Base URL: ${cfg.base_url || '-'}`
+    ].map(item => `<span class="meta-chip">${escapeHtml(item)}</span>`).join('');
+    document.getElementById('searxng-path-list').innerHTML = [
+      `Home: ${cfg.home || '-'}`,
+      `Settings: ${cfg.settings_path || '-'}`,
+      `uWSGI: ${cfg.uwsgi_ini || '-'}`,
+      `Socket: ${cfg.uwsgi_socket || '-'}`,
+      `Nginx: ${cfg.nginx_conf || '-'}`
+    ].map(item => `<span class="meta-chip">${escapeHtml(item)}</span>`).join('');
+    renderEndpointList('searxng-endpoint-list', cfg.endpoints || {});
+
+    const checks = d.checks || {};
+    document.getElementById('searxng-status-cards').innerHTML = Object.entries(checks).map(([key, v]) => {
+      const ok = v?.ok === true;
+      const status = ok ? 'active' : 'failed';
+      const label = key.replaceAll('_', ' ');
+      const detail = v?.status || v?.path || v?.error || (ok ? 'ok' : 'not ready');
+      const count = typeof v?.result_count === 'number' ? `<span class="meta-chip">results: ${v.result_count}</span>` : '';
+      return `
+        <div class="svc-card" data-status="${status}">
+          <div class="card-top">
+            <span class="card-name">${escapeHtml(label)}</span>
+            <span class="status-pill ${status}">${ok ? 'ok' : 'down'}</span>
+          </div>
+          <div class="card-desc">${escapeHtml(detail)}</div>
+          ${count ? `<div class="meta-list">${count}</div>` : ''}
+        </div>`;
+    }).join('');
+  } catch (e) {
+    toast('SearXNG status failed: ' + e, 'err');
+  }
+}
+
+async function installSearxng(btn) {
+  if (!confirm('Install or update SearXNG now? This can install apt packages, pull SearXNG, update its virtualenv, and reload nginx/uWSGI.')) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Installing...';
+  try {
+    const d = await fetchJSON('/api/searxng/install', 'POST');
+    toast(d.ok ? 'SearXNG install/update complete' : (d.output || d.error || 'SearXNG install failed'), d.ok ? 'ok' : 'err');
+    await loadSearxngStatus();
+    await poll();
+  } catch (e) {
+    toast('SearXNG install failed: ' + e, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+// -- playwright --
+async function initPlaywrightTab() {
+  if (playwrightLoaded) return;
+  playwrightLoaded = true;
+  await loadPlaywrightStatus();
+}
+
+async function loadPlaywrightStatus() {
+  try {
+    const d = await fetchJSON('/api/playwright/status');
+    const cfg = d.config || {};
+    document.getElementById('playwright-last-refresh').textContent = `Last refresh: ${fmtEpoch(d.last_refresh)}`;
+    document.getElementById('playwright-service-status').textContent = d.service_status || '-';
+    document.getElementById('playwright-ws-url').textContent = cfg.public_ws_url || '-';
+    document.getElementById('playwright-meta-list').innerHTML = [
+      `Enabled: ${cfg.enabled || '-'}`,
+      `Browser: ${cfg.browser || '-'}`,
+      `Host: ${cfg.host || '-'}`,
+      `Port: ${cfg.port || '-'}`,
+      `Path: ${cfg.url_path || '-'}`
+    ].map(item => `<span class="meta-chip">${escapeHtml(item)}</span>`).join('');
+    document.getElementById('playwright-path-list').innerHTML = [
+      `Server dir: ${cfg.server_dir || '-'}`,
+      `package.json: ${cfg.package_json || '-'}`,
+      `node_modules: ${cfg.node_modules || '-'}`,
+      `Browsers: ${cfg.browsers_path || '-'}`,
+      `Unit: ${cfg.service_unit || '-'}`,
+      `Nginx: ${cfg.nginx_conf || '-'}`
+    ].map(item => `<span class="meta-chip">${escapeHtml(item)}</span>`).join('');
+    renderEndpointList('playwright-endpoint-list', cfg.endpoints || {});
+
+    const checks = d.checks || {};
+    document.getElementById('playwright-status-cards').innerHTML = Object.entries(checks).map(([key, v]) => {
+      const ok = v?.ok === true;
+      const status = ok ? 'active' : 'failed';
+      const label = key.replaceAll('_', ' ');
+      const detail = v?.status || v?.path || v?.endpoint || v?.error || (ok ? 'ok' : 'not ready');
+      return `
+        <div class="svc-card" data-status="${status}">
+          <div class="card-top">
+            <span class="card-name">${escapeHtml(label)}</span>
+            <span class="status-pill ${status}">${ok ? 'ok' : 'down'}</span>
+          </div>
+          <div class="card-desc">${escapeHtml(detail)}</div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    toast('Playwright status failed: ' + e, 'err');
+  }
+}
+
+async function installPlaywright(btn) {
+  if (!confirm('Install or update Playwright now? This can run npm install, download browser binaries, and write the systemd unit.')) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Installing...';
+  try {
+    const d = await fetchJSON('/api/playwright/install', 'POST');
+    toast(d.ok ? 'Playwright install/update complete' : (d.output || d.error || 'Playwright install failed'), d.ok ? 'ok' : 'err');
+    await loadPlaywrightStatus();
+    await poll();
+  } catch (e) {
+    toast('Playwright install failed: ' + e, 'err');
   } finally {
     btn.disabled = false;
     btn.textContent = orig;

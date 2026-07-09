@@ -11,10 +11,12 @@ Git-friendly core version of the local LLM stack manager. This repo is designed 
 - Embedding, reranker, and task model launchers.
 - Generated systemd installer, dependency manifest, update script, and endpoint validator.
 - Optional local Honcho memory service for Hermes, routed through local model endpoints.
+- Local SearXNG install/update integration, managed through the web UI and exposed at `/searxng`.
+- Local Playwright browser automation WebSocket server, managed through the web UI and exposed on the configured WS endpoint.
 
 ## Not Included In V1
 
-Graphiti, TTS, transcript services, nested research apps, SearXNG, logs, virtualenvs, Docker data, and model binaries are intentionally not copied into this repo. Hermes may be vendored locally, and Honcho is installed into `deps/honcho` when enabled.
+Graphiti, TTS, transcript services, nested research apps, logs, virtualenvs, Docker data, generated Node dependencies, browser caches, and model binaries are intentionally not copied into this repo. Hermes may be vendored locally, Honcho is installed into `deps/honcho` when enabled, SearXNG is installed/updated in its standard `/usr/local/searxng` + `/etc/searxng` layout, and Playwright dependencies are installed under `playwright/` from the lockfile.
 
 ## Layout
 
@@ -55,7 +57,7 @@ Rollback restores systemd unit files and service state. It does not delete eithe
 sudo bash install.sh
 ```
 
-The installer creates local runtime directories, creates `config/llm-stack.env` if missing, clones/builds llama.cpp and BeeLLaMA from `dependencies.json`, writes systemd units pointing at this repo, and enables the default core services. BeeLLaMA is installed as a switchable chat backend but is not enabled by default.
+The installer creates local runtime directories, creates `config/llm-stack.env` if missing, clones/builds llama.cpp and BeeLLaMA from `dependencies.json`, installs/configures SearXNG when `SEARXNG_ENABLED=on`, installs/configures Playwright when `PLAYWRIGHT_ENABLED=on`, writes systemd units pointing at this repo, and enables the default core services. BeeLLaMA is installed as a switchable chat backend but is not enabled by default.
 
 Start the default core stack:
 
@@ -110,3 +112,11 @@ Model files stay outside git. Edit `config/llm-stack.env` to point each model va
 Honcho is enabled by default in `config/llm-stack.env.example` as a local-only service. The installer creates `config/honcho.env`, installs/manages PostgreSQL, pgvector, and Redis, installs Honcho into `deps/honcho`, and writes `honcho-api.service` plus `honcho-deriver.service`. Honcho model calls use the stack's local OpenAI-compatible endpoints: chat through `chat-proxy` and embeddings through `embed`.
 
 To disable it before install, set `HONCHO_ENABLED=off` in `config/llm-stack.env`. To keep Honcho enabled but manage Postgres/Redis yourself, set `HONCHO_INSTALL_DATASTORES=off` and provide `config/honcho.env`.
+
+## Local SearXNG
+
+SearXNG is managed as an external runtime install, not vendored into git. The stack installer uses `scripts/install-searxng.sh` to create or update `/usr/local/searxng`, `/etc/searxng/settings.yml`, uWSGI, and the nginx `/searxng` location. The manager sidebar has a SearXNG tab for status checks, logs, service control, install/update, configuration, and endpoint strings for HTML and JSON search clients.
+
+## Local Playwright
+
+Playwright is managed from the `playwright/` package. The stack installer uses `scripts/install-playwright.sh` to run `npm ci` and install the configured browser binary, writes `playwright-server.service`, and exposes the WebSocket server through nginx at `PLAYWRIGHT_URL_PATH` (default `/playwright`). The manager sidebar has a Playwright tab for status checks, logs, service control, install/update, configuration, and connection strings such as `ws://127.0.0.1/playwright/`.
