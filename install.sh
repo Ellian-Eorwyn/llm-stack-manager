@@ -214,10 +214,15 @@ if is_linux; then
         local nginx_conf="${PLAYWRIGHT_NGINX_CONF:-/etc/nginx/default.apps-available/playwright.conf}"
         local port="${PLAYWRIGHT_PORT:-3001}"
         [[ "${url_path}" == /* ]] || url_path="/${url_path}"
+        local url_path_slash="${url_path%/}/"
         mkdir -p "$(dirname "${nginx_conf}")" /etc/nginx/default.d
         cat > "${nginx_conf}" <<NGINX
-location ${url_path} {
-    proxy_pass http://127.0.0.1:${port};
+location = ${url_path} {
+    return 308 ${url_path_slash};
+}
+
+location ${url_path_slash} {
+    proxy_pass http://127.0.0.1:${port}/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Real-IP \$remote_addr;

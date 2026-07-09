@@ -2302,6 +2302,7 @@ async function loadPlaywrightStatus() {
       `Browser: ${cfg.browser || '-'}`,
       `Host: ${cfg.host || '-'}`,
       `Port: ${cfg.port || '-'}`,
+      `Internal: ${cfg.upstream_port || '-'}`,
       `Path: ${cfg.url_path || '-'}`
     ].map(item => `<span class="meta-chip">${escapeHtml(item)}</span>`).join('');
     document.getElementById('playwright-path-list').innerHTML = [

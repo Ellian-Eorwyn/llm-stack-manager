@@ -817,6 +817,7 @@ CONFIG_FIELDS = [
     {"section": "Playwright",  "key": "PLAYWRIGHT_URL_PATH",        "label": "Nginx URL Path",         "type": "text", "hint": "Path mounted into the default nginx server block"},
     {"section": "Playwright",  "key": "PLAYWRIGHT_HOST",            "label": "Listen Host",            "type": "text"},
     {"section": "Playwright",  "key": "PLAYWRIGHT_PORT",            "label": "Port",                   "type": "number"},
+    {"section": "Playwright",  "key": "PLAYWRIGHT_UPSTREAM_PORT",   "label": "Internal Upstream Port", "type": "number", "hint": "Loopback-only Playwright run-server port used behind the public wrapper"},
     {"section": "Playwright",  "key": "PLAYWRIGHT_BROWSER",         "label": "Browser",                "type": "select", "options": ["chromium", "firefox", "webkit"]},
     {"section": "Playwright",  "key": "PLAYWRIGHT_INSTALL_BROWSERS", "label": "Install Browser Binaries", "type": "select", "options": ["on", "off"]},
     {"section": "Playwright",  "key": "PLAYWRIGHT_BROWSERS_PATH",   "label": "Browser Cache Path",     "type": "path"},
@@ -1578,6 +1579,7 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("PLAYWRIGHT_ENABLED", "on")
     normalized.setdefault("PLAYWRIGHT_HOST", "0.0.0.0")
     normalized.setdefault("PLAYWRIGHT_PORT", "3001")
+    normalized.setdefault("PLAYWRIGHT_UPSTREAM_PORT", "13001")
     normalized.setdefault("PLAYWRIGHT_URL_PATH", "/playwright")
     normalized.setdefault("PLAYWRIGHT_PUBLIC_WS_URL", "ws://127.0.0.1/playwright/")
     normalized.setdefault("PLAYWRIGHT_PUBLIC_HTTP_URL", "http://127.0.0.1/playwright/")
@@ -3684,6 +3686,7 @@ def searxng_config(env: dict | None = None) -> dict:
 def playwright_config(env: dict | None = None) -> dict:
     env = env or read_env()
     port = env.get("PLAYWRIGHT_PORT", "3001")
+    upstream_port = env.get("PLAYWRIGHT_UPSTREAM_PORT") or str(int(port) + 10000 if str(port).isdigit() else 13001)
     url_path = env.get("PLAYWRIGHT_URL_PATH", "/playwright") or "/playwright"
     if not url_path.startswith("/"):
         url_path = "/" + url_path
@@ -3703,6 +3706,7 @@ def playwright_config(env: dict | None = None) -> dict:
         "enabled": env.get("PLAYWRIGHT_ENABLED", "on"),
         "host": env.get("PLAYWRIGHT_HOST", "0.0.0.0"),
         "port": port,
+        "upstream_port": upstream_port,
         "url_path": url_path,
         "browser": env.get("PLAYWRIGHT_BROWSER", "chromium"),
         "install_browsers": env.get("PLAYWRIGHT_INSTALL_BROWSERS", "on"),
@@ -3805,15 +3809,21 @@ def write_playwright_nginx_conf(cfg: dict | None = None) -> None:
     conf_path = Path(cfg["nginx_conf"])
     conf_path.parent.mkdir(parents=True, exist_ok=True)
     Path("/etc/nginx/default.d").mkdir(parents=True, exist_ok=True)
-    content = f"""location {cfg['url_path']} {{
-    proxy_pass http://127.0.0.1:{cfg['port']};
+    url_path = cfg["url_path"].rstrip("/") or "/playwright"
+    url_path_slash = f"{url_path}/"
+    content = f"""location = {url_path} {{
+    return 308 {url_path_slash};
+}}
+
+location {url_path_slash} {{
+    proxy_pass http://127.0.0.1:{cfg['port']}/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-Prefix {cfg['url_path']};
-    proxy_set_header X-Script-Name {cfg['url_path']};
+    proxy_set_header X-Forwarded-Prefix {url_path};
+    proxy_set_header X-Script-Name {url_path};
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 3600s;

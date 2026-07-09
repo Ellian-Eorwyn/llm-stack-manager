@@ -11,15 +11,17 @@ const playwright = require('playwright');
 let HOST = '127.0.0.1';
 let PORT = 3001;
 let URL = 'https://example.com';
+let ENDPOINT = '';
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--host' && process.argv[i + 1]) HOST = process.argv[++i];
   if (process.argv[i] === '--port' && process.argv[i + 1]) PORT = process.argv[++i];
   if (process.argv[i] === '--url' && process.argv[i + 1]) URL = process.argv[++i];
+  if (process.argv[i] === '--endpoint' && process.argv[i + 1]) ENDPOINT = process.argv[++i];
 }
 
 (async () => {
-  const wsEndpoint = `ws://${HOST}:${PORT}/`;
+  const wsEndpoint = ENDPOINT || `ws://${HOST}:${PORT}/`;
   console.log(`Connecting to ${wsEndpoint} ...`);
 
   const browser = await playwright.chromium.connect(wsEndpoint);
