@@ -3697,10 +3697,12 @@ def playwright_config(env: dict | None = None) -> dict:
     if not public_http.endswith("/"):
         public_http += "/"
     endpoints = {
+        "protocol": "Playwright remote protocol, not Chrome DevTools Protocol",
         "websocket": public_ws,
         "http": public_http,
         "node_connect": f"const browser = await playwright.chromium.connect('{public_ws}');",
         "python_connect": f"browser = playwright.chromium.connect('{public_ws}')",
+        "not_cdp": "Do not use chromium.connectOverCDP(...) with this endpoint",
     }
     return {
         "enabled": env.get("PLAYWRIGHT_ENABLED", "on"),

@@ -120,3 +120,5 @@ SearXNG is managed as an external runtime install, not vendored into git. The st
 ## Local Playwright
 
 Playwright is managed from the `playwright/` package. The stack installer uses `scripts/install-playwright.sh` to run `npm ci` and install the configured browser binary, writes `playwright-server.service`, and exposes the WebSocket server through nginx at `PLAYWRIGHT_URL_PATH` (default `/playwright`). The manager sidebar has a Playwright tab for status checks, logs, service control, install/update, configuration, and connection strings such as `ws://127.0.0.1/playwright/`.
+
+The Playwright endpoint speaks Playwright's remote protocol. Clients should connect with `playwright.chromium.connect(...)`, not `connectOverCDP(...)` or a raw Chrome DevTools Protocol client. Match the client Playwright version to the server package version in `playwright/package.json` when possible.
