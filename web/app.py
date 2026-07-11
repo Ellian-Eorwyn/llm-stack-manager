@@ -199,16 +199,16 @@ BUILTIN_CHAT_VARIANTS = [
     {
         "id": "dense",
         "service": "chat-backend-dense",
-        "default_label": "Backend Dense",
-        "default_desc": "Dense model preset · shared backend",
-        "label_key": "CHAT_DENSE_LABEL",
+        "default_label": "Primary Backend",
+        "default_desc": "Primary model preset · shared proxy",
+        "label_key": "CHAT_PRIMARY_LABEL",
     },
     {
         "id": "moe",
         "service": "chat-backend-moe",
-        "default_label": "Backend MoE",
-        "default_desc": "MoE model preset · shared backend",
-        "label_key": "CHAT_MOE_LABEL",
+        "default_label": "Secondary Backend",
+        "default_desc": "Secondary model preset · shared proxy",
+        "label_key": "CHAT_SECONDARY_LABEL",
     },
     {
         "id": "bee",
@@ -222,12 +222,22 @@ BUILTIN_CHAT_VARIANT_IDS = {item["id"] for item in BUILTIN_CHAT_VARIANTS}
 BUILTIN_CHAT_VARIANT_BY_ID = {item["id"]: item for item in BUILTIN_CHAT_VARIANTS}
 BUILTIN_CHAT_VARIANT_BY_SERVICE = {item["service"]: item for item in BUILTIN_CHAT_VARIANTS}
 LEGACY_ENV_KEY_MAP = {
-    "CHAT_MODEL_27B_PATH": "CHAT_DENSE_MODEL_PATH",
-    "CHAT_MMPROJ_27B_PATH": "CHAT_DENSE_MMPROJ_PATH",
-    "CHAT_27B_CTX_SIZE": "CHAT_DENSE_CTX_SIZE",
-    "CHAT_MODEL_35B_PATH": "CHAT_MOE_MODEL_PATH",
-    "CHAT_MMPROJ_35B_PATH": "CHAT_MOE_MMPROJ_PATH",
-    "CHAT_35B_CTX_SIZE": "CHAT_MOE_CTX_SIZE",
+    "CHAT_MODEL_27B_PATH": "CHAT_PRIMARY_MODEL_PATH",
+    "CHAT_MMPROJ_27B_PATH": "CHAT_PRIMARY_MMPROJ_PATH",
+    "CHAT_27B_CTX_SIZE": "CHAT_PRIMARY_CTX_SIZE",
+    "CHAT_MODEL_35B_PATH": "CHAT_SECONDARY_MODEL_PATH",
+    "CHAT_MMPROJ_35B_PATH": "CHAT_SECONDARY_MMPROJ_PATH",
+    "CHAT_35B_CTX_SIZE": "CHAT_SECONDARY_CTX_SIZE",
+    "CHAT_DENSE_LABEL": "CHAT_PRIMARY_LABEL",
+    "CHAT_DENSE_MODEL_NAME": "CHAT_PRIMARY_MODEL_NAME",
+    "CHAT_DENSE_MODEL_PATH": "CHAT_PRIMARY_MODEL_PATH",
+    "CHAT_DENSE_MMPROJ_PATH": "CHAT_PRIMARY_MMPROJ_PATH",
+    "CHAT_DENSE_CTX_SIZE": "CHAT_PRIMARY_CTX_SIZE",
+    "CHAT_MOE_LABEL": "CHAT_SECONDARY_LABEL",
+    "CHAT_MOE_MODEL_NAME": "CHAT_SECONDARY_MODEL_NAME",
+    "CHAT_MOE_MODEL_PATH": "CHAT_SECONDARY_MODEL_PATH",
+    "CHAT_MOE_MMPROJ_PATH": "CHAT_SECONDARY_MMPROJ_PATH",
+    "CHAT_MOE_CTX_SIZE": "CHAT_SECONDARY_CTX_SIZE",
 }
 NEW_ENV_KEY_LEGACY_ALIASES = defaultdict(list)
 for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
@@ -238,10 +248,10 @@ TTS_BACKEND_SERVICES = []
 TTS_MANAGED_SERVICES = []
 TRANSCRIPT_MANAGED_SERVICE = ""
 SERVICES = [
-    {"group": "chat",      "name": "chat-backend-dense", "label": "Backend Dense", "desc": "Dense model preset - shared backend", "ports": "8010 (internal)", "config_section": "Shared Backend"},
-    {"group": "chat",      "name": "chat-backend-moe", "label": "Backend MoE",   "desc": "MoE model preset - shared backend",   "ports": "8010 (internal)", "config_section": "Shared Backend"},
+    {"group": "chat",      "name": "chat-backend-dense", "label": "Primary Backend", "desc": "Primary model preset - shared proxy", "ports": "8010 (internal)", "config_section": "Primary Backend"},
+    {"group": "chat",      "name": "chat-backend-moe", "label": "Secondary Backend", "desc": "Secondary model preset - shared proxy", "ports": "8010 (internal)", "config_section": "Secondary Backend"},
     {"group": "chat",      "name": "chat-backend-bee", "label": "Backend BeeLLaMA", "desc": "BeeLLaMA DFlash/TurboQuant backend", "ports": "8010 (internal)", "config_section": "BeeLLaMA Backend"},
-    {"group": "chat",      "name": "chat-backend",     "label": "Backend (Custom)", "desc": "Custom model - shared backend",  "ports": "8010 (internal)", "config_section": "Shared Backend"},
+    {"group": "chat",      "name": "chat-backend",     "label": "Backend (Custom)", "desc": "Custom model - shared backend",  "ports": "8010 (internal)", "config_section": "Primary Backend"},
     {"group": "chat",      "name": "chat-proxy",       "label": "Chat Proxy",   "desc": "Routes think/chat/code from one backend", "ports": "8003 / 8004 / 8008"},
     {"group": "chat",      "name": "chat-backend2",    "label": "Backend 2 (Custom)", "desc": "Second custom model - shared backend",  "ports": "8020 (internal)", "config_section": "Shared Backend 2"},
     {"group": "chat",      "name": "chat-proxy2",      "label": "Chat Proxy 2", "desc": "Routes think/chat/code from backend 2", "ports": "8103 / 8104 / 8108"},
@@ -272,6 +282,8 @@ LLAMACPP_MODEL_SERVICES = [
 LLAMACPP_PROXY_SERVICE = "chat-proxy"
 CORE_CONFIG_SECTIONS = {
     "Chat Templates",
+    "Primary Backend",
+    "Secondary Backend",
     "Shared Backend",
     "Shared Backend 2",
     "BeeLLaMA Backend",
@@ -889,6 +901,81 @@ CONFIG_FIELDS = [
     {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_SPEAKER_COUNT",         "label": "WhisperKit Speaker Count",     "type": "number"},
 ]
 
+CHAT_BACKEND_IDENTITY_KEYS = {
+    "primary": {
+        "CHAT_DENSE_LABEL": "CHAT_PRIMARY_LABEL",
+        "CHAT_DENSE_MODEL_NAME": "CHAT_PRIMARY_MODEL_NAME",
+        "CHAT_DENSE_MODEL_PATH": "CHAT_PRIMARY_MODEL_PATH",
+        "CHAT_DENSE_MMPROJ_PATH": "CHAT_PRIMARY_MMPROJ_PATH",
+        "CHAT_DENSE_CTX_SIZE": "CHAT_PRIMARY_CTX_SIZE",
+    },
+    "secondary": {
+        "CHAT_MOE_LABEL": "CHAT_SECONDARY_LABEL",
+        "CHAT_MOE_MODEL_NAME": "CHAT_SECONDARY_MODEL_NAME",
+        "CHAT_MOE_MODEL_PATH": "CHAT_SECONDARY_MODEL_PATH",
+        "CHAT_MOE_MMPROJ_PATH": "CHAT_SECONDARY_MMPROJ_PATH",
+        "CHAT_MOE_CTX_SIZE": "CHAT_SECONDARY_CTX_SIZE",
+    },
+}
+CHAT_BACKEND_GENERIC_SKIP_KEYS = {
+    "CHAT_MODEL_NAME",
+    "CHAT_DENSE_LABEL",
+    "CHAT_DENSE_MODEL_NAME",
+    "CHAT_DENSE_MODEL_PATH",
+    "CHAT_DENSE_MMPROJ_PATH",
+    "CHAT_DENSE_CTX_SIZE",
+    "CHAT_MOE_LABEL",
+    "CHAT_MOE_MODEL_NAME",
+    "CHAT_MOE_MODEL_PATH",
+    "CHAT_MOE_MMPROJ_PATH",
+    "CHAT_MOE_CTX_SIZE",
+}
+
+
+def _clone_chat_backend_field(field: dict, variant: str) -> dict | None:
+    key = field.get("key", "")
+    identity_key = CHAT_BACKEND_IDENTITY_KEYS[variant].get(key)
+    if identity_key:
+        cloned = dict(field)
+        cloned["key"] = identity_key
+        if variant == "primary":
+            cloned["section"] = "Primary Backend"
+            cloned["label"] = cloned.get("label", "").replace("Dense", "Primary").replace("Slot", "Backend")
+            cloned["hint"] = cloned.get("hint", "").replace("dense preset", "primary backend")
+        else:
+            cloned["section"] = "Secondary Backend"
+            cloned["label"] = cloned.get("label", "").replace("MoE", "Secondary").replace("Slot", "Backend")
+            cloned["hint"] = cloned.get("hint", "").replace("MoE preset", "secondary backend")
+        return cloned
+    if not key.startswith("CHAT_") or key.startswith("CHAT_BEE_") or key in CHAT_BACKEND_GENERIC_SKIP_KEYS:
+        return None
+    cloned = dict(field)
+    cloned["section"] = "Primary Backend" if variant == "primary" else "Secondary Backend"
+    cloned["key"] = ("CHAT_PRIMARY" if variant == "primary" else "CHAT_SECONDARY") + key[len("CHAT"):]
+    return cloned
+
+
+_shared_backend_fields = [field for field in CONFIG_FIELDS if field.get("section") == "Shared Backend"]
+_generated_backend_fields = []
+for _variant in ("primary", "secondary"):
+    for _field in _shared_backend_fields:
+        _cloned = _clone_chat_backend_field(_field, _variant)
+        if _cloned is not None:
+            _generated_backend_fields.append(_cloned)
+
+_rebuilt_config_fields = []
+_inserted_backend_fields = False
+for _field in CONFIG_FIELDS:
+    if _field.get("section") == "Shared Backend":
+        if not _inserted_backend_fields:
+            _rebuilt_config_fields.extend(_generated_backend_fields)
+            _inserted_backend_fields = True
+        if _field.get("key") == "BEELLAMA_SERVER_BIN" or _field.get("key", "").startswith("CHAT_BEE_"):
+            _rebuilt_config_fields.append(_field)
+    else:
+        _rebuilt_config_fields.append(_field)
+CONFIG_FIELDS = _rebuilt_config_fields
+
 # Move BeeLLaMA-specific controls into their own pane without changing env keys.
 for _field in CONFIG_FIELDS:
     _key = _field.get("key", "")
@@ -1233,6 +1320,10 @@ RESTART_HINTS = {
 
 for _field in CONFIG_FIELDS:
     _key = _field.get("key", "")
+    if _key.startswith("CHAT_PRIMARY_"):
+        RESTART_HINTS.setdefault(_key, ["chat-backend-dense"])
+    if _key.startswith("CHAT_SECONDARY_"):
+        RESTART_HINTS.setdefault(_key, ["chat-backend-moe"])
     if _key == "BEELLAMA_SERVER_BIN" or _key.startswith("CHAT_BEE_"):
         RESTART_HINTS.setdefault(_key, ["chat-backend-bee"])
     if _key.startswith("OCR_"):
@@ -1270,17 +1361,42 @@ def normalize_env_keys(env: dict) -> dict:
     normalized = dict(env)
     for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
         if new_key not in normalized and legacy_key in normalized:
-            normalized[new_key] = normalized[legacy_key]
-    normalized.setdefault("CHAT_DENSE_LABEL", BUILTIN_CHAT_VARIANT_BY_ID["dense"]["default_label"])
-    normalized.setdefault("CHAT_MOE_LABEL", BUILTIN_CHAT_VARIANT_BY_ID["moe"]["default_label"])
-    normalized.setdefault("CHAT_DENSE_MODEL_NAME", "chat-dense")
-    normalized.setdefault("CHAT_MOE_MODEL_NAME", "chat-moe")
+            value = normalized[legacy_key]
+            if legacy_key == "CHAT_DENSE_LABEL" and value.strip() == "Backend Dense":
+                value = BUILTIN_CHAT_VARIANT_BY_ID["dense"]["default_label"]
+            elif legacy_key == "CHAT_MOE_LABEL" and value.strip() == "Backend MoE":
+                value = BUILTIN_CHAT_VARIANT_BY_ID["moe"]["default_label"]
+            normalized[new_key] = value
+    backend_defaults = {
+        "CHAT_PRIMARY_LABEL": BUILTIN_CHAT_VARIANT_BY_ID["dense"]["default_label"],
+        "CHAT_PRIMARY_MODEL_NAME": "chat-dense",
+        "CHAT_PRIMARY_MODEL_PATH": normalized.get("CHAT_MODEL_PATH", ""),
+        "CHAT_PRIMARY_MMPROJ_PATH": normalized.get("CHAT_MMPROJ_PATH", ""),
+        "CHAT_PRIMARY_CTX_SIZE": normalized.get("CHAT_CTX_SIZE", "32768"),
+        "CHAT_SECONDARY_LABEL": BUILTIN_CHAT_VARIANT_BY_ID["moe"]["default_label"],
+        "CHAT_SECONDARY_MODEL_NAME": "chat-moe",
+        "CHAT_SECONDARY_MODEL_PATH": normalized.get("CHAT_MODEL_PATH", ""),
+        "CHAT_SECONDARY_MMPROJ_PATH": normalized.get("CHAT_MMPROJ_PATH", ""),
+        "CHAT_SECONDARY_CTX_SIZE": normalized.get("CHAT_CTX_SIZE", "32768"),
+    }
+    for key, value in backend_defaults.items():
+        normalized.setdefault(key, value)
+    for field in CONFIG_FIELDS:
+        key = field.get("key", "")
+        if key.startswith("CHAT_PRIMARY_") and key not in normalized:
+            legacy_key = "CHAT_" + key[len("CHAT_PRIMARY_"):]
+            if legacy_key in normalized:
+                normalized[key] = normalized[legacy_key]
+        elif key.startswith("CHAT_SECONDARY_") and key not in normalized:
+            legacy_key = "CHAT_" + key[len("CHAT_SECONDARY_"):]
+            if legacy_key in normalized:
+                normalized[key] = normalized[legacy_key]
     bee_defaults = {
         "CHAT_BEE_LABEL": BUILTIN_CHAT_VARIANT_BY_ID["bee"]["default_label"],
         "CHAT_BEE_MODEL_NAME": "chat-bee",
-        "CHAT_BEE_MODEL_PATH": normalized.get("CHAT_DENSE_MODEL_PATH", ""),
-        "CHAT_BEE_MMPROJ_PATH": normalized.get("CHAT_DENSE_MMPROJ_PATH", ""),
-        "CHAT_BEE_CTX_SIZE": normalized.get("CHAT_DENSE_CTX_SIZE", normalized.get("CHAT_CTX_SIZE", "32768")),
+        "CHAT_BEE_MODEL_PATH": normalized.get("CHAT_PRIMARY_MODEL_PATH", ""),
+        "CHAT_BEE_MMPROJ_PATH": normalized.get("CHAT_PRIMARY_MMPROJ_PATH", ""),
+        "CHAT_BEE_CTX_SIZE": normalized.get("CHAT_PRIMARY_CTX_SIZE", normalized.get("CHAT_CTX_SIZE", "32768")),
         "CHAT_BEE_GPU_VISIBLE_DEVICES": normalized.get("CHAT_GPU_VISIBLE_DEVICES", "0"),
         "CHAT_BEE_DEVICE": normalized.get("CHAT_DEVICE", ""),
         "CHAT_BEE_N_GPU_LAYERS": normalized.get("CHAT_N_GPU_LAYERS", "-1"),
@@ -1704,7 +1820,7 @@ def filter_config_updates(updates: dict, env: dict | None = None) -> dict:
 
 
 def builtin_chat_variants(env: dict | None = None) -> list[dict]:
-    env = env or read_env()
+    env = normalize_env_keys(env or read_env())
     items = []
     for item in BUILTIN_CHAT_VARIANTS:
         items.append({

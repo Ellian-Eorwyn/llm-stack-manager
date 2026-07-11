@@ -1332,7 +1332,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     </div>
     <div class="config-note">
       <strong>How To Use This Page</strong>
-      <p>Each section saves independently. Shared Backend covers model-load settings that must stay aligned to avoid reloads, while Thinking, Instruct, and Coding each define request-time proxy behavior for their own public port.</p>
+      <p>Each section saves independently. Primary Backend and Secondary Backend share the same proxy, while Thinking, Instruct, and Coding define request-time behavior for their own public port.</p>
     </div>
   </div>
 
@@ -1351,8 +1351,10 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         <div>
           <h3>{{ section }}</h3>
           <p>
-            {% if section == 'Shared Backend' %}
-            Configure the upstream llama.cpp shared chat backends. BeeLLaMA has its own pane because it uses a separate backend build and launch surface.
+            {% if section == 'Primary Backend' %}
+            Configure the primary llama.cpp backend. It binds to the same internal backend port used by the shared chat proxy.
+            {% elif section == 'Secondary Backend' %}
+            Configure the secondary llama.cpp backend. It is saved independently but still uses the same shared chat proxy when active.
             {% elif section == 'BeeLLaMA Backend' %}
             Configure the BeeLLaMA backend, including DFlash, TurboQuant, adaptive draft control, reasoning guards, and Bee-only diagnostics.
             {% elif section == 'Thinking Endpoint' %}
@@ -1366,7 +1368,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
             {% elif section == 'OCR' %}
             Configure the standalone GLM-OCR multimodal backend and its default extraction behavior.
             {% elif section == 'Chat Templates' %}
-            Create and edit reusable llama.cpp Jinja templates, then select them in Shared Backend or Task Model.
+            Create and edit reusable llama.cpp Jinja templates, then select them in Primary Backend, Secondary Backend, or Task Model.
             {% else %}
             Update this section and save it independently. Changes apply to the environment file used by the stack manager.
             {% endif %}
@@ -1374,17 +1376,19 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
       </div>
 
-      {% if section == 'Shared Backend' %}
-      {% set dense_keys = ['CHAT_DENSE_LABEL', 'CHAT_DENSE_MODEL_NAME', 'CHAT_DENSE_MODEL_PATH', 'CHAT_DENSE_MMPROJ_PATH', 'CHAT_DENSE_CTX_SIZE'] %}
-      {% set moe_keys = ['CHAT_MOE_LABEL', 'CHAT_MOE_MODEL_NAME', 'CHAT_MOE_MODEL_PATH', 'CHAT_MOE_MMPROJ_PATH', 'CHAT_MOE_CTX_SIZE'] %}
-      {% set shared_keys = ['CHAT_MODEL_NAME', 'CHAT_N_PARALLEL', 'CHAT_BATCH_SIZE', 'CHAT_UBATCH_SIZE', 'CHAT_FLASH_ATTN', 'CHAT_JINJA', 'CHAT_TEMPLATE_ID', 'CHAT_FIT', 'CHAT_FIT_TARGET', 'CHAT_FIT_CTX'] %}
-      {% set gpu_keys = ['CHAT_GPU_VISIBLE_DEVICES', 'CHAT_DEVICE', 'CHAT_N_GPU_LAYERS', 'CHAT_MAIN_GPU', 'CHAT_TENSOR_SPLIT', 'CHAT_SPLIT_MODE', 'CHAT_KV_OFFLOAD', 'CHAT_OP_OFFLOAD', 'CHAT_MMPROJ_OFFLOAD', 'CHAT_CACHE_TYPE_K', 'CHAT_CACHE_TYPE_V', 'CHAT_CACHE_RAM', 'CHAT_CTX_CHECKPOINTS', 'CHAT_CACHE_IDLE_SLOTS', 'CHAT_CACHE_REUSE', 'CHAT_SWA_FULL', 'CHAT_NO_MMAP', 'CHAT_MLOCK'] %}
-      {% set behavior_keys = ['CHAT_TEMP', 'CHAT_TOP_P', 'CHAT_TOP_K', 'CHAT_MIN_P', 'CHAT_REASONING_FORMAT'] %}
-      {% set spec_keys = ['CHAT_SPEC_METHOD', 'CHAT_SPEC_NGRAM_MOD', 'CHAT_SPEC_DRAFT_MODEL_PATH', 'CHAT_SPEC_DRAFT_N_GPU_LAYERS', 'CHAT_SPEC_DRAFT_DEVICES', 'CHAT_SPEC_DRAFT_TYPE_K', 'CHAT_SPEC_DRAFT_TYPE_V', 'CHAT_SPEC_DRAFT_N_MAX', 'CHAT_SPEC_DRAFT_N_MIN', 'CHAT_SPEC_DRAFT_P_MIN', 'CHAT_SPEC_DRAFT_P_SPLIT', 'CHAT_SPEC_NGRAM_MOD_N_MATCH', 'CHAT_SPEC_NGRAM_MOD_N_MIN', 'CHAT_SPEC_NGRAM_MOD_N_MAX', 'CHAT_SPEC_NGRAM_SIZE_N', 'CHAT_SPEC_NGRAM_SIZE_M', 'CHAT_SPEC_NGRAM_MIN_HITS'] %}
+      {% if section == 'Primary Backend' or section == 'Secondary Backend' %}
+      {% set backend_prefix = 'CHAT_PRIMARY' if section == 'Primary Backend' else 'CHAT_SECONDARY' %}
+      {% set identity_keys = [backend_prefix ~ '_LABEL', backend_prefix ~ '_MODEL_NAME', backend_prefix ~ '_MODEL_PATH', backend_prefix ~ '_MMPROJ_PATH', backend_prefix ~ '_CTX_SIZE'] %}
+      {% set shared_keys = [backend_prefix ~ '_N_PARALLEL', backend_prefix ~ '_BATCH_SIZE', backend_prefix ~ '_UBATCH_SIZE', backend_prefix ~ '_FLASH_ATTN', backend_prefix ~ '_JINJA', backend_prefix ~ '_TEMPLATE_ID', backend_prefix ~ '_FIT', backend_prefix ~ '_FIT_TARGET', backend_prefix ~ '_FIT_CTX'] %}
+      {% set gpu_keys = [backend_prefix ~ '_GPU_VISIBLE_DEVICES', backend_prefix ~ '_DEVICE', backend_prefix ~ '_N_GPU_LAYERS', backend_prefix ~ '_MAIN_GPU', backend_prefix ~ '_TENSOR_SPLIT', backend_prefix ~ '_SPLIT_MODE', backend_prefix ~ '_KV_OFFLOAD', backend_prefix ~ '_OP_OFFLOAD', backend_prefix ~ '_MMPROJ_OFFLOAD', backend_prefix ~ '_CACHE_TYPE_K', backend_prefix ~ '_CACHE_TYPE_V', backend_prefix ~ '_CACHE_RAM', backend_prefix ~ '_CTX_CHECKPOINTS', backend_prefix ~ '_CACHE_IDLE_SLOTS', backend_prefix ~ '_CACHE_REUSE', backend_prefix ~ '_SWA_FULL', backend_prefix ~ '_NO_MMAP', backend_prefix ~ '_MLOCK'] %}
+      {% set behavior_keys = [backend_prefix ~ '_TEMP', backend_prefix ~ '_TOP_P', backend_prefix ~ '_TOP_K', backend_prefix ~ '_MIN_P', backend_prefix ~ '_REASONING_FORMAT'] %}
+      {% set spec_keys = [backend_prefix ~ '_SPEC_METHOD', backend_prefix ~ '_SPEC_NGRAM_MOD', backend_prefix ~ '_SPEC_DRAFT_MODEL_PATH', backend_prefix ~ '_SPEC_DRAFT_N_GPU_LAYERS', backend_prefix ~ '_SPEC_DRAFT_DEVICES', backend_prefix ~ '_SPEC_DRAFT_TYPE_K', backend_prefix ~ '_SPEC_DRAFT_TYPE_V', backend_prefix ~ '_SPEC_DRAFT_N_MAX', backend_prefix ~ '_SPEC_DRAFT_N_MIN', backend_prefix ~ '_SPEC_DRAFT_P_MIN', backend_prefix ~ '_SPEC_DRAFT_P_SPLIT', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MATCH', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MIN', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MAX', backend_prefix ~ '_SPEC_NGRAM_SIZE_N', backend_prefix ~ '_SPEC_NGRAM_SIZE_M', backend_prefix ~ '_SPEC_NGRAM_MIN_HITS'] %}
+      {% set custom_args_key = backend_prefix ~ '_CUSTOM_ARGS_JSON' %}
 
+      {% if section == 'Primary Backend' %}
       <div class="cfg-panel" style="margin-bottom:20px;">
         <h4>Download GGUFs From Hugging Face</h4>
-        <p>Download a quantized model directly into the local <code>models/</code> folder. If an MMProj GGUF is present in the repo, it will be downloaded alongside the model and renamed to match the selected model filename. When the download finishes, this page reloads so the Dense and MoE path dropdowns show the new files.</p>
+        <p>Download a quantized model directly into the local <code>models/</code> folder. If an MMProj GGUF is present in the repo, it will be downloaded alongside the model and renamed to match the selected model filename. When the download finishes, this page reloads so the backend path dropdowns show the new files.</p>
         <div class="hf-grid" style="margin-bottom:0;">
           <div class="field wide">
             <label>Repo URL</label>
@@ -1414,32 +1418,22 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
         <div class="hf-download-meta" id="shared-hf-download-meta"></div>
       </div>
+      {% endif %}
 
-      <div class="cfg-preset-grid">
-        <div class="cfg-preset-card">
-          <h4>Dense Preset Slot</h4>
-          <p>This is the built-in dense backend button on the services page.</p>
-          <div class="cfg-grid tight">
-            {% for f in fields if f.key in dense_keys %}
-            {{ render_config_field(f, section) }}
-            {% endfor %}
-          </div>
-        </div>
-        <div class="cfg-preset-card">
-          <h4>MoE Preset Slot</h4>
-          <p>This is the built-in mixture-of-experts backend button on the services page.</p>
-          <div class="cfg-grid tight">
-            {% for f in fields if f.key in moe_keys %}
-            {{ render_config_field(f, section) }}
-            {% endfor %}
-          </div>
+      <div class="cfg-panel" style="margin-bottom:20px;">
+        <h4>Model Identity And Files</h4>
+        <p>These values identify the selected backend slot and the GGUF files it loads.</p>
+        <div class="cfg-grid tight">
+          {% for f in fields if f.key in identity_keys %}
+          {{ render_config_field(f, section) }}
+          {% endfor %}
         </div>
       </div>
 
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Shared Backend Runtime</h4>
-          <p>These are the launch-time backend settings that stay constant across thinking, instruct, and coding so the underlying model does not need to reload.</p>
+          <p>These are the launch-time backend settings for this backend slot. Thinking, instruct, and coding requests still route through the shared proxy.</p>
           <div class="cfg-mini-grid">
             {% for f in fields if f.key in shared_keys %}
             {{ render_config_field(f, section) }}
@@ -1479,8 +1473,8 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 
         <div class="cfg-panel">
           <h4>Custom llama.cpp Arguments</h4>
-          <p>These flags are appended to every shared chat backend launch, regardless of which proxy port is used. This is the right place for model-family flags like <code>--jinja</code> or template kwargs that should follow the loaded model.</p>
-      {% for f in fields if f.key == 'CHAT_CUSTOM_ARGS_JSON' %}
+          <p>These flags are appended to this backend launch. Use this for model-family flags like <code>--jinja</code> or template kwargs that should follow the loaded model.</p>
+      {% for f in fields if f.key == custom_args_key %}
       {{ render_config_field(f, section) }}
       {% endfor %}
         </div>
@@ -1943,8 +1937,8 @@ function openServiceConfig(sectionName) {
 
 function refreshBuiltInModelButtons(updates) {
   const slotMappings = [
-    { key: 'CHAT_DENSE_LABEL', variant: 'dense' },
-    { key: 'CHAT_MOE_LABEL', variant: 'moe' },
+    { key: 'CHAT_PRIMARY_LABEL', variant: 'dense' },
+    { key: 'CHAT_SECONDARY_LABEL', variant: 'moe' },
   ];
   slotMappings.forEach(({ key, variant }) => {
     if (!(key in updates) || !builtInChatVariantMap[variant]) return;

@@ -22,6 +22,43 @@ manager = _load_app_module()
 
 
 class ConfigSectionTests(unittest.TestCase):
+    def test_primary_and_secondary_backend_fields_are_separate(self):
+        sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
+        self.assertEqual(sections["CHAT_PRIMARY_MODEL_PATH"], "Primary Backend")
+        self.assertEqual(sections["CHAT_PRIMARY_SPEC_METHOD"], "Primary Backend")
+        self.assertEqual(sections["CHAT_PRIMARY_CUSTOM_ARGS_JSON"], "Primary Backend")
+        self.assertEqual(sections["CHAT_SECONDARY_MODEL_PATH"], "Secondary Backend")
+        self.assertEqual(sections["CHAT_SECONDARY_SPEC_METHOD"], "Secondary Backend")
+        self.assertEqual(sections["CHAT_SECONDARY_CUSTOM_ARGS_JSON"], "Secondary Backend")
+
+    def test_primary_and_secondary_backend_restart_independently(self):
+        self.assertEqual(manager.RESTART_HINTS["CHAT_PRIMARY_MODEL_PATH"], ["chat-backend-dense"])
+        self.assertEqual(manager.RESTART_HINTS["CHAT_PRIMARY_BATCH_SIZE"], ["chat-backend-dense"])
+        self.assertEqual(manager.RESTART_HINTS["CHAT_SECONDARY_MODEL_PATH"], ["chat-backend-moe"])
+        self.assertEqual(manager.RESTART_HINTS["CHAT_SECONDARY_BATCH_SIZE"], ["chat-backend-moe"])
+
+    def test_primary_and_secondary_backend_normalize_from_legacy_keys(self):
+        env = manager.normalize_env_keys({
+            "CHAT_DENSE_LABEL": "Backend Dense",
+            "CHAT_DENSE_MODEL_PATH": "/models/primary.gguf",
+            "CHAT_DENSE_CTX_SIZE": "32768",
+            "CHAT_MOE_LABEL": "Backend MoE",
+            "CHAT_MOE_MODEL_PATH": "/models/secondary.gguf",
+            "CHAT_MOE_CTX_SIZE": "65536",
+            "CHAT_BATCH_SIZE": "2048",
+            "CHAT_GPU_VISIBLE_DEVICES": "0,1",
+        })
+        self.assertEqual(env["CHAT_PRIMARY_LABEL"], "Primary Backend")
+        self.assertEqual(env["CHAT_PRIMARY_MODEL_PATH"], "/models/primary.gguf")
+        self.assertEqual(env["CHAT_PRIMARY_CTX_SIZE"], "32768")
+        self.assertEqual(env["CHAT_PRIMARY_BATCH_SIZE"], "2048")
+        self.assertEqual(env["CHAT_PRIMARY_GPU_VISIBLE_DEVICES"], "0,1")
+        self.assertEqual(env["CHAT_SECONDARY_LABEL"], "Secondary Backend")
+        self.assertEqual(env["CHAT_SECONDARY_MODEL_PATH"], "/models/secondary.gguf")
+        self.assertEqual(env["CHAT_SECONDARY_CTX_SIZE"], "65536")
+        self.assertEqual(env["CHAT_SECONDARY_BATCH_SIZE"], "2048")
+        self.assertEqual(env["CHAT_SECONDARY_GPU_VISIBLE_DEVICES"], "0,1")
+
     def test_beellama_fields_are_in_dedicated_section(self):
         sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
         self.assertEqual(sections["CHAT_BEE_MODEL_PATH"], "BeeLLaMA Backend")
@@ -56,7 +93,8 @@ class ConfigSectionTests(unittest.TestCase):
     def test_chat_template_fields_are_exposed(self):
         fields = {f["key"]: f for f in manager.CONFIG_FIELDS}
         self.assertEqual(fields["CHAT_TEMPLATE_MANAGER"]["type"], "template_manager")
-        self.assertEqual(fields["CHAT_TEMPLATE_ID"]["type"], "chat_template")
+        self.assertEqual(fields["CHAT_PRIMARY_TEMPLATE_ID"]["type"], "chat_template")
+        self.assertEqual(fields["CHAT_SECONDARY_TEMPLATE_ID"]["type"], "chat_template")
         self.assertEqual(fields["TASK_CHAT_TEMPLATE_ID"]["type"], "chat_template")
 
     def test_glmocr_sdk_fields_restart_sdk_only(self):
