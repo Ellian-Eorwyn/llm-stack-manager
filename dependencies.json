@@ -18,22 +18,6 @@
       "require_gpu": true
     },
     {
-      "name": "beellama.cpp",
-      "type": "git-cmake",
-      "repo": "https://github.com/Anbeeld/beellama.cpp.git",
-      "ref": "main",
-      "path": "deps/beellama.cpp",
-      "build_dir": "deps/beellama.cpp/build",
-      "target": "llama-server",
-      "binary": "deps/beellama.cpp/build/bin/llama-server",
-      "cmake_args": [
-        "-DGGML_CUDA=ON",
-        "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.3/bin/nvcc",
-        "-DCMAKE_CUDA_ARCHITECTURES=86"
-      ],
-      "require_gpu": true
-    },
-    {
       "name": "honcho",
       "type": "git-uv",
       "repo": "https://github.com/plastic-labs/honcho.git",

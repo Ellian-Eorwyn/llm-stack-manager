@@ -50,6 +50,10 @@ OPTS=()
 [[ "${TASK_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
 [[ "${TASK_SWA_FULL:-off}" == "on" ]] && OPTS+=(--swa-full)
 [[ -n "${TASK_MMPROJ_PATH:-}" && -f "${TASK_MMPROJ_PATH}" ]] && OPTS+=(--mmproj "${TASK_MMPROJ_PATH}")
+[[ -n "${TASK_FIT_TARGET:-}" ]] && OPTS+=(--fit-target "${TASK_FIT_TARGET}")
+[[ -n "${TASK_FIT_CTX:-}" && "${TASK_FIT_CTX}" != "0" ]] && OPTS+=(--fit-ctx "${TASK_FIT_CTX}")
+[[ "${TASK_CACHE_IDLE_SLOTS:-on}" == "on" ]] && OPTS+=(--cache-idle-slots) || OPTS+=(--no-cache-idle-slots)
+[[ -n "${TASK_CACHE_REUSE:-}" && "${TASK_CACHE_REUSE}" != "0" ]] && OPTS+=(--cache-reuse "${TASK_CACHE_REUSE}")
 
 CUSTOM_ARGS=()
 if [[ -n "${TASK_CUSTOM_ARGS_JSON:-}" && "${TASK_CUSTOM_ARGS_JSON}" != "[]" ]]; then
@@ -128,10 +132,29 @@ COMMON_SPEC_ARGS=(
     --spec-draft-p-min "${TASK_SPEC_DRAFT_P_MIN:-0.75}"
     --spec-draft-p-split "${TASK_SPEC_DRAFT_P_SPLIT:-0.10}"
 )
+DRAFT_CACHE_SPEC_ARGS=(
+    --spec-draft-type-k "${TASK_SPEC_DRAFT_TYPE_K:-f16}"
+    --spec-draft-type-v "${TASK_SPEC_DRAFT_TYPE_V:-f16}"
+)
 NGRAM_MOD_SPEC_ARGS=(
     --spec-ngram-mod-n-match "${TASK_SPEC_NGRAM_MOD_N_MATCH:-24}"
     --spec-ngram-mod-n-min "${TASK_SPEC_NGRAM_MOD_N_MIN:-48}"
     --spec-ngram-mod-n-max "${TASK_SPEC_NGRAM_MOD_N_MAX:-64}"
+)
+NGRAM_SIMPLE_SPEC_ARGS=(
+    --spec-ngram-simple-size-n "${TASK_SPEC_NGRAM_SIZE_N:-12}"
+    --spec-ngram-simple-size-m "${TASK_SPEC_NGRAM_SIZE_M:-48}"
+    --spec-ngram-simple-min-hits "${TASK_SPEC_NGRAM_MIN_HITS:-1}"
+)
+NGRAM_MAP_K_SPEC_ARGS=(
+    --spec-ngram-map-k-size-n "${TASK_SPEC_NGRAM_SIZE_N:-12}"
+    --spec-ngram-map-k-size-m "${TASK_SPEC_NGRAM_SIZE_M:-48}"
+    --spec-ngram-map-k-min-hits "${TASK_SPEC_NGRAM_MIN_HITS:-1}"
+)
+NGRAM_MAP_K4V_SPEC_ARGS=(
+    --spec-ngram-map-k4v-size-n "${TASK_SPEC_NGRAM_SIZE_N:-12}"
+    --spec-ngram-map-k4v-size-m "${TASK_SPEC_NGRAM_SIZE_M:-48}"
+    --spec-ngram-map-k4v-min-hits "${TASK_SPEC_NGRAM_MIN_HITS:-1}"
 )
 if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     if [[ -z "${TASK_SPEC_DRAFT_MODEL_PATH:-}" ]]; then
@@ -146,23 +169,44 @@ if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     echo "[task] Draft model:      ${TASK_SPEC_DRAFT_MODEL_PATH}"
     echo "[task] Draft GPU layers: ${TASK_SPEC_DRAFT_N_GPU_LAYERS:-auto}"
     echo "[task] Draft devices:    ${TASK_SPEC_DRAFT_DEVICES:-auto}"
-    echo "[task] Draft ctx:        ${TASK_SPEC_DRAFT_CTX_SIZE:-0}"
     echo "[task] Draft n-max/min:  ${TASK_SPEC_DRAFT_N_MAX:-6}/${TASK_SPEC_DRAFT_N_MIN:-0}"
     echo "[task] Draft p-min/split:${TASK_SPEC_DRAFT_P_MIN:-0.75}/${TASK_SPEC_DRAFT_P_SPLIT:-0.10}"
 
     SPEC_ARGS+=(
         --spec-draft-model "${TASK_SPEC_DRAFT_MODEL_PATH}"
         --spec-draft-ngl "${TASK_SPEC_DRAFT_N_GPU_LAYERS:-auto}"
+        "${DRAFT_CACHE_SPEC_ARGS[@]}"
         "${COMMON_SPEC_ARGS[@]}"
     )
     [[ -n "${TASK_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${TASK_SPEC_DRAFT_DEVICES}")
-    [[ -n "${TASK_SPEC_DRAFT_CTX_SIZE:-}" ]] && SPEC_ARGS+=(--spec-draft-ctx-size "${TASK_SPEC_DRAFT_CTX_SIZE}")
 elif [[ "${SPEC_METHOD}" != "off" ]]; then
-    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${COMMON_SPEC_ARGS[@]}")
+    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${DRAFT_CACHE_SPEC_ARGS[@]}" "${COMMON_SPEC_ARGS[@]}")
+    if [[ "${SPEC_METHOD}" == "draft-simple" || "${SPEC_METHOD}" == "draft-eagle3" || "${SPEC_METHOD}" == "draft-dflash" ]]; then
+        if [[ -z "${TASK_SPEC_DRAFT_MODEL_PATH:-}" ]]; then
+            echo "[task] ${SPEC_METHOD} is enabled, but TASK_SPEC_DRAFT_MODEL_PATH is empty." >&2
+            exit 1
+        fi
+        if [[ ! -f "${TASK_SPEC_DRAFT_MODEL_PATH}" ]]; then
+            echo "[task] Draft model not found: ${TASK_SPEC_DRAFT_MODEL_PATH}" >&2
+            exit 1
+        fi
+        SPEC_ARGS+=(--spec-draft-model "${TASK_SPEC_DRAFT_MODEL_PATH}" --spec-draft-ngl "${TASK_SPEC_DRAFT_N_GPU_LAYERS:-auto}")
+        [[ -n "${TASK_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${TASK_SPEC_DRAFT_DEVICES}")
+    fi
     if [[ ",${SPEC_METHOD}," == *,ngram-mod,* ]]; then
         echo "[task] N-gram mod:       match=${TASK_SPEC_NGRAM_MOD_N_MATCH:-24} min=${TASK_SPEC_NGRAM_MOD_N_MIN:-48} max=${TASK_SPEC_NGRAM_MOD_N_MAX:-64}"
         SPEC_ARGS+=("${NGRAM_MOD_SPEC_ARGS[@]}")
-    elif [[ "${TASK_SPEC_NGRAM_MOD:-off}" == "on" ]]; then
+    fi
+    if [[ ",${SPEC_METHOD}," == *,ngram-simple,* ]]; then
+        SPEC_ARGS+=("${NGRAM_SIMPLE_SPEC_ARGS[@]}")
+    fi
+    if [[ ",${SPEC_METHOD}," == *,ngram-map-k,* ]]; then
+        SPEC_ARGS+=("${NGRAM_MAP_K_SPEC_ARGS[@]}")
+    fi
+    if [[ ",${SPEC_METHOD}," == *,ngram-map-k4v,* ]]; then
+        SPEC_ARGS+=("${NGRAM_MAP_K4V_SPEC_ARGS[@]}")
+    fi
+    if [[ ",${SPEC_METHOD}," != *,ngram-mod,* && "${TASK_SPEC_NGRAM_MOD:-off}" == "on" ]]; then
         echo "[task] N-gram mod assist requested, but this llama-server build only accepts ngram-mod as a standalone --spec-type; leaving --spec-type=${SPEC_METHOD}."
     fi
 fi

@@ -1332,7 +1332,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     </div>
     <div class="config-note">
       <strong>How To Use This Page</strong>
-      <p>Each section saves independently. Primary Backend and Secondary Backend share the same proxy, while Thinking, Instruct, and Coding define request-time behavior for their own public port.</p>
+      <p>Each section saves independently. Primary Backend and Secondary Backend each have their own proxy and model-routed aggregate endpoint.</p>
     </div>
   </div>
 
@@ -1352,11 +1352,9 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
           <h3>{{ section }}</h3>
           <p>
             {% if section == 'Primary Backend' %}
-            Configure the primary llama.cpp backend. It binds to the same internal backend port used by the shared chat proxy.
+            Configure the primary llama.cpp backend. It binds to the primary internal backend port used by Primary Proxy.
             {% elif section == 'Secondary Backend' %}
-            Configure the secondary llama.cpp backend. It is saved independently but still uses the same shared chat proxy when active.
-            {% elif section == 'BeeLLaMA Backend' %}
-            Configure the BeeLLaMA backend, including DFlash, TurboQuant, adaptive draft control, reasoning guards, and Bee-only diagnostics.
+            Configure the secondary llama.cpp backend. It binds to its own internal backend port and is served by Secondary Proxy.
             {% elif section == 'Thinking Endpoint' %}
             Request-time defaults for the thinking proxy port. These overrides are injected by the proxy without reloading the shared backend model.
             {% elif section == 'Instruct Endpoint' %}
@@ -1377,7 +1375,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       </div>
 
       {% if section == 'Primary Backend' or section == 'Secondary Backend' %}
-      {% set backend_prefix = 'CHAT_PRIMARY' if section == 'Primary Backend' else 'CHAT_SECONDARY' %}
+      {% set backend_prefix = 'CHAT_PRIMARY' if section == 'Primary Backend' else 'CHAT2' %}
       {% set identity_keys = [backend_prefix ~ '_LABEL', backend_prefix ~ '_MODEL_NAME', backend_prefix ~ '_MODEL_PATH', backend_prefix ~ '_MMPROJ_PATH', backend_prefix ~ '_CTX_SIZE'] %}
       {% set shared_keys = [backend_prefix ~ '_N_PARALLEL', backend_prefix ~ '_BATCH_SIZE', backend_prefix ~ '_UBATCH_SIZE', backend_prefix ~ '_FLASH_ATTN', backend_prefix ~ '_JINJA', backend_prefix ~ '_TEMPLATE_ID', backend_prefix ~ '_FIT', backend_prefix ~ '_FIT_TARGET', backend_prefix ~ '_FIT_CTX'] %}
       {% set gpu_keys = [backend_prefix ~ '_GPU_VISIBLE_DEVICES', backend_prefix ~ '_DEVICE', backend_prefix ~ '_N_GPU_LAYERS', backend_prefix ~ '_MAIN_GPU', backend_prefix ~ '_TENSOR_SPLIT', backend_prefix ~ '_SPLIT_MODE', backend_prefix ~ '_KV_OFFLOAD', backend_prefix ~ '_OP_OFFLOAD', backend_prefix ~ '_MMPROJ_OFFLOAD', backend_prefix ~ '_CACHE_TYPE_K', backend_prefix ~ '_CACHE_TYPE_V', backend_prefix ~ '_CACHE_RAM', backend_prefix ~ '_CTX_CHECKPOINTS', backend_prefix ~ '_CACHE_IDLE_SLOTS', backend_prefix ~ '_CACHE_REUSE', backend_prefix ~ '_SWA_FULL', backend_prefix ~ '_NO_MMAP', backend_prefix ~ '_MLOCK'] %}
@@ -1546,7 +1544,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       </div>
       {% elif section == 'Thinking Endpoint' %}
       {% set thinking_identity_keys = ['THINK_MODEL_NAME'] %}
-      {% set thinking_behavior_keys = ['THINK_PRESERVE_THINKING', 'THINK_JINJA', 'THINK_REASONING_FORMAT'] %}
+      {% set thinking_behavior_keys = ['PROXY_STREAM_PASSTHROUGH', 'THINK_PRESERVE_THINKING', 'THINK_JINJA', 'THINK_REASONING_FORMAT'] %}
       {% set thinking_sampling_keys = ['THINK_TEMP', 'THINK_TOP_P', 'THINK_TOP_K', 'THINK_MIN_P', 'THINK_PRESENCE_PENALTY', 'THINK_REPEAT_PENALTY'] %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
@@ -1938,7 +1936,6 @@ function openServiceConfig(sectionName) {
 function refreshBuiltInModelButtons(updates) {
   const slotMappings = [
     { key: 'CHAT_PRIMARY_LABEL', variant: 'dense' },
-    { key: 'CHAT_SECONDARY_LABEL', variant: 'moe' },
   ];
   slotMappings.forEach(({ key, variant }) => {
     if (!(key in updates) || !builtInChatVariantMap[variant]) return;
@@ -4157,6 +4154,11 @@ async function patchSelectedSavedConfig(section, updates) {
 }
 
 function savedConfigModelLabel(config) {
+  const slots = config?.active_backend_slots || {};
+  const labels = [];
+  if (slots.primary?.variant && slots.primary?.label) labels.push(`primary: ${slots.primary.label}`);
+  if (slots.secondary?.variant && slots.secondary?.label) labels.push(`secondary: ${slots.secondary.label}`);
+  if (labels.length) return labels.join(', ');
   const active = config?.active_chat_model || {};
   if (!active || !active.variant) return '';
   if (active.label) return active.label;

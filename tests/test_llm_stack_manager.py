@@ -27,15 +27,17 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertEqual(sections["CHAT_PRIMARY_MODEL_PATH"], "Primary Backend")
         self.assertEqual(sections["CHAT_PRIMARY_SPEC_METHOD"], "Primary Backend")
         self.assertEqual(sections["CHAT_PRIMARY_CUSTOM_ARGS_JSON"], "Primary Backend")
-        self.assertEqual(sections["CHAT_SECONDARY_MODEL_PATH"], "Secondary Backend")
-        self.assertEqual(sections["CHAT_SECONDARY_SPEC_METHOD"], "Secondary Backend")
-        self.assertEqual(sections["CHAT_SECONDARY_CUSTOM_ARGS_JSON"], "Secondary Backend")
+        self.assertEqual(sections["CHAT2_LABEL"], "Secondary Backend")
+        self.assertEqual(sections["CHAT2_MODEL_PATH"], "Secondary Backend")
+        self.assertEqual(sections["CHAT2_SPEC_METHOD"], "Secondary Backend")
+        self.assertEqual(sections["CHAT2_CUSTOM_ARGS_JSON"], "Secondary Backend")
+        self.assertNotIn("CHAT_SECONDARY_MODEL_PATH", sections)
 
     def test_primary_and_secondary_backend_restart_independently(self):
         self.assertEqual(manager.RESTART_HINTS["CHAT_PRIMARY_MODEL_PATH"], ["chat-backend-dense"])
         self.assertEqual(manager.RESTART_HINTS["CHAT_PRIMARY_BATCH_SIZE"], ["chat-backend-dense"])
-        self.assertEqual(manager.RESTART_HINTS["CHAT_SECONDARY_MODEL_PATH"], ["chat-backend-moe"])
-        self.assertEqual(manager.RESTART_HINTS["CHAT_SECONDARY_BATCH_SIZE"], ["chat-backend-moe"])
+        self.assertEqual(manager.RESTART_HINTS["CHAT2_MODEL_PATH"], ["chat-backend2"])
+        self.assertEqual(manager.RESTART_HINTS["CHAT2_BATCH_SIZE"], ["chat-backend2"])
 
     def test_primary_and_secondary_backend_normalize_from_legacy_keys(self):
         env = manager.normalize_env_keys({
@@ -56,17 +58,18 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertEqual(env["CHAT_SECONDARY_LABEL"], "Secondary Backend")
         self.assertEqual(env["CHAT_SECONDARY_MODEL_PATH"], "/models/secondary.gguf")
         self.assertEqual(env["CHAT_SECONDARY_CTX_SIZE"], "65536")
-        self.assertEqual(env["CHAT_SECONDARY_BATCH_SIZE"], "2048")
-        self.assertEqual(env["CHAT_SECONDARY_GPU_VISIBLE_DEVICES"], "0,1")
+        self.assertEqual(env["CHAT2_LABEL"], "Secondary Backend")
+        self.assertNotIn("CHAT_SECONDARY_BATCH_SIZE", {f["key"] for f in manager.CONFIG_FIELDS})
 
-    def test_beellama_fields_are_in_dedicated_section(self):
+    def test_removed_backend_fields_are_not_in_config_surface(self):
         sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
-        self.assertEqual(sections["CHAT_BEE_MODEL_PATH"], "BeeLLaMA Backend")
-        self.assertEqual(sections["BEELLAMA_SERVER_BIN"], "BeeLLaMA Backend")
+        self.assertNotIn("REMOVED_BACKEND_MODEL_PATH", sections)
+        self.assertNotIn("REMOVED_BACKEND_BIN", sections)
 
-    def test_beellama_spec_method_exposes_draft_mtp(self):
+    def test_removed_backend_section_is_not_exposed(self):
         fields = {f["key"]: f for f in manager.CONFIG_FIELDS}
-        self.assertIn("draft-mtp", fields["CHAT_BEE_SPEC_METHOD"]["options"])
+        self.assertNotIn("REMOVED_BACKEND_SPEC_METHOD", fields)
+        self.assertNotIn("Removed Backend", manager.CORE_CONFIG_SECTIONS)
 
     def test_ocr_fields_restart_ocr_only(self):
         self.assertEqual(manager.RESTART_HINTS["OCR_MODEL_PATH"], ["ocr"])
@@ -94,7 +97,7 @@ class ConfigSectionTests(unittest.TestCase):
         fields = {f["key"]: f for f in manager.CONFIG_FIELDS}
         self.assertEqual(fields["CHAT_TEMPLATE_MANAGER"]["type"], "template_manager")
         self.assertEqual(fields["CHAT_PRIMARY_TEMPLATE_ID"]["type"], "chat_template")
-        self.assertEqual(fields["CHAT_SECONDARY_TEMPLATE_ID"]["type"], "chat_template")
+        self.assertEqual(fields["CHAT2_TEMPLATE_ID"]["type"], "chat_template")
         self.assertEqual(fields["TASK_CHAT_TEMPLATE_ID"]["type"], "chat_template")
 
     def test_glmocr_sdk_fields_restart_sdk_only(self):
@@ -133,7 +136,7 @@ class ConfigSectionTests(unittest.TestCase):
             content = config_file.read_text()
 
         self.assertIn("CHAT_TEMP=0.6", content)
-        self.assertNotIn("CHAT_BEE_LABEL=", content)
+        self.assertNotIn("REMOVED_BACKEND_LABEL=", content)
         self.assertNotIn("CHAT_DENSE_LABEL=", content)
 
 
@@ -329,6 +332,76 @@ class CustomModelApiTests(unittest.TestCase):
 
 
 class SavedConfigTests(unittest.TestCase):
+    def test_save_records_primary_and_secondary_backend_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_dir = pathlib.Path(tmp)
+            env = {
+                "CHAT_PRIMARY_LABEL": "Primary Backend",
+                "CHAT2_LABEL": "Local Secondary",
+                "CHAT2_MODEL_NAME": "chat-secondary",
+                "CHAT2_MODEL_PATH": "/models/secondary.gguf",
+            }
+
+            def fake_status(name):
+                return "active" if name in {"chat-backend-dense", "chat-backend2"} else "inactive"
+
+            with (
+                manager.app.test_client() as client,
+                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(manager, "read_env", return_value=env),
+                patch.object(manager, "get_service_status", side_effect=fake_status),
+            ):
+                resp = client.post("/api/saved-configs", json={"name": "Both"})
+                listed = client.get("/api/saved-configs")
+
+        self.assertEqual(resp.status_code, 200)
+        body = listed.get_json()[0]
+        self.assertEqual(body["active_backend_slots"]["primary"]["label"], "Primary Backend")
+        self.assertEqual(body["active_backend_slots"]["secondary"]["label"], "Local Secondary")
+        self.assertEqual(body["active_backend_slots"]["secondary"]["service"], "chat-backend2")
+
+    def test_apply_saved_config_launches_secondary_from_slot_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_dir = pathlib.Path(tmp)
+            config_file = saved_dir / "llm-stack.env"
+            config_file.write_text("CHAT2_LABEL=Old\n")
+            (saved_dir / "Secondary.json").write_text(json.dumps({
+                "CHAT2_LABEL": "Local Secondary",
+                "_active_chat_model": {"variant": None, "service": None, "label": "", "kind": "none"},
+                "_active_backend_slots": {
+                    "secondary": {
+                        "variant": "secondary",
+                        "service": "chat-backend2",
+                        "label": "Local Secondary",
+                        "kind": "secondary",
+                    }
+                },
+            }))
+            started = []
+
+            def fake_status(_name):
+                return "inactive"
+
+            class FakeServiceManager(manager.ServiceManager):
+                @classmethod
+                def start(cls, name, timeout=30):
+                    started.append(name)
+                    return manager.subprocess.CompletedProcess(["start", name], 0, "", "")
+
+            with (
+                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(manager, "CONFIG_FILE", config_file),
+                patch.object(manager, "get_service_status", side_effect=fake_status),
+                patch.object(manager, "ServiceManager", FakeServiceManager),
+            ):
+                result = manager.apply_saved_config("Secondary", launch=True)
+            content = config_file.read_text()
+
+            self.assertTrue(result["ok"])
+            self.assertIn("chat-backend2", started)
+            self.assertIn("chat-proxy2", started)
+            self.assertIn('CHAT2_LABEL="Local Secondary"', content)
+
     def test_patch_saved_config_updates_only_supplied_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
             saved_dir = pathlib.Path(tmp)

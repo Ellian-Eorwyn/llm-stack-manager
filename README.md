@@ -7,7 +7,6 @@ Git-friendly core version of the local LLM stack manager. This repo is designed 
 - LLM Stack Manager (`web/app.py`) and web UI.
 - llama.cpp shared chat backend launchers.
 - `llm-chat-proxy.py` exposing think, chat, and code ports from one backend.
-- Optional BeeLLaMA chat backend (`chat-backend-bee`) with DFlash, Turbo/TCQ KV cache, adaptive draft control, and reasoning-loop guard settings.
 - Embedding, reranker, and task model launchers.
 - Generated systemd installer, dependency manifest, update script, and endpoint validator.
 - Optional local Honcho memory service for Hermes, routed through local model endpoints.
@@ -57,7 +56,7 @@ Rollback restores systemd unit files and service state. It does not delete eithe
 sudo bash install.sh
 ```
 
-The installer creates local runtime directories, creates `config/llm-stack.env` if missing, clones/builds llama.cpp and BeeLLaMA from `dependencies.json`, installs/configures SearXNG when `SEARXNG_ENABLED=on`, installs/configures Playwright when `PLAYWRIGHT_ENABLED=on`, writes systemd units pointing at this repo, and enables the default core services. BeeLLaMA is installed as a switchable chat backend but is not enabled by default.
+The installer creates local runtime directories, creates `config/llm-stack.env` if missing, clones/builds llama.cpp from `dependencies.json`, installs/configures SearXNG when `SEARXNG_ENABLED=on`, installs/configures Playwright when `PLAYWRIGHT_ENABLED=on`, writes systemd units pointing at this repo, and enables the default core services.
 
 Start the default core stack:
 
@@ -70,7 +69,6 @@ Switch the shared chat backend between built-in presets with:
 ```bash
 sudo bash scripts/switch-chat-model.sh dense
 sudo bash scripts/switch-chat-model.sh moe
-sudo bash scripts/switch-chat-model.sh bee
 ```
 
 Validate endpoints after the services are loaded:

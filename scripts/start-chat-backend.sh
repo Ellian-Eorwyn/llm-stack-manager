@@ -48,6 +48,10 @@ OPTS=()
 [[ "${CHAT_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
 [[ "${CHAT_SWA_FULL:-off}" == "on" ]] && OPTS+=(--swa-full)
+[[ -n "${CHAT_FIT_TARGET:-}" ]] && OPTS+=(--fit-target "${CHAT_FIT_TARGET}")
+[[ -n "${CHAT_FIT_CTX:-}" && "${CHAT_FIT_CTX}" != "0" ]] && OPTS+=(--fit-ctx "${CHAT_FIT_CTX}")
+[[ "${CHAT_CACHE_IDLE_SLOTS:-on}" == "on" ]] && OPTS+=(--cache-idle-slots) || OPTS+=(--no-cache-idle-slots)
+[[ -n "${CHAT_CACHE_REUSE:-}" && "${CHAT_CACHE_REUSE}" != "0" ]] && OPTS+=(--cache-reuse "${CHAT_CACHE_REUSE}")
 
 CUSTOM_ARGS=()
 if [[ -n "${CHAT_CUSTOM_ARGS_JSON:-}" && "${CHAT_CUSTOM_ARGS_JSON}" != "[]" ]]; then
@@ -118,10 +122,29 @@ COMMON_SPEC_ARGS=(
     --spec-draft-p-min "${CHAT_SPEC_DRAFT_P_MIN:-0.75}"
     --spec-draft-p-split "${CHAT_SPEC_DRAFT_P_SPLIT:-0.10}"
 )
+DRAFT_CACHE_SPEC_ARGS=(
+    --spec-draft-type-k "${CHAT_SPEC_DRAFT_TYPE_K:-f16}"
+    --spec-draft-type-v "${CHAT_SPEC_DRAFT_TYPE_V:-f16}"
+)
 NGRAM_MOD_SPEC_ARGS=(
     --spec-ngram-mod-n-match "${CHAT_SPEC_NGRAM_MOD_N_MATCH:-24}"
     --spec-ngram-mod-n-min "${CHAT_SPEC_NGRAM_MOD_N_MIN:-48}"
     --spec-ngram-mod-n-max "${CHAT_SPEC_NGRAM_MOD_N_MAX:-64}"
+)
+NGRAM_SIMPLE_SPEC_ARGS=(
+    --spec-ngram-simple-size-n "${CHAT_SPEC_NGRAM_SIZE_N:-12}"
+    --spec-ngram-simple-size-m "${CHAT_SPEC_NGRAM_SIZE_M:-48}"
+    --spec-ngram-simple-min-hits "${CHAT_SPEC_NGRAM_MIN_HITS:-1}"
+)
+NGRAM_MAP_K_SPEC_ARGS=(
+    --spec-ngram-map-k-size-n "${CHAT_SPEC_NGRAM_SIZE_N:-12}"
+    --spec-ngram-map-k-size-m "${CHAT_SPEC_NGRAM_SIZE_M:-48}"
+    --spec-ngram-map-k-min-hits "${CHAT_SPEC_NGRAM_MIN_HITS:-1}"
+)
+NGRAM_MAP_K4V_SPEC_ARGS=(
+    --spec-ngram-map-k4v-size-n "${CHAT_SPEC_NGRAM_SIZE_N:-12}"
+    --spec-ngram-map-k4v-size-m "${CHAT_SPEC_NGRAM_SIZE_M:-48}"
+    --spec-ngram-map-k4v-min-hits "${CHAT_SPEC_NGRAM_MIN_HITS:-1}"
 )
 if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     if [[ -z "${CHAT_SPEC_DRAFT_MODEL_PATH:-}" ]]; then
@@ -136,23 +159,44 @@ if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     echo "[chat-backend] Draft model:      ${CHAT_SPEC_DRAFT_MODEL_PATH}"
     echo "[chat-backend] Draft GPU layers: ${CHAT_SPEC_DRAFT_N_GPU_LAYERS:-auto}"
     echo "[chat-backend] Draft devices:    ${CHAT_SPEC_DRAFT_DEVICES:-auto}"
-    echo "[chat-backend] Draft ctx:        ${CHAT_SPEC_DRAFT_CTX_SIZE:-0}"
     echo "[chat-backend] Draft n-max/min:  ${CHAT_SPEC_DRAFT_N_MAX:-6}/${CHAT_SPEC_DRAFT_N_MIN:-0}"
     echo "[chat-backend] Draft p-min/split:${CHAT_SPEC_DRAFT_P_MIN:-0.75}/${CHAT_SPEC_DRAFT_P_SPLIT:-0.10}"
 
     SPEC_ARGS+=(
         --spec-draft-model "${CHAT_SPEC_DRAFT_MODEL_PATH}"
         --spec-draft-ngl "${CHAT_SPEC_DRAFT_N_GPU_LAYERS:-auto}"
+        "${DRAFT_CACHE_SPEC_ARGS[@]}"
         "${COMMON_SPEC_ARGS[@]}"
     )
     [[ -n "${CHAT_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${CHAT_SPEC_DRAFT_DEVICES}")
-    [[ -n "${CHAT_SPEC_DRAFT_CTX_SIZE:-}" ]] && SPEC_ARGS+=(--spec-draft-ctx-size "${CHAT_SPEC_DRAFT_CTX_SIZE}")
 elif [[ "${SPEC_METHOD}" != "off" ]]; then
-    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${COMMON_SPEC_ARGS[@]}")
+    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${DRAFT_CACHE_SPEC_ARGS[@]}" "${COMMON_SPEC_ARGS[@]}")
+    if [[ "${SPEC_METHOD}" == "draft-simple" || "${SPEC_METHOD}" == "draft-eagle3" || "${SPEC_METHOD}" == "draft-dflash" ]]; then
+        if [[ -z "${CHAT_SPEC_DRAFT_MODEL_PATH:-}" ]]; then
+            echo "[chat-backend] ${SPEC_METHOD} is enabled, but CHAT_SPEC_DRAFT_MODEL_PATH is empty." >&2
+            exit 1
+        fi
+        if [[ ! -f "${CHAT_SPEC_DRAFT_MODEL_PATH}" ]]; then
+            echo "[chat-backend] Draft model not found: ${CHAT_SPEC_DRAFT_MODEL_PATH}" >&2
+            exit 1
+        fi
+        SPEC_ARGS+=(--spec-draft-model "${CHAT_SPEC_DRAFT_MODEL_PATH}" --spec-draft-ngl "${CHAT_SPEC_DRAFT_N_GPU_LAYERS:-auto}")
+        [[ -n "${CHAT_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${CHAT_SPEC_DRAFT_DEVICES}")
+    fi
     if [[ ",${SPEC_METHOD}," == *,ngram-mod,* ]]; then
         echo "[chat-backend] N-gram mod:       match=${CHAT_SPEC_NGRAM_MOD_N_MATCH:-24} min=${CHAT_SPEC_NGRAM_MOD_N_MIN:-48} max=${CHAT_SPEC_NGRAM_MOD_N_MAX:-64}"
         SPEC_ARGS+=("${NGRAM_MOD_SPEC_ARGS[@]}")
-    elif [[ "${CHAT_SPEC_NGRAM_MOD:-off}" == "on" ]]; then
+    fi
+    if [[ ",${SPEC_METHOD}," == *,ngram-simple,* ]]; then
+        SPEC_ARGS+=("${NGRAM_SIMPLE_SPEC_ARGS[@]}")
+    fi
+    if [[ ",${SPEC_METHOD}," == *,ngram-map-k,* ]]; then
+        SPEC_ARGS+=("${NGRAM_MAP_K_SPEC_ARGS[@]}")
+    fi
+    if [[ ",${SPEC_METHOD}," == *,ngram-map-k4v,* ]]; then
+        SPEC_ARGS+=("${NGRAM_MAP_K4V_SPEC_ARGS[@]}")
+    fi
+    if [[ ",${SPEC_METHOD}," != *,ngram-mod,* && "${CHAT_SPEC_NGRAM_MOD:-off}" == "on" ]]; then
         echo "[chat-backend] N-gram mod assist requested, but this llama-server build only accepts ngram-mod as a standalone --spec-type; leaving --spec-type=${SPEC_METHOD}."
     fi
 fi

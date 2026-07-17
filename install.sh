@@ -324,7 +324,6 @@ UNIT
     install_unit "chat-backend"      "LLM Chat Custom Shared Backend - llama-server"   "start-chat-backend.sh"      300
     install_unit "chat-backend-dense"  "LLM Chat Dense Shared Backend - llama-server"    "start-chat-backend-dense.sh"  300
     install_unit "chat-backend-moe"  "LLM Chat MoE Shared Backend - llama-server"      "start-chat-backend-moe.sh"  300
-    install_unit "chat-backend-bee"  "LLM Chat BeeLLaMA Shared Backend - llama-server" "start-chat-backend-bee.sh"  300
     install_unit "chat-proxy"        "LLM Chat Proxy - think/chat/code ports"          "start-chat-proxy.sh"        30
     install_unit "chat-backend2"     "LLM Chat Custom Shared Backend 2 - llama-server" "start-chat-backend2.sh"     300
     install_unit "chat-proxy2"       "LLM Chat Proxy 2 - think/chat/code ports"        "start-chat-proxy2.sh"       30
@@ -367,7 +366,7 @@ UNIT
         install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
     fi
 
-    cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service|" /etc/systemd/system/chat-proxy.service
+    cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service|" /etc/systemd/system/chat-proxy.service
     cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
     cp_sed_inplace "s|^After=network.target$|After=network.target ocr.service|" /etc/systemd/system/glmocr-sdk.service
     cp_sed_inplace "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
@@ -378,10 +377,9 @@ UNIT
         cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service embed.service embed2.service|" /etc/systemd/system/honcho-deriver.service
         cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service embed.service embed2.service" /etc/systemd/system/honcho-deriver.service
     fi
-    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
-    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-bee.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
-    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-bee.service
-    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service chat-backend-bee.service" /etc/systemd/system/chat-backend.service
+    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
+    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
+    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service" /etc/systemd/system/chat-backend.service
 
     systemctl daemon-reload
 
@@ -392,7 +390,7 @@ UNIT
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(playwright-server)
     fi
-    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-dense chat-backend-moe chat-backend-bee chat-backend2 chat-proxy chat-proxy2 embed embed2 rerank task ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-dense chat-backend-moe chat-backend2 chat-proxy chat-proxy2 embed embed2 rerank task ocr glmocr-sdk)
     LEGACY_SERVICES=(
         qwen-think
         qwen-nothink
@@ -445,13 +443,11 @@ elif is_mac; then
     install_mac_service "nothink"            "LLM Chat Nothink Legacy - llama-server"              "start-nothink.sh"
     install_mac_service "chat-backend"       "LLM Chat Custom Shared Backend - llama-server"       "start-chat-backend.sh"
     install_mac_service "chat-backend-dense" "LLM Chat Dense Shared Backend - llama-server"        "start-chat-backend-dense.sh" \
-        "" "chat-backend-moe chat-backend-bee chat-backend"
+        "" "chat-backend-moe chat-backend"
     install_mac_service "chat-backend-moe"   "LLM Chat MoE Shared Backend - llama-server"          "start-chat-backend-moe.sh" \
-        "" "chat-backend-dense chat-backend-bee chat-backend"
-    install_mac_service "chat-backend-bee"   "LLM Chat BeeLLaMA Shared Backend - llama-server"     "start-chat-backend-bee.sh" \
-        "" "chat-backend-dense chat-backend-moe chat-backend"
+        "" "chat-backend-dense chat-backend"
     install_mac_service "chat-proxy"         "LLM Chat Proxy - think/chat/code ports"              "start-chat-proxy.sh" \
-        "chat-backend chat-backend-dense chat-backend-moe chat-backend-bee"
+        "chat-backend chat-backend-dense chat-backend-moe"
     install_mac_service "chat-backend2"      "LLM Chat Custom Shared Backend 2 - llama-server"     "start-chat-backend2.sh"
     install_mac_service "chat-proxy2"        "LLM Chat Proxy 2 - think/chat/code ports"            "start-chat-proxy2.sh" \
         "chat-backend2"
@@ -485,7 +481,7 @@ elif is_mac; then
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
     fi
-    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe chat-backend-bee ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe ocr glmocr-sdk)
     for svc in "${NON_DEFAULT_SERVICES[@]}"; do
         svc_disable "${svc}" 2>/dev/null || true
     done

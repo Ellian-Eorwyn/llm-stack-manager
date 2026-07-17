@@ -19,7 +19,6 @@ ALL_SERVICES=(
     chat-backend
     chat-backend-dense
     chat-backend-moe
-    chat-backend-bee
     chat-proxy
     chat-backend2
     chat-proxy2
@@ -73,7 +72,7 @@ legacy_map = {
 updates = {legacy_map.get(k, k): v for k, v in updates.items()}
 
 code_to_chat = {
-    "CODE_CTX_SIZE": ["CHAT_CTX_SIZE", "CHAT_DENSE_CTX_SIZE", "CHAT_MOE_CTX_SIZE", "CHAT_BEE_CTX_SIZE"],
+    "CODE_CTX_SIZE": ["CHAT_CTX_SIZE", "CHAT_DENSE_CTX_SIZE", "CHAT_MOE_CTX_SIZE"],
     "CODE_N_PARALLEL": ["CHAT_N_PARALLEL"],
     "CODE_THREADS": ["CHAT_THREADS"],
     "CODE_THREADS_BATCH": ["CHAT_THREADS_BATCH"],
@@ -122,8 +121,6 @@ if variant == "moe":
     print("chat-backend-moe")
 elif variant == "dense":
     print("chat-backend-dense")
-elif variant == "bee":
-    print("chat-backend-bee")
 elif service == "chat-backend":
     print("chat-backend")
 PYDEFAULT

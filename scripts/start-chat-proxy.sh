@@ -15,6 +15,8 @@ STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
 
 : "${EMBED_BACKEND_HOST:=127.0.0.1}"
+: "${AGGREGATE_ENABLED:=on}"
+: "${AGGREGATE_PORT:=8012}"
 
 # Export all relevant env vars so the Python script can read them
 export CHAT_BACKEND_HOST
@@ -24,6 +26,8 @@ export BACKEND_READ_TIMEOUT_SEC
 export THINK_PORT
 export NOTHINK_PORT
 export CODE_PORT
+export AGGREGATE_PORT
+export AGGREGATE_ENABLED
 export LISTEN_HOST
 export EMBED_PORT
 export EMBED_MODEL_NAME
@@ -65,6 +69,7 @@ export CODE_REPEAT_PENALTY
 export CODE_REASONING_FORMAT
 export CODE_MAX_TOKENS
 export CODE_REASONING_STREAM_MODE
+export PROXY_STREAM_PASSTHROUGH
 
 export GRAPHITI_PORT
 export GRAPHITI_PUBLIC_URL
@@ -90,6 +95,7 @@ echo "[chat-proxy] Starting proxy"
 echo "[chat-proxy] Think port:   ${THINK_PORT}   -> ${CHAT_BACKEND_HOST}:${CHAT_BACKEND_PORT}"
 echo "[chat-proxy] Nothink port: ${NOTHINK_PORT} -> ${CHAT_BACKEND_HOST}:${CHAT_BACKEND_PORT} (+enable_thinking=false)"
 echo "[chat-proxy] Code port:    ${CODE_PORT}    -> ${CHAT_BACKEND_HOST}:${CHAT_BACKEND_PORT} (temp=${CODE_TEMP})"
+echo "[chat-proxy] Aggregate:    ${AGGREGATE_ENABLED:-on} on ${AGGREGATE_PORT:-8012} (model-routed think/chat/code)"
 echo "[chat-proxy] Memory gateway: ${MEMORY_GATEWAY_ENABLED} (graphiti=${MEMORY_GRAPHITI_BASE_URL:-auto}, mode=${MEMORY_INJECTION_MODE})"
 
 exec python3 "$(dirname "$0")/llm-chat-proxy.py"

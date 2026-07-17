@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import copy
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -38,10 +39,13 @@ BACKEND_PORT = int(os.environ.get("CHAT_BACKEND_PORT", "8010"))
 THINK_PORT = int(os.environ.get("THINK_PORT", "8003"))
 NOTHINK_PORT = int(os.environ.get("NOTHINK_PORT", "8004"))
 CODE_PORT = int(os.environ.get("CODE_PORT", "8008"))
+AGGREGATE_PORT = int(os.environ.get("AGGREGATE_PORT", "8012"))
+AGGREGATE_ENABLED = os.environ.get("AGGREGATE_ENABLED", "on").lower() == "on"
 LISTEN_HOST = os.environ.get("LISTEN_HOST", "0.0.0.0")
 EMBED_BACKEND_HOST = os.environ.get("EMBED_BACKEND_HOST", "127.0.0.1")
 EMBED_PORT = int(os.environ.get("EMBED_PORT", "8005"))
 EMBED_MODEL_NAME = os.environ.get("EMBED_MODEL_NAME", "embed")
+PROXY_STREAM_PASSTHROUGH = os.environ.get("PROXY_STREAM_PASSTHROUGH", "off").lower() == "on"
 
 
 def _parse_timeout_env(name: str, default: str, *, allow_disable: bool = False) -> float | None:
@@ -720,6 +724,72 @@ def _model_obj(model_name: str) -> dict[str, Any]:
     }
 
 
+def _clone_model_obj(model_name: str, template: dict[str, Any] | None = None) -> dict[str, Any]:
+    model = copy.deepcopy(template) if isinstance(template, dict) else _model_obj(model_name)
+    model["id"] = model_name
+    model.setdefault("object", "model")
+    model.setdefault("created", int(time.time()))
+    model.setdefault("owned_by", "llamacpp")
+    if "aliases" in model:
+        model["aliases"] = [model_name]
+    return model
+
+
+def _clone_ollama_model_obj(model_name: str, template: dict[str, Any] | None = None) -> dict[str, Any]:
+    model = copy.deepcopy(template) if isinstance(template, dict) else {}
+    model["name"] = model_name
+    model["model"] = model_name
+    return model
+
+
+def _backend_models_payload() -> dict[str, Any] | None:
+    url = f"http://{BACKEND_HOST}:{BACKEND_PORT}/v1/models"
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=BACKEND_CONNECT_TIMEOUT_SEC) as response:
+            return _safe_json_loads(response.read())
+    except Exception as exc:
+        _log(f"backend model metadata unavailable from {url}: {exc}")
+        return None
+
+
+def _aggregate_model_names() -> list[str]:
+    names: list[str] = []
+    for name in (THINK_MODEL_NAME, NOTHINK_MODEL_NAME, CODE_MODEL_NAME):
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _aggregate_models_payload(backend_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    backend_payload = backend_payload if isinstance(backend_payload, dict) else _backend_models_payload()
+    backend_data = backend_payload.get("data") if isinstance(backend_payload, dict) else None
+    backend_models = backend_payload.get("models") if isinstance(backend_payload, dict) else None
+    data_template = backend_data[0] if isinstance(backend_data, list) and backend_data and isinstance(backend_data[0], dict) else None
+    ollama_template = (
+        backend_models[0]
+        if isinstance(backend_models, list) and backend_models and isinstance(backend_models[0], dict)
+        else None
+    )
+
+    names = _aggregate_model_names()
+    payload = {
+        "object": "list",
+        "data": [_clone_model_obj(name, data_template) for name in names],
+    }
+    if backend_models is not None:
+        payload["models"] = [_clone_ollama_model_obj(name, ollama_template) for name in names]
+    return payload
+
+
+def _aggregate_model_payload(model_name: str, backend_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    models = _aggregate_models_payload(backend_payload).get("data", [])
+    for model in models:
+        if isinstance(model, dict) and model.get("id") == model_name:
+            return model
+    return _model_obj(model_name)
+
+
 def _requested_model_name(payload: dict[str, Any], fallback: str) -> str:
     model = payload.get("model")
     return model if isinstance(model, str) and model.strip() else fallback
@@ -954,6 +1024,15 @@ def _parse_status_and_headers(raw_header: bytes) -> tuple[int, dict[str, str]]:
     return status_code, headers
 
 
+def _stream_rewrite_safe(resp_headers: dict[str, str]) -> bool:
+    transfer_encoding = resp_headers.get("transfer-encoding", "").lower()
+    return "chunked" not in transfer_encoding
+
+
+def _stream_passthrough_enabled(resp_headers: dict[str, str]) -> bool:
+    return PROXY_STREAM_PASSTHROUGH or not _stream_rewrite_safe(resp_headers)
+
+
 def _send_graphiti_ingest(group_id: str, user_text: str, assistant_text: str):
     if _graphiti_is_suspended():
         return
@@ -1051,6 +1130,43 @@ def _requested_model_id_from_path(path: str) -> str:
     return urllib.parse.unquote(normalized[len(prefix) :]).strip()
 
 
+def _profile_for_model(model_name: str) -> dict[str, Any] | None:
+    if model_name == THINK_MODEL_NAME:
+        return {
+            "thinking_enabled": True,
+            "preserve_thinking": THINK_PRESERVE_THINKING,
+            "model_name": THINK_MODEL_NAME,
+            "port_label": "think",
+            "inject_overrides": THINK_OVERRIDES,
+            "max_tokens": THINK_MAX_TOKENS,
+            "strip_tools": not THINK_JINJA,
+            "reasoning_stream_mode": THINK_REASONING_STREAM_MODE,
+        }
+    if model_name == NOTHINK_MODEL_NAME:
+        return {
+            "thinking_enabled": False,
+            "preserve_thinking": NOTHINK_PRESERVE_THINKING,
+            "model_name": NOTHINK_MODEL_NAME,
+            "port_label": "chat",
+            "inject_overrides": NOTHINK_OVERRIDES,
+            "max_tokens": NOTHINK_MAX_TOKENS,
+            "strip_tools": not NOTHINK_JINJA,
+            "reasoning_stream_mode": NOTHINK_REASONING_STREAM_MODE,
+        }
+    if model_name == CODE_MODEL_NAME:
+        return {
+            "thinking_enabled": CODE_THINKING,
+            "preserve_thinking": CODE_PRESERVE_THINKING,
+            "model_name": CODE_MODEL_NAME,
+            "port_label": "code",
+            "inject_overrides": CODE_OVERRIDES,
+            "max_tokens": CODE_MAX_TOKENS,
+            "strip_tools": not CODE_JINJA,
+            "reasoning_stream_mode": CODE_REASONING_STREAM_MODE,
+        }
+    return None
+
+
 class ProxyHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -1076,6 +1192,7 @@ def make_handler(
 ):
     class ProxyHandler(BaseHTTPRequestHandler):
         _thinking_enabled = thinking_enabled
+        _preserve_thinking = preserve_thinking
         _model_name = model_name
         _port_label = port_label
         _overrides = inject_overrides
@@ -1149,7 +1266,7 @@ def make_handler(
                 elif kind == "responses":
                     payload = _normalize_responses_payload(payload)
                 if self._thinking_enabled is not None and is_generation_request:
-                    _inject_thinking(payload, self._thinking_enabled, preserve_thinking)
+                    _inject_thinking(payload, self._thinking_enabled, self._preserve_thinking)
                 if self._strip_tools and is_generation_request:
                     _strip_tool_fields(payload)
                 if self._overrides and is_generation_request:
@@ -1205,6 +1322,7 @@ def make_handler(
             assistant_text = ""
             response_streaming = False
             backend_phase = "connect"
+            stream_rewriter = None
 
             try:
                 request_line = f"{method} {self.path} HTTP/1.1\r\n"
@@ -1229,6 +1347,7 @@ def make_handler(
                     resp_headers: dict[str, str] = {}
                     acc = SSEAssistantAccumulator()
                     nonstream_buf = bytearray()
+                    stream_passthrough = False
 
                     while True:
                         chunk = sock.recv(65536)
@@ -1251,26 +1370,61 @@ def make_handler(
                                 "text/event-stream" in resp_headers.get("content-type", "").lower()
                             )
                             if response_streaming:
-                                out_chunk = bytes(header_buf)
+                                if _stream_passthrough_enabled(resp_headers):
+                                    stream_passthrough = True
+                                    try:
+                                        self.wfile.write(bytes(header_buf))
+                                        self.wfile.flush()
+                                    except (BrokenPipeError, ConnectionResetError):
+                                        break
+                                    continue
+                                else:
+                                    if is_generation_request:
+                                        stream_rewriter = SSEEventRewriter(self._model_name, self._reasoning_stream_mode)
+                                    elif is_embeddings_request and rewrite_response_model:
+                                        stream_rewriter = SSEModelRewriter(rewrite_response_model)
+                                out_chunk = raw_head + b"\r\n\r\n"
                             else:
                                 out_chunk = b""
                         else:
+                            out_chunk = b""
                             body_part = chunk
+
+                        if stream_passthrough:
+                            try:
+                                self.wfile.write(chunk)
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError):
+                                break
+                            continue
 
                         if (is_generation_request or is_embeddings_request) and body_part:
                             if response_streaming:
                                 acc.feed(body_part)
+                                if stream_rewriter is not None:
+                                    body_part = stream_rewriter.feed(body_part)
                             else:
                                 nonstream_buf.extend(body_part)
 
                         if not response_streaming:
                             continue
 
+                        out_chunk += body_part
+
                         try:
                             self.wfile.write(out_chunk)
                             self.wfile.flush()
                         except (BrokenPipeError, ConnectionResetError):
                             break
+
+                    if response_streaming and stream_rewriter is not None:
+                        flushed = stream_rewriter.flush()
+                        if flushed:
+                            try:
+                                self.wfile.write(flushed)
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
 
                     if not response_streaming:
                         rewritten_body = _rewrite_json_reasoning_visibility(bytes(nonstream_buf), self._reasoning_stream_mode)
@@ -1356,6 +1510,78 @@ def make_handler(
     return ProxyHandler
 
 
+def make_aggregate_handler():
+    base_handler = make_handler(
+        thinking_enabled=False,
+        preserve_thinking=NOTHINK_PRESERVE_THINKING,
+        model_name=NOTHINK_MODEL_NAME,
+        port_label="aggregate",
+        inject_overrides=NOTHINK_OVERRIDES,
+        max_tokens=NOTHINK_MAX_TOKENS,
+        strip_tools=not NOTHINK_JINJA,
+        reasoning_stream_mode=NOTHINK_REASONING_STREAM_MODE,
+    )
+
+    class AggregateProxyHandler(base_handler):
+        def do_GET(self):
+            kind = _request_kind(self.path)
+            if kind == "models":
+                self._serve_models()
+            elif kind == "model":
+                self._serve_model()
+            else:
+                self._proxy_raw("GET", b"")
+
+        def do_POST(self):
+            body = self._read_body()
+            kind = _request_kind(self.path)
+            if kind in {"chat", "responses", "embeddings"}:
+                payload = _safe_json_loads(body)
+                requested_model = _requested_model_name(payload or {}, "")
+                profile = _profile_for_model(requested_model)
+                if profile is None:
+                    self._gateway_error(
+                        404,
+                        "model_not_found",
+                        f"Model '{requested_model or '<missing>'}' was not found",
+                    )
+                    return
+                self._apply_profile(profile)
+            self._proxy_raw("POST", body)
+
+        def _apply_profile(self, profile: dict[str, Any]):
+            self._thinking_enabled = profile["thinking_enabled"]
+            self._preserve_thinking = profile["preserve_thinking"]
+            self._model_name = profile["model_name"]
+            self._port_label = profile["port_label"]
+            self._overrides = profile["inject_overrides"]
+            self._max_tokens = profile["max_tokens"]
+            self._strip_tools = profile["strip_tools"]
+            self._reasoning_stream_mode = _normalize_reasoning_stream_mode(profile["reasoning_stream_mode"])
+
+        def _serve_models(self):
+            body = json.dumps(_aggregate_models_payload()).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _serve_model(self):
+            requested_id = _requested_model_id_from_path(self.path)
+            if _profile_for_model(requested_id) is None:
+                self._gateway_error(404, "model_not_found", f"Model '{requested_id}' was not found")
+                return
+            body = json.dumps(_aggregate_model_payload(requested_id)).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    return AggregateProxyHandler
+
+
 def serve(port: int, handler_class, label: str):
     server = ProxyHTTPServer((LISTEN_HOST, port), handler_class)
     _log(f"{label} listening on {LISTEN_HOST}:{port} -> backend {BACKEND_HOST}:{BACKEND_PORT}")
@@ -1393,6 +1619,7 @@ if __name__ == "__main__":
         strip_tools=not CODE_JINJA,
         reasoning_stream_mode=CODE_REASONING_STREAM_MODE,
     )
+    aggregate_handler = make_aggregate_handler() if AGGREGATE_ENABLED else None
 
     think_thread = threading.Thread(
         target=serve,
@@ -1409,13 +1636,25 @@ if __name__ == "__main__":
         args=(CODE_PORT, code_handler, f"code (inject enable_thinking={CODE_THINKING}, preserve_thinking={CODE_PRESERVE_THINKING}, reasoning_stream={CODE_REASONING_STREAM_MODE} + overrides: {CODE_OVERRIDES} + optional memory gateway)"),
         daemon=True,
     )
+    aggregate_thread = (
+        threading.Thread(
+            target=serve,
+            args=(AGGREGATE_PORT, aggregate_handler, f"aggregate (models={','.join(_aggregate_model_names())})"),
+            daemon=True,
+        )
+        if aggregate_handler is not None
+        else None
+    )
 
     think_thread.start()
     nothink_thread.start()
     code_thread.start()
+    if aggregate_thread is not None:
+        aggregate_thread.start()
 
     _log(
         "All ports active. "
+        f"aggregate={AGGREGATE_ENABLED} aggregate_port={AGGREGATE_PORT} "
         f"Memory gateway enabled={MEMORY_GATEWAY_ENABLED} graphiti={GRAPHITI_BASE_URL} "
         f"mode={MEMORY_INJECTION_MODE}"
     )
@@ -1424,6 +1663,8 @@ if __name__ == "__main__":
         think_thread.join()
         nothink_thread.join()
         code_thread.join()
+        if aggregate_thread is not None:
+            aggregate_thread.join()
     except KeyboardInterrupt:
         _log("Shutting down.")
         sys.exit(0)

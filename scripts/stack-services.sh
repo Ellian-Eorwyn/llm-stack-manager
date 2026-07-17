@@ -6,7 +6,6 @@ STACK_CORE_SERVICES=(
   chat-backend
   chat-backend-dense
   chat-backend-moe
-  chat-backend-bee
   chat-proxy
   chat-backend2
   chat-proxy2

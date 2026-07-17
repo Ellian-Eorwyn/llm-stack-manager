@@ -7,7 +7,6 @@
 #
 # Usage:  sudo bash switch-chat-model.sh dense
 #         sudo bash switch-chat-model.sh moe
-#         sudo bash switch-chat-model.sh bee
 # =============================================================================
 set -euo pipefail
 
@@ -17,13 +16,12 @@ source "${STACK_DIR}/scripts/cross-platform.sh"
 
 VARIANT="${1:-}"
 
-if [[ "${VARIANT}" != "dense" && "${VARIANT}" != "moe" && "${VARIANT}" != "bee" ]]; then
-    echo "Usage: sudo bash switch-chat-model.sh [dense|moe|bee]"
+if [[ "${VARIANT}" != "dense" && "${VARIANT}" != "moe" ]]; then
+    echo "Usage: sudo bash switch-chat-model.sh [dense|moe]"
     echo ""
     echo "Current status:"
     svc_is_active chat-backend-dense 2>/dev/null && echo "  chat-backend-dense: active" || echo "  chat-backend-dense: inactive"
     svc_is_active chat-backend-moe 2>/dev/null && echo "  chat-backend-moe: active" || echo "  chat-backend-moe: inactive"
-    svc_is_active chat-backend-bee 2>/dev/null && echo "  chat-backend-bee: active" || echo "  chat-backend-bee: inactive"
     svc_is_active chat-proxy       2>/dev/null && echo "  chat-proxy:       active" || echo "  chat-proxy:       inactive"
     exit 1
 fi
@@ -31,7 +29,6 @@ fi
 case "${VARIANT}" in
     dense) START_UNIT="chat-backend-dense" ;;
     moe)   START_UNIT="chat-backend-moe" ;;
-    bee)   START_UNIT="chat-backend-bee" ;;
 esac
 
 echo "=== Switching chat backend to ${VARIANT} ==="
@@ -42,7 +39,6 @@ CHAT_BACKENDS=(
     chat-backend
     chat-backend-dense
     chat-backend-moe
-    chat-backend-bee
     qwen-chat-backend
     qwen-chat-backend-27b
     qwen-chat-backend-35b

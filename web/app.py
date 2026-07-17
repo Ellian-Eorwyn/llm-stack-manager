@@ -210,13 +210,6 @@ BUILTIN_CHAT_VARIANTS = [
         "default_desc": "Secondary model preset · shared proxy",
         "label_key": "CHAT_SECONDARY_LABEL",
     },
-    {
-        "id": "bee",
-        "service": "chat-backend-bee",
-        "default_label": "Backend BeeLLaMA",
-        "default_desc": "BeeLLaMA DFlash/TurboQuant backend · shared backend",
-        "label_key": "CHAT_BEE_LABEL",
-    },
 ]
 BUILTIN_CHAT_VARIANT_IDS = {item["id"] for item in BUILTIN_CHAT_VARIANTS}
 BUILTIN_CHAT_VARIANT_BY_ID = {item["id"]: item for item in BUILTIN_CHAT_VARIANTS}
@@ -243,18 +236,15 @@ NEW_ENV_KEY_LEGACY_ALIASES = defaultdict(list)
 for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
     NEW_ENV_KEY_LEGACY_ALIASES[new_key].append(legacy_key)
 
-SHARED_CHAT_BACKEND_RESTART = ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend", "chat-backend2"]
+SHARED_CHAT_BACKEND_RESTART = ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"]
 TTS_BACKEND_SERVICES = []
 TTS_MANAGED_SERVICES = []
 TRANSCRIPT_MANAGED_SERVICE = ""
 SERVICES = [
-    {"group": "chat",      "name": "chat-backend-dense", "label": "Primary Backend", "desc": "Primary model preset - shared proxy", "ports": "8010 (internal)", "config_section": "Primary Backend"},
-    {"group": "chat",      "name": "chat-backend-moe", "label": "Secondary Backend", "desc": "Secondary model preset - shared proxy", "ports": "8010 (internal)", "config_section": "Secondary Backend"},
-    {"group": "chat",      "name": "chat-backend-bee", "label": "Backend BeeLLaMA", "desc": "BeeLLaMA DFlash/TurboQuant backend", "ports": "8010 (internal)", "config_section": "BeeLLaMA Backend"},
-    {"group": "chat",      "name": "chat-backend",     "label": "Backend (Custom)", "desc": "Custom model - shared backend",  "ports": "8010 (internal)", "config_section": "Primary Backend"},
-    {"group": "chat",      "name": "chat-proxy",       "label": "Chat Proxy",   "desc": "Routes think/chat/code from one backend", "ports": "8003 / 8004 / 8008"},
-    {"group": "chat",      "name": "chat-backend2",    "label": "Backend 2 (Custom)", "desc": "Second custom model - shared backend",  "ports": "8020 (internal)", "config_section": "Shared Backend 2"},
-    {"group": "chat",      "name": "chat-proxy2",      "label": "Chat Proxy 2", "desc": "Routes think/chat/code from backend 2", "ports": "8103 / 8104 / 8108"},
+    {"group": "chat",      "name": "chat-backend-dense", "label": "Primary Backend", "desc": "Primary model backend", "ports": "8010 internal / llms:8010", "config_section": "Primary Backend"},
+    {"group": "chat",      "name": "chat-proxy",       "label": "Primary Proxy",   "desc": "Routes primary think/chat/code", "ports": "8003 / 8004 / 8008 / 8012"},
+    {"group": "chat",      "name": "chat-backend2",    "label": "Secondary Backend", "desc": "Secondary model backend",  "ports": "8020 internal / llms:8020", "config_section": "Secondary Backend"},
+    {"group": "chat",      "name": "chat-proxy2",      "label": "Secondary Proxy", "desc": "Routes secondary think/chat/code", "ports": "8103 / 8104 / 8108 / 8112"},
     {"group": "auxiliary", "name": "embed",        "label": "Embedding",    "desc": "Embedding model",                   "ports": "8005", "config_section": "Embedding"},
     {"group": "auxiliary", "name": "embed2",       "label": "Embedding 2",  "desc": "Second embedding backend",          "ports": "8011", "config_section": "Embedding 2"},
     {"group": "auxiliary", "name": "rerank",         "label": "Reranker",     "desc": "Reranker model",                    "ports": "8006", "config_section": "Reranker"},
@@ -272,7 +262,6 @@ LLAMACPP_MODEL_SERVICES = [
     "chat-backend2",
     "chat-backend-dense",
     "chat-backend-moe",
-    "chat-backend-bee",
     "embed",
     "embed2",
     "rerank",
@@ -285,8 +274,6 @@ CORE_CONFIG_SECTIONS = {
     "Primary Backend",
     "Secondary Backend",
     "Shared Backend",
-    "Shared Backend 2",
-    "BeeLLaMA Backend",
     "Task Model",
     "Thinking Endpoint",
     "Instruct Endpoint",
@@ -302,7 +289,7 @@ CORE_CONFIG_SECTIONS = {
 }
 
 CODE_TO_CHAT_MIRRORS = {
-    "CODE_CTX_SIZE":            ["CHAT_CTX_SIZE", "CHAT_DENSE_CTX_SIZE", "CHAT_MOE_CTX_SIZE", "CHAT_BEE_CTX_SIZE"],
+    "CODE_CTX_SIZE":            ["CHAT_CTX_SIZE", "CHAT_DENSE_CTX_SIZE", "CHAT_MOE_CTX_SIZE"],
     "CODE_N_PARALLEL":          "CHAT_N_PARALLEL",
     "CODE_THREADS":             "CHAT_THREADS",
     "CODE_THREADS_BATCH":       "CHAT_THREADS_BATCH",
@@ -330,62 +317,68 @@ LLAMA_CACHE_IDLE_OPTIONS = ["on", "off"]
 CONFIG_FIELDS = [
     {"section": "Chat Templates", "key": "CHAT_TEMPLATE_MANAGER", "label": "Template Manager", "type": "template_manager", "hint": "Create and edit reusable llama.cpp Jinja chat templates"},
 
-    # Shared Backend 2
-    {"section": "Shared Backend 2", "key": "CHAT2_MODEL_NAME",            "label": "Custom Backend 2 Alias",   "type": "text",   "hint": "llama.cpp alias for the generic custom backend 2"},
-    {"section": "Shared Backend 2", "key": "CHAT2_MODEL_PATH",            "label": "Model 2 Path",             "type": "path"},
-    {"section": "Shared Backend 2", "key": "CHAT2_MMPROJ_PATH",           "label": "MMProj 2 Path",            "type": "path"},
-    {"section": "Shared Backend 2", "key": "CHAT2_CTX_SIZE",              "label": "Context 2 Size",           "type": "number"},
-    {"section": "Shared Backend 2", "key": "CHAT2_BACKEND_PORT",          "label": "Backend 2 Port",           "type": "number"},
-    {"section": "Shared Backend 2", "key": "THINK2_PORT",                 "label": "Think 2 Port",             "type": "number"},
-    {"section": "Shared Backend 2", "key": "NOTHINK2_PORT",               "label": "No-Think 2 Port",          "type": "number"},
-    {"section": "Shared Backend 2", "key": "CODE2_PORT",                  "label": "Code 2 Port",              "type": "number"},
-    {"section": "Shared Backend 2", "key": "CHAT2_N_PARALLEL",            "label": "Parallel Slots",         "type": "number"},
-    {"section": "Shared Backend 2", "key": "CHAT2_THREADS",               "label": "CPU Threads",            "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
-    {"section": "Shared Backend 2", "key": "CHAT2_THREADS_BATCH",         "label": "CPU Batch Threads",      "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
-    {"section": "Shared Backend 2", "key": "CHAT2_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",    "type": "number"},
-    {"section": "Shared Backend 2", "key": "CHAT2_MAIN_GPU",              "label": "Main GPU Index",         "type": "number", "hint": "GPU index (within visible devices) for split-mode=none, or KV/intermediate buffers with row split"},
-    {"section": "Shared Backend 2", "key": "CHAT2_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override for shared backends, including BeeLLaMA main model; use --list-devices names like CUDA0,CUDA1 or none"},
-    {"section": "Shared Backend 2", "key": "CHAT2_TENSOR_SPLIT",          "label": "Tensor Split",           "type": "text",   "hint": "e.g. 1,1"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPLIT_MODE",            "label": "Split Mode",             "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none=model on one GPU, layer=layer sharding, row=row sharding, tensor=parallel tensor+KV sharding"},
-    {"section": "Shared Backend 2", "key": "CHAT2_KV_OFFLOAD",            "label": "KV Offload",             "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
-    {"section": "Shared Backend 2", "key": "CHAT2_OP_OFFLOAD",            "label": "Host Op Offload",        "type": "select", "options": ["on", "off"], "hint": "Controls --op-offload / --no-op-offload for host tensor ops"},
-    {"section": "Shared Backend 2", "key": "CHAT2_MMPROJ_OFFLOAD",        "label": "MMProj Offload",         "type": "select", "options": ["on", "off"], "hint": "Controls --mmproj-offload / --no-mmproj-offload when an MMProj is loaded"},
-    {"section": "Shared Backend 2", "key": "CHAT2_FLASH_ATTN",            "label": "Flash Attention",        "type": "select", "options": ["on", "off", "auto"]},
-    {"section": "Shared Backend 2", "key": "CHAT2_CACHE_TYPE_K",          "label": "KV Cache Key Type",      "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
-    {"section": "Shared Backend 2", "key": "CHAT2_CACHE_TYPE_V",          "label": "KV Cache Value Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
-    {"section": "Shared Backend 2", "key": "CHAT2_CACHE_RAM",             "label": "Prompt Cache RAM",      "type": "number", "hint": "llama.cpp --cache-ram in MiB; 0 disables server prompt-cache storage"},
-    {"section": "Shared Backend 2", "key": "CHAT2_CTX_CHECKPOINTS",       "label": "Context Checkpoints",   "type": "number", "hint": "llama.cpp --ctx-checkpoints; 0 disables context checkpoint creation"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SWA_FULL",              "label": "Full SWA KV Cache",     "type": "select", "options": ["off", "on"], "hint": "Adds llama.cpp --swa-full for SWA models; uses more KV VRAM but improves prompt-cache reuse"},
-    {"section": "Shared Backend 2", "key": "CHAT2_BATCH_SIZE",            "label": "Batch Size",             "type": "number", "hint": "Prefill batch (default 2048)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_UBATCH_SIZE",           "label": "Micro-Batch Size",       "type": "number", "hint": "Physical sub-batch (default 512)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_NO_MMAP",               "label": "Disable mmap",           "type": "select", "options": ["false", "true"]},
-    {"section": "Shared Backend 2", "key": "CHAT2_MLOCK",                 "label": "Lock Memory",            "type": "select", "options": ["false", "true"]},
-    {"section": "Shared Backend 2", "key": "CHAT2_GPU_VISIBLE_DEVICES",   "label": "GPU Devices",            "type": "text",   "hint": "e.g. 0,1"},
-    {"section": "Shared Backend 2", "key": "CHAT2_JINJA",                 "label": "Backend Jinja Support",  "type": "select", "options": ["off", "on"], "hint": "Enables --jinja on the shared backend so proxy ports can expose tool calling"},
-    {"section": "Shared Backend 2", "key": "CHAT2_TEMPLATE_ID",           "label": "Effective Chat Template", "type": "chat_template", "hint": "Custom Jinja template file passed to the shared backend; model default leaves GGUF metadata unchanged"},
-    {"section": "Shared Backend 2", "key": "CHAT2_FIT",                   "label": "Auto-Fit to VRAM",       "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
-    {"section": "Shared Backend 2", "key": "CHAT2_FIT_TARGET",            "label": "Fit Target MiB",         "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
-    {"section": "Shared Backend 2", "key": "CHAT2_FIT_CTX",               "label": "Minimum Fit Context",    "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
-    {"section": "Shared Backend 2", "key": "CHAT2_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",       "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
-    {"section": "Shared Backend 2", "key": "CHAT2_CACHE_REUSE",           "label": "Cache Reuse Chunk",      "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash; BeeLLaMA dflash-draft GGUFs must use the BeeLLaMA backend."},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",       "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",     "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",          "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_TYPE_K",     "label": "Draft KV Key Type",      "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-k"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_TYPE_V",     "label": "Draft KV Value Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-v"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_N_MAX",      "label": "Draft Max Tokens",       "type": "number", "hint": "llama.cpp --spec-draft-n-max (recommended 6 for MTP)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_N_MIN",      "label": "Draft Min Tokens",       "type": "number", "hint": "llama.cpp --spec-draft-n-min (default 0)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_P_MIN",      "label": "Draft Min Probability",  "type": "text",   "hint": "llama.cpp --spec-draft-p-min (default 0.75)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_DRAFT_P_SPLIT",    "label": "Draft Split Probability","type": "text",   "hint": "llama.cpp --spec-draft-p-split (default 0.10)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MOD_N_MATCH","label": "N-Gram Match Tokens",    "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-match (default 24)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MOD_N_MIN",  "label": "N-Gram Min Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-min (default 48)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MOD_N_MAX",  "label": "N-Gram Max Tokens",      "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-max (default 64)"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_SIZE_N",     "label": "N-Gram Lookup Size",     "type": "number", "hint": "llama.cpp --spec-ngram-*-size-n for ngram-simple/map modes"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_SIZE_M",     "label": "N-Gram Draft Size",      "type": "number", "hint": "llama.cpp --spec-ngram-*-size-m for ngram-simple/map modes"},
-    {"section": "Shared Backend 2", "key": "CHAT2_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",        "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
-    {"section": "Shared Backend 2", "key": "CHAT2_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",       "type": "custom_args", "hint": "Extra llama.cpp flags applied to all shared chat backends"},
+    # Secondary Backend
+    {"section": "Secondary Backend", "key": "CHAT2_LABEL",                 "label": "Backend Label",           "type": "text",   "hint": "UI label for the secondary backend slot"},
+    {"section": "Secondary Backend", "key": "CHAT2_MODEL_NAME",            "label": "Model Alias",             "type": "text",   "hint": "llama.cpp alias for the secondary backend"},
+    {"section": "Secondary Backend", "key": "CHAT2_MODEL_PATH",            "label": "Model Path",              "type": "path"},
+    {"section": "Secondary Backend", "key": "CHAT2_MMPROJ_PATH",           "label": "MMProj Path",             "type": "path"},
+    {"section": "Secondary Backend", "key": "CHAT2_CTX_SIZE",              "label": "Context Size",            "type": "number"},
+    {"section": "Secondary Backend", "key": "CHAT2_BACKEND_PORT",          "label": "Backend Port",            "type": "number"},
+    {"section": "Secondary Backend", "key": "THINK2_PORT",                 "label": "Think Port",              "type": "number"},
+    {"section": "Secondary Backend", "key": "NOTHINK2_PORT",               "label": "Chat Port",               "type": "number"},
+    {"section": "Secondary Backend", "key": "CODE2_PORT",                  "label": "Code Port",               "type": "number"},
+    {"section": "Secondary Backend", "key": "AGGREGATE2_ENABLED",          "label": "Aggregate Proxy",         "type": "select", "options": ["on", "off"], "hint": "Single model-routed endpoint exposing think, chat, and code for the secondary backend"},
+    {"section": "Secondary Backend", "key": "AGGREGATE2_PORT",             "label": "Aggregate Port",          "type": "number"},
+    {"section": "Secondary Backend", "key": "THINK2_MODEL_NAME",           "label": "Think Alias",             "type": "text", "hint": "Advertised model id on the secondary aggregate and think port"},
+    {"section": "Secondary Backend", "key": "NOTHINK2_MODEL_NAME",         "label": "Chat Alias",              "type": "text", "hint": "Advertised model id on the secondary aggregate and chat port"},
+    {"section": "Secondary Backend", "key": "CODE2_MODEL_NAME",            "label": "Code Alias",              "type": "text", "hint": "Advertised model id on the secondary aggregate and code port"},
+    {"section": "Secondary Backend", "key": "CHAT2_N_PARALLEL",            "label": "Parallel Slots",          "type": "number"},
+    {"section": "Secondary Backend", "key": "CHAT2_THREADS",               "label": "CPU Threads",             "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
+    {"section": "Secondary Backend", "key": "CHAT2_THREADS_BATCH",         "label": "CPU Batch Threads",       "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
+    {"section": "Secondary Backend", "key": "CHAT2_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",     "type": "number"},
+    {"section": "Secondary Backend", "key": "CHAT2_MAIN_GPU",              "label": "Main GPU Index",          "type": "number", "hint": "GPU index (within visible devices) for split-mode=none, or KV/intermediate buffers with row split"},
+    {"section": "Secondary Backend", "key": "CHAT2_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override; use --list-devices names like CUDA0,CUDA1 or none"},
+    {"section": "Secondary Backend", "key": "CHAT2_TENSOR_SPLIT",          "label": "Tensor Split",            "type": "text",   "hint": "e.g. 1,1"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPLIT_MODE",            "label": "Split Mode",              "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none=model on one GPU, layer=layer sharding, row=row sharding, tensor=parallel tensor+KV sharding"},
+    {"section": "Secondary Backend", "key": "CHAT2_KV_OFFLOAD",            "label": "KV Offload",              "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
+    {"section": "Secondary Backend", "key": "CHAT2_OP_OFFLOAD",            "label": "Host Op Offload",         "type": "select", "options": ["on", "off"], "hint": "Controls --op-offload / --no-op-offload for host tensor ops"},
+    {"section": "Secondary Backend", "key": "CHAT2_MMPROJ_OFFLOAD",        "label": "MMProj Offload",          "type": "select", "options": ["on", "off"], "hint": "Controls --mmproj-offload / --no-mmproj-offload when an MMProj is loaded"},
+    {"section": "Secondary Backend", "key": "CHAT2_FLASH_ATTN",            "label": "Flash Attention",         "type": "select", "options": ["on", "off", "auto"]},
+    {"section": "Secondary Backend", "key": "CHAT2_CACHE_TYPE_K",          "label": "KV Cache Key Type",       "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
+    {"section": "Secondary Backend", "key": "CHAT2_CACHE_TYPE_V",          "label": "KV Cache Value Type",     "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
+    {"section": "Secondary Backend", "key": "CHAT2_CACHE_RAM",             "label": "Prompt Cache RAM",        "type": "number", "hint": "llama.cpp --cache-ram in MiB; 0 disables server prompt-cache storage"},
+    {"section": "Secondary Backend", "key": "CHAT2_CTX_CHECKPOINTS",       "label": "Context Checkpoints",     "type": "number", "hint": "llama.cpp --ctx-checkpoints; 0 disables context checkpoint creation"},
+    {"section": "Secondary Backend", "key": "CHAT2_SWA_FULL",              "label": "Full SWA KV Cache",       "type": "select", "options": ["off", "on"], "hint": "Adds llama.cpp --swa-full for SWA models; uses more KV VRAM but improves prompt-cache reuse"},
+    {"section": "Secondary Backend", "key": "CHAT2_BATCH_SIZE",            "label": "Batch Size",              "type": "number", "hint": "Prefill batch (default 2048)"},
+    {"section": "Secondary Backend", "key": "CHAT2_UBATCH_SIZE",           "label": "Micro-Batch Size",        "type": "number", "hint": "Physical sub-batch (default 512)"},
+    {"section": "Secondary Backend", "key": "CHAT2_NO_MMAP",               "label": "Disable mmap",            "type": "select", "options": ["false", "true"]},
+    {"section": "Secondary Backend", "key": "CHAT2_MLOCK",                 "label": "Lock Memory",             "type": "select", "options": ["false", "true"]},
+    {"section": "Secondary Backend", "key": "CHAT2_GPU_VISIBLE_DEVICES",   "label": "GPU Devices",             "type": "text",   "hint": "e.g. 0,1"},
+    {"section": "Secondary Backend", "key": "CHAT2_JINJA",                 "label": "Backend Jinja Support",   "type": "select", "options": ["off", "on"], "hint": "Enables --jinja on the secondary backend so proxy ports can expose tool calling"},
+    {"section": "Secondary Backend", "key": "CHAT2_TEMPLATE_ID",           "label": "Effective Chat Template", "type": "chat_template", "hint": "Custom Jinja template file passed to the secondary backend; model default leaves GGUF metadata unchanged"},
+    {"section": "Secondary Backend", "key": "CHAT2_FIT",                   "label": "Auto-Fit to VRAM",        "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
+    {"section": "Secondary Backend", "key": "CHAT2_FIT_TARGET",            "label": "Fit Target MiB",          "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
+    {"section": "Secondary Backend", "key": "CHAT2_FIT_CTX",               "label": "Minimum Fit Context",     "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
+    {"section": "Secondary Backend", "key": "CHAT2_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",        "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
+    {"section": "Secondary Backend", "key": "CHAT2_CACHE_REUSE",           "label": "Cache Reuse Chunk",       "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_METHOD",           "label": "Speculative Method",      "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",       "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",        "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",      "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",           "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_TYPE_K",     "label": "Draft KV Key Type",       "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-k"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_TYPE_V",     "label": "Draft KV Value Type",     "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-v"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_N_MAX",      "label": "Draft Max Tokens",        "type": "number", "hint": "llama.cpp --spec-draft-n-max (recommended 6 for MTP)"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_N_MIN",      "label": "Draft Min Tokens",        "type": "number", "hint": "llama.cpp --spec-draft-n-min (default 0)"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_P_MIN",      "label": "Draft Min Probability",   "type": "text",   "hint": "llama.cpp --spec-draft-p-min (default 0.75)"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_P_SPLIT",    "label": "Draft Split Probability", "type": "text",   "hint": "llama.cpp --spec-draft-p-split (default 0.10)"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD_N_MATCH","label": "N-Gram Match Tokens",     "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-match (default 24)"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD_N_MIN",  "label": "N-Gram Min Tokens",       "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-min (default 48)"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD_N_MAX",  "label": "N-Gram Max Tokens",       "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-max (default 64)"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_SIZE_N",     "label": "N-Gram Lookup Size",      "type": "number", "hint": "llama.cpp --spec-ngram-*-size-n for ngram-simple/map modes"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_SIZE_M",     "label": "N-Gram Draft Size",       "type": "number", "hint": "llama.cpp --spec-ngram-*-size-m for ngram-simple/map modes"},
+    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",         "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
+    {"section": "Secondary Backend", "key": "CHAT2_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",        "type": "custom_args", "hint": "Extra llama.cpp flags applied to the secondary backend"},
     # Shared Backend
     {"section": "Shared Backend", "key": "CHAT_DENSE_LABEL",           "label": "Dense Slot Label",       "type": "text",   "hint": "UI label for the dense preset button/card"},
     {"section": "Shared Backend", "key": "CHAT_DENSE_MODEL_NAME",      "label": "Dense Model Alias",      "type": "text",   "hint": "llama.cpp alias for the dense preset"},
@@ -397,18 +390,13 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_MOE_MODEL_PATH",        "label": "MoE Model Path",         "type": "path"},
     {"section": "Shared Backend", "key": "CHAT_MOE_MMPROJ_PATH",       "label": "MoE MMProj Path",        "type": "path"},
     {"section": "Shared Backend", "key": "CHAT_MOE_CTX_SIZE",          "label": "MoE Context Size",       "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_LABEL",             "label": "Bee Slot Label",         "type": "text",   "hint": "UI label for the BeeLLaMA preset button/card"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_MODEL_NAME",        "label": "Bee Model Alias",        "type": "text",   "hint": "BeeLLaMA alias for the Bee preset"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_MODEL_PATH",        "label": "Bee Model Path",         "type": "path"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_MMPROJ_PATH",       "label": "Bee MMProj Path",        "type": "path"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_CTX_SIZE",          "label": "Bee Context Size",       "type": "number"},
     {"section": "Shared Backend", "key": "CHAT_MODEL_NAME",            "label": "Custom Backend Alias",   "type": "text",   "hint": "llama.cpp alias for the generic custom backend"},
     {"section": "Shared Backend", "key": "CHAT_N_PARALLEL",            "label": "Parallel Slots",         "type": "number"},
     {"section": "Shared Backend", "key": "CHAT_THREADS",               "label": "CPU Threads",            "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
     {"section": "Shared Backend", "key": "CHAT_THREADS_BATCH",         "label": "CPU Batch Threads",      "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
     {"section": "Shared Backend", "key": "CHAT_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",    "type": "number"},
     {"section": "Shared Backend", "key": "CHAT_MAIN_GPU",              "label": "Main GPU Index",         "type": "number", "hint": "GPU index (within visible devices) for split-mode=none, or KV/intermediate buffers with row split"},
-    {"section": "Shared Backend", "key": "CHAT_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override for shared backends, including BeeLLaMA main model; use --list-devices names like CUDA0,CUDA1 or none"},
+    {"section": "Shared Backend", "key": "CHAT_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override for shared backends; use --list-devices names like CUDA0,CUDA1 or none"},
     {"section": "Shared Backend", "key": "CHAT_TENSOR_SPLIT",          "label": "Tensor Split",           "type": "text",   "hint": "e.g. 1,1"},
     {"section": "Shared Backend", "key": "CHAT_SPLIT_MODE",            "label": "Split Mode",             "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none=model on one GPU, layer=layer sharding, row=row sharding, tensor=parallel tensor+KV sharding"},
     {"section": "Shared Backend", "key": "CHAT_KV_OFFLOAD",            "label": "KV Offload",             "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
@@ -432,7 +420,7 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_FIT_CTX",               "label": "Minimum Fit Context",    "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
     {"section": "Shared Backend", "key": "CHAT_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",       "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
     {"section": "Shared Backend", "key": "CHAT_CACHE_REUSE",           "label": "Cache Reuse Chunk",      "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
-    {"section": "Shared Backend", "key": "CHAT_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash; BeeLLaMA dflash-draft GGUFs must use the BeeLLaMA backend."},
+    {"section": "Shared Backend", "key": "CHAT_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",       "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",     "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
@@ -450,79 +438,6 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_SIZE_M",     "label": "N-Gram Draft Size",      "type": "number", "hint": "llama.cpp --spec-ngram-*-size-m for ngram-simple/map modes"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",        "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
     {"section": "Shared Backend", "key": "CHAT_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",       "type": "custom_args", "hint": "Extra llama.cpp flags applied to all shared chat backends"},
-    {"section": "Shared Backend", "key": "BEELLAMA_SERVER_BIN",                  "label": "BeeLLaMA Binary",       "type": "executable_path", "hint": "Path to deps/beellama.cpp build/bin/llama-server"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_GPU_VISIBLE_DEVICES",         "label": "Bee GPU Devices",      "type": "text", "hint": "CUDA_VISIBLE_DEVICES for chat-backend-bee; e.g. 0,1"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DEVICE",                      "label": "Bee Offload Devices",  "type": "text", "hint": "Optional BeeLLaMA --device override, e.g. CUDA0,CUDA1 or none"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_N_GPU_LAYERS",                "label": "Bee GPU Layers",       "type": "text", "hint": "BeeLLaMA --n-gpu-layers value: auto, all, -1, or an exact layer count"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_MAIN_GPU",                    "label": "Bee Main GPU Index",   "type": "number", "hint": "GPU index within Bee visible devices for split-mode=none, or KV/intermediate buffers with row split"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_TENSOR_SPLIT",                "label": "Bee Tensor Split",     "type": "text", "hint": "BeeLLaMA --tensor-split, e.g. 1,1"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPLIT_MODE",                  "label": "Bee Split Mode",       "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none=model on one GPU, layer=layer sharding, row=row sharding, tensor=parallel tensor+KV sharding"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_CACHE_TYPE_K",                "label": "Bee KV Key Type",       "type": "select", "options": BEE_KV_CACHE_OPTIONS, "hint": "Main-model KV cache type. Labels indicate unquantized, regular quant, or TurboQuant/TCQ."},
-    {"section": "Shared Backend", "key": "CHAT_BEE_CACHE_TYPE_V",                "label": "Bee KV Value Type",     "type": "select", "options": BEE_KV_CACHE_OPTIONS, "hint": "Main-model KV cache type. Labels indicate unquantized, regular quant, or TurboQuant/TCQ."},
-    {"section": "Shared Backend", "key": "CHAT_BEE_KV_UNIFIED",                  "label": "Bee Unified KV",        "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_NO_HOST",                     "label": "Bee No Host Buffer",    "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_LOG_TIMESTAMPS",              "label": "Bee Log Timestamps",    "type": "select", "options": ["false", "true"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_LOG_COLORS",                  "label": "Bee Log Colors",        "type": "select", "options": ["off", "on", "auto"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_VERBOSITY",                   "label": "Bee Verbosity",         "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_METHOD",                 "label": "Bee Spec Method",       "type": "select", "options": ["off", "dflash", "draft-mtp", "copyspec", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod", "suffix", "recycle"], "hint": "BeeLLaMA --spec-type; draft-mtp uses native MTP heads in MTP-preserved GGUFs"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_NGRAM_MOD",              "label": "Bee N-Gram Mod Assist", "type": "select", "options": ["off", "on"], "hint": "When on with non-ngram modes, the launcher warns that BeeLLaMA only accepts ngram-mod as a standalone --spec-type"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_MODEL_PATH",       "label": "Bee Draft Model",       "type": "path"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_N_GPU_LAYERS",     "label": "Bee Draft GPU Layers",  "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_DEVICES",          "label": "Bee Draft Devices",     "type": "text", "hint": "BeeLLaMA --spec-draft-device for DFlash/draft model placement, e.g. CUDA0,CUDA1"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_CTX_SIZE",         "label": "Bee Draft Context",     "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_TYPE_K",           "label": "Bee Draft K Cache",     "type": "select", "options": BEE_KV_CACHE_OPTIONS, "hint": "Draft-model KV cache type for speculative decoding."},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_TYPE_V",           "label": "Bee Draft V Cache",     "type": "select", "options": BEE_KV_CACHE_OPTIONS, "hint": "Draft-model KV cache type for speculative decoding."},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_N_MAX",            "label": "Bee Draft Max",         "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_N_MIN",            "label": "Bee Draft Min",         "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_P_MIN",            "label": "Bee Draft P Min",       "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_P_SPLIT",          "label": "Bee Draft P Split",     "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_NGRAM_MOD_N_MATCH",      "label": "Bee N-Gram Match Tokens", "type": "number", "hint": "BeeLLaMA --spec-ngram-mod-n-match"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_NGRAM_MOD_N_MIN",        "label": "Bee N-Gram Min Tokens", "type": "number", "hint": "BeeLLaMA --spec-ngram-mod-n-min"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_NGRAM_MOD_N_MAX",        "label": "Bee N-Gram Max Tokens", "type": "number", "hint": "BeeLLaMA --spec-ngram-mod-n-max"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_TOP_K",            "label": "Bee Draft Top-K",       "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DRAFT_TEMP",             "label": "Bee Draft Temp",        "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_BRANCH_BUDGET",          "label": "Bee Branch Budget",     "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DFLASH_CROSS_CTX",       "label": "Bee DFlash Cross Ctx",  "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DFLASH_MAX_SLOTS",       "label": "Bee DFlash Max Slots",  "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_ADAPTIVE",            "label": "Bee Adaptive Draft",    "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_CONTROLLER",          "label": "Bee DM Controller",     "type": "select", "options": ["profit", "fringe"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROBE_INTERVAL",      "label": "Bee DM Probe Interval", "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROBE_FRACTION",      "label": "Bee DM Probe Fraction", "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_EXPLORE_INTERVAL",    "label": "Bee DM Explore Every",  "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_OFF_DWELL",           "label": "Bee DM Off Dwell",      "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_FRINGE_MIN",          "label": "Bee Fringe Min",        "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_FRINGE_MAX",          "label": "Bee Fringe Max",        "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_MIN_REACH",           "label": "Bee Min Reach",         "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROFIT_MIN",          "label": "Bee Profit Min",        "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROFIT_RAISE_MARGIN", "label": "Bee Profit Raise",      "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROFIT_LOWER_MARGIN", "label": "Bee Profit Lower",      "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROFIT_EWMA_ALPHA",   "label": "Bee Profit EWMA",       "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROFIT_MIN_SAMPLES",  "label": "Bee Profit Samples",    "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROFIT_WARMUP",       "label": "Bee Profit Warmup",     "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_SPEC_DM_PROFIT_BASELINE_INTERVAL", "label": "Bee Baseline Every", "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING",                   "label": "Bee Reasoning",         "type": "select", "options": ["auto", "on", "off"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING_BUDGET",            "label": "Bee Reasoning Budget",  "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING_LOOP_GUARD",        "label": "Bee Loop Guard",        "type": "select", "options": ["off", "force-close", "stop"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING_LOOP_MIN_TOKENS",   "label": "Bee Loop Min Tokens",   "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING_LOOP_WINDOW",       "label": "Bee Loop Window",       "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING_LOOP_MAX_PERIOD",   "label": "Bee Loop Max Period",   "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING_LOOP_MIN_COVERAGE", "label": "Bee Loop Coverage",     "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING_LOOP_CHECK_INTERVAL", "label": "Bee Loop Check Every", "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_REASONING_LOOP_INTERVENTIONS", "label": "Bee Loop Interventions", "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_PROFILE",              "label": "Bee DFlash Profile",    "type": "text"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_PROFILE_SYNC_SPLIT",   "label": "Bee Profile Sync Split", "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_DEBUG",                "label": "Bee DFlash Debug",      "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_CRASH_TRACE",          "label": "Bee Crash Trace",       "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_INPUT_DEBUG",          "label": "Bee Input Debug",       "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_VERBOSE_CONTRACT",     "label": "Bee Verbose Contract",  "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_FORCE_CPU_CROSS",      "label": "Bee Force CPU Cross",   "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_VERIFY_PAD",           "label": "Bee Verify Pad",        "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_SHARED_DRAFT_BATCH",   "label": "Bee Shared Draft Batch", "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_GPU_RING",             "label": "Bee GPU Ring",          "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_MULTI_GPU_TAPE",       "label": "Bee Multi-GPU Tape",    "type": "select", "options": ["off", "on"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_MAX_CTX",              "label": "Bee DFlash Max Ctx",    "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_BEE_DFLASH_KV_CACHE_MODE",        "label": "Bee DFlash KV Mode",    "type": "select", "options": ["k", "v", "both", "off"]},
-    {"section": "Shared Backend", "key": "CHAT_BEE_CUSTOM_ARGS_JSON",            "label": "Bee Custom Arguments",  "type": "custom_args", "hint": "Extra BeeLLaMA-only flags applied to chat-backend-bee"},
     # Task Model
     {"section": "Task Model",  "key": "TASK_MODEL_NAME",            "label": "Model Name",           "type": "text",   "hint": "Advertised on /v1/models for the task endpoint"},
     {"section": "Task Model",  "key": "TASK_MODEL_PATH",            "label": "Task Model Path",      "type": "path"},
@@ -566,7 +481,7 @@ CONFIG_FIELDS = [
     {"section": "Task Model",  "key": "TASK_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",     "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
     {"section": "Task Model",  "key": "TASK_CACHE_REUSE",           "label": "Cache Reuse Chunk",    "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
     {"section": "Task Model",  "key": "TASK_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",     "type": "custom_args", "hint": "Extra llama.cpp flags applied to the task model launcher"},
-    {"section": "Task Model",  "key": "TASK_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash; BeeLLaMA dflash-draft GGUFs must use the BeeLLaMA backend."},
+    {"section": "Task Model",  "key": "TASK_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
     {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types"},
     {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",       "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
     {"section": "Task Model",  "key": "TASK_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",     "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
@@ -585,6 +500,7 @@ CONFIG_FIELDS = [
     {"section": "Task Model",  "key": "TASK_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",        "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
     # Thinking Endpoint (proxied request-time overrides)
     {"section": "Thinking Endpoint", "key": "THINK_MODEL_NAME",          "label": "Thinking Model Name",   "type": "text",   "hint": "Advertised on /v1/models for the thinking endpoint"},
+    {"section": "Thinking Endpoint", "key": "PROXY_STREAM_PASSTHROUGH",  "label": "Raw Stream Passthrough", "type": "select", "options": ["off", "on"], "hint": "When on, SSE responses bypass proxy JSON rewriting after request shaping"},
     {"section": "Thinking Endpoint", "key": "THINK_PRESERVE_THINKING",   "label": "Preserve Thinking",     "type": "select", "options": ["on", "off"], "hint": "Injects chat_template_kwargs.preserve_thinking into thinking requests"},
     {"section": "Thinking Endpoint", "key": "THINK_REASONING_STREAM_MODE", "label": "Reasoning Stream", "type": "select", "options": ["content", "hidden", "mirror"], "hint": "content makes thinking tokens visible immediately for clients that ignore reasoning_content"},
     {"section": "Thinking Endpoint", "key": "THINK_JINJA",               "label": "Expose Tool Calling",   "type": "select", "options": ["on", "off"], "hint": "When off, strips tools/tool_choice from thinking requests"},
@@ -839,6 +755,8 @@ CONFIG_FIELDS = [
     {"section": "Ports",       "key": "THINK_PORT",                 "label": "Thinking Port",        "type": "number"},
     {"section": "Ports",       "key": "NOTHINK_PORT",               "label": "Chat Port",            "type": "number"},
     {"section": "Ports",       "key": "CODE_PORT",                  "label": "Code Port",            "type": "number"},
+    {"section": "Ports",       "key": "AGGREGATE_ENABLED",          "label": "Aggregate Proxy",      "type": "select", "options": ["on", "off"], "hint": "Single model-routed endpoint exposing think, chat, and code"},
+    {"section": "Ports",       "key": "AGGREGATE_PORT",             "label": "Aggregate Port",       "type": "number"},
     {"section": "Ports",       "key": "EMBED_PORT",                 "label": "Embedding Port",       "type": "number"},
     {"section": "Ports",       "key": "EMBED2_PORT",                "label": "Embedding 2 Port",     "type": "number"},
     {"section": "Ports",       "key": "RERANK_PORT",                "label": "Reranker Port",        "type": "number"},
@@ -947,7 +865,7 @@ def _clone_chat_backend_field(field: dict, variant: str) -> dict | None:
             cloned["label"] = cloned.get("label", "").replace("MoE", "Secondary").replace("Slot", "Backend")
             cloned["hint"] = cloned.get("hint", "").replace("MoE preset", "secondary backend")
         return cloned
-    if not key.startswith("CHAT_") or key.startswith("CHAT_BEE_") or key in CHAT_BACKEND_GENERIC_SKIP_KEYS:
+    if not key.startswith("CHAT_") or key in CHAT_BACKEND_GENERIC_SKIP_KEYS:
         return None
     cloned = dict(field)
     cloned["section"] = "Primary Backend" if variant == "primary" else "Secondary Backend"
@@ -957,7 +875,7 @@ def _clone_chat_backend_field(field: dict, variant: str) -> dict | None:
 
 _shared_backend_fields = [field for field in CONFIG_FIELDS if field.get("section") == "Shared Backend"]
 _generated_backend_fields = []
-for _variant in ("primary", "secondary"):
+for _variant in ("primary",):
     for _field in _shared_backend_fields:
         _cloned = _clone_chat_backend_field(_field, _variant)
         if _cloned is not None:
@@ -970,17 +888,9 @@ for _field in CONFIG_FIELDS:
         if not _inserted_backend_fields:
             _rebuilt_config_fields.extend(_generated_backend_fields)
             _inserted_backend_fields = True
-        if _field.get("key") == "BEELLAMA_SERVER_BIN" or _field.get("key", "").startswith("CHAT_BEE_"):
-            _rebuilt_config_fields.append(_field)
     else:
         _rebuilt_config_fields.append(_field)
 CONFIG_FIELDS = _rebuilt_config_fields
-
-# Move BeeLLaMA-specific controls into their own pane without changing env keys.
-for _field in CONFIG_FIELDS:
-    _key = _field.get("key", "")
-    if _key == "BEELLAMA_SERVER_BIN" or _key.startswith("CHAT_BEE_"):
-        _field["section"] = "BeeLLaMA Backend"
 
 
 # Which services should be restarted after changing a given config key
@@ -1001,9 +911,9 @@ RESTART_HINTS = {
     "CHAT_THREADS_BATCH":        ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_N_GPU_LAYERS":         ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_MAIN_GPU":             ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_DEVICE":               ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
-    "CHAT_TENSOR_SPLIT":         ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
-    "CHAT_SPLIT_MODE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
+    "CHAT_DEVICE":               ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
+    "CHAT_TENSOR_SPLIT":         ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
+    "CHAT_SPLIT_MODE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_KV_OFFLOAD":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_OP_OFFLOAD":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_MMPROJ_OFFLOAD":       ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
@@ -1014,7 +924,7 @@ RESTART_HINTS = {
     "CHAT_UBATCH_SIZE":          ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_NO_MMAP":              ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_MLOCK":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
-    "CHAT_GPU_VISIBLE_DEVICES":  ["chat-backend-dense", "chat-backend-moe", "chat-backend-bee", "chat-backend"],
+    "CHAT_GPU_VISIBLE_DEVICES":  ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_TEMP":                 ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_TOP_P":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_TOP_K":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
@@ -1042,6 +952,7 @@ RESTART_HINTS = {
     "CHAT_TEMPLATE_ID":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_BACKEND_HOST":         ["chat-proxy"],
     "CHAT_BACKEND_PORT":         ["chat-proxy"],
+    "PROXY_STREAM_PASSTHROUGH":  ["chat-proxy"],
     "CHAT2_CACHE_RAM":           ["chat-backend2"],
     "CHAT2_CTX_CHECKPOINTS":     ["chat-backend2"],
     "CHAT2_SWA_FULL":            ["chat-backend2"],
@@ -1256,6 +1167,16 @@ RESTART_HINTS = {
     "THINK_PORT":                ["chat-proxy"],
     "NOTHINK_PORT":              ["chat-proxy"],
     "CODE_PORT":                 ["chat-proxy"],
+    "AGGREGATE_ENABLED":         ["chat-proxy"],
+    "AGGREGATE_PORT":            ["chat-proxy"],
+    "THINK2_PORT":               ["chat-proxy2"],
+    "NOTHINK2_PORT":             ["chat-proxy2"],
+    "CODE2_PORT":                ["chat-proxy2"],
+    "AGGREGATE2_ENABLED":        ["chat-proxy2"],
+    "AGGREGATE2_PORT":           ["chat-proxy2"],
+    "THINK2_MODEL_NAME":         ["chat-proxy2"],
+    "NOTHINK2_MODEL_NAME":       ["chat-proxy2"],
+    "CODE2_MODEL_NAME":          ["chat-proxy2"],
     "EMBED_PORT":                ["embed"],
     "EMBED2_PORT":               ["embed2"],
     "RERANK_PORT":               ["rerank"],
@@ -1324,8 +1245,8 @@ for _field in CONFIG_FIELDS:
         RESTART_HINTS.setdefault(_key, ["chat-backend-dense"])
     if _key.startswith("CHAT_SECONDARY_"):
         RESTART_HINTS.setdefault(_key, ["chat-backend-moe"])
-    if _key == "BEELLAMA_SERVER_BIN" or _key.startswith("CHAT_BEE_"):
-        RESTART_HINTS.setdefault(_key, ["chat-backend-bee"])
+    if _key.startswith("CHAT2_"):
+        RESTART_HINTS.setdefault(_key, ["chat-backend2"])
     if _key.startswith("OCR_"):
         RESTART_HINTS.setdefault(_key, ["ocr"])
     if _key.startswith("GLMOCR_"):
@@ -1391,88 +1312,6 @@ def normalize_env_keys(env: dict) -> dict:
             legacy_key = "CHAT_" + key[len("CHAT_SECONDARY_"):]
             if legacy_key in normalized:
                 normalized[key] = normalized[legacy_key]
-    bee_defaults = {
-        "CHAT_BEE_LABEL": BUILTIN_CHAT_VARIANT_BY_ID["bee"]["default_label"],
-        "CHAT_BEE_MODEL_NAME": "chat-bee",
-        "CHAT_BEE_MODEL_PATH": normalized.get("CHAT_PRIMARY_MODEL_PATH", ""),
-        "CHAT_BEE_MMPROJ_PATH": normalized.get("CHAT_PRIMARY_MMPROJ_PATH", ""),
-        "CHAT_BEE_CTX_SIZE": normalized.get("CHAT_PRIMARY_CTX_SIZE", normalized.get("CHAT_CTX_SIZE", "32768")),
-        "CHAT_BEE_GPU_VISIBLE_DEVICES": normalized.get("CHAT_GPU_VISIBLE_DEVICES", "0"),
-        "CHAT_BEE_DEVICE": normalized.get("CHAT_DEVICE", ""),
-        "CHAT_BEE_N_GPU_LAYERS": normalized.get("CHAT_N_GPU_LAYERS", "-1"),
-        "CHAT_BEE_MAIN_GPU": normalized.get("CHAT_MAIN_GPU", "0"),
-        "CHAT_BEE_TENSOR_SPLIT": normalized.get("CHAT_TENSOR_SPLIT", "1"),
-        "CHAT_BEE_SPLIT_MODE": normalized.get("CHAT_SPLIT_MODE", "layer"),
-        "CHAT_BEE_CACHE_TYPE_K": "q5_0",
-        "CHAT_BEE_CACHE_TYPE_V": "q4_0",
-        "CHAT_BEE_KV_UNIFIED": "on",
-        "CHAT_BEE_NO_HOST": "off",
-        "CHAT_BEE_LOG_TIMESTAMPS": "true",
-        "CHAT_BEE_LOG_COLORS": "off",
-        "CHAT_BEE_VERBOSITY": "0",
-        "CHAT_BEE_SPEC_METHOD": "off",
-        "CHAT_BEE_SPEC_NGRAM_MOD": "off",
-        "CHAT_BEE_SPEC_DRAFT_MODEL_PATH": "",
-        "CHAT_BEE_SPEC_DRAFT_N_GPU_LAYERS": "all",
-        "CHAT_BEE_SPEC_DRAFT_DEVICES": "",
-        "CHAT_BEE_SPEC_DRAFT_CTX_SIZE": "256",
-        "CHAT_BEE_SPEC_DRAFT_TYPE_K": "f16",
-        "CHAT_BEE_SPEC_DRAFT_TYPE_V": "f16",
-        "CHAT_BEE_SPEC_DRAFT_N_MAX": "16",
-        "CHAT_BEE_SPEC_DRAFT_N_MIN": "0",
-        "CHAT_BEE_SPEC_DRAFT_P_MIN": "0.0",
-        "CHAT_BEE_SPEC_DRAFT_P_SPLIT": "0.10",
-        "CHAT_BEE_SPEC_NGRAM_MOD_N_MATCH": "24",
-        "CHAT_BEE_SPEC_NGRAM_MOD_N_MIN": "48",
-        "CHAT_BEE_SPEC_NGRAM_MOD_N_MAX": "64",
-        "CHAT_BEE_SPEC_DRAFT_TOP_K": "1",
-        "CHAT_BEE_SPEC_DRAFT_TEMP": "0.0",
-        "CHAT_BEE_SPEC_BRANCH_BUDGET": "0",
-        "CHAT_BEE_SPEC_DFLASH_CROSS_CTX": "512",
-        "CHAT_BEE_SPEC_DFLASH_MAX_SLOTS": "0",
-        "CHAT_BEE_SPEC_DM_ADAPTIVE": "on",
-        "CHAT_BEE_SPEC_DM_CONTROLLER": "profit",
-        "CHAT_BEE_SPEC_DM_PROBE_INTERVAL": "16",
-        "CHAT_BEE_SPEC_DM_PROBE_FRACTION": "0.25",
-        "CHAT_BEE_SPEC_DM_EXPLORE_INTERVAL": "12",
-        "CHAT_BEE_SPEC_DM_OFF_DWELL": "8",
-        "CHAT_BEE_SPEC_DM_FRINGE_MIN": "0.30",
-        "CHAT_BEE_SPEC_DM_FRINGE_MAX": "0.50",
-        "CHAT_BEE_SPEC_DM_MIN_REACH": "3",
-        "CHAT_BEE_SPEC_DM_PROFIT_MIN": "0.05",
-        "CHAT_BEE_SPEC_DM_PROFIT_RAISE_MARGIN": "0.05",
-        "CHAT_BEE_SPEC_DM_PROFIT_LOWER_MARGIN": "0.05",
-        "CHAT_BEE_SPEC_DM_PROFIT_EWMA_ALPHA": "0.15",
-        "CHAT_BEE_SPEC_DM_PROFIT_MIN_SAMPLES": "3",
-        "CHAT_BEE_SPEC_DM_PROFIT_WARMUP": "0",
-        "CHAT_BEE_SPEC_DM_PROFIT_BASELINE_INTERVAL": "1024",
-        "CHAT_BEE_REASONING": "auto",
-        "CHAT_BEE_REASONING_BUDGET": "-1",
-        "CHAT_BEE_REASONING_LOOP_GUARD": "force-close",
-        "CHAT_BEE_REASONING_LOOP_MIN_TOKENS": "1024",
-        "CHAT_BEE_REASONING_LOOP_WINDOW": "2048",
-        "CHAT_BEE_REASONING_LOOP_MAX_PERIOD": "512",
-        "CHAT_BEE_REASONING_LOOP_MIN_COVERAGE": "768",
-        "CHAT_BEE_REASONING_LOOP_CHECK_INTERVAL": "32",
-        "CHAT_BEE_REASONING_LOOP_INTERVENTIONS": "1",
-        "CHAT_BEE_DFLASH_PROFILE": "",
-        "CHAT_BEE_DFLASH_PROFILE_SYNC_SPLIT": "off",
-        "CHAT_BEE_DFLASH_DEBUG": "off",
-        "CHAT_BEE_DFLASH_CRASH_TRACE": "off",
-        "CHAT_BEE_DFLASH_INPUT_DEBUG": "off",
-        "CHAT_BEE_DFLASH_VERBOSE_CONTRACT": "off",
-        "CHAT_BEE_DFLASH_FORCE_CPU_CROSS": "off",
-        "CHAT_BEE_DFLASH_VERIFY_PAD": "off",
-        "CHAT_BEE_DFLASH_SHARED_DRAFT_BATCH": "on",
-        "CHAT_BEE_DFLASH_GPU_RING": "on",
-        "CHAT_BEE_DFLASH_MULTI_GPU_TAPE": "on",
-        "CHAT_BEE_DFLASH_MAX_CTX": "",
-        "CHAT_BEE_DFLASH_KV_CACHE_MODE": "both",
-        "CHAT_BEE_CUSTOM_ARGS_JSON": "[]",
-    }
-    normalized.setdefault("BEELLAMA_SERVER_BIN", str(STACK_DIR / "deps" / "beellama.cpp" / "build" / "bin" / "llama-server"))
-    for key, value in bee_defaults.items():
-        normalized.setdefault(key, value)
     normalized.setdefault("CHAT_MODEL_NAME", "chat-custom")
     normalized.setdefault("CHAT_CUSTOM_ARGS_JSON", "[]")
     normalized.setdefault("CHAT_TEMPLATE_ID", "")
@@ -1490,6 +1329,7 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CHAT2_CACHE_IDLE_SLOTS", "on")
     normalized.setdefault("CHAT2_CACHE_REUSE", "0")
     normalized.setdefault("CHAT2_SWA_FULL", "off")
+    normalized.setdefault("CHAT2_LABEL", "Secondary Backend")
     normalized.setdefault("CHAT2_FIT_TARGET", "")
     normalized.setdefault("CHAT2_FIT_CTX", "4096")
     normalized.setdefault("CHAT2_CUSTOM_ARGS_JSON", "[]")
@@ -1530,6 +1370,7 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("THINK_MODEL_NAME", "think")
     normalized.setdefault("NOTHINK_MODEL_NAME", "chat")
     normalized.setdefault("CODE_MODEL_NAME", "code")
+    normalized.setdefault("PROXY_STREAM_PASSTHROUGH", "off")
     normalized.setdefault("THINK_TEMP", normalized.get("CHAT_TEMP", "0.7"))
     normalized.setdefault("THINK_MAX_TOKENS", "0")
     normalized.setdefault("THINK_TOP_P", normalized.get("CHAT_TOP_P", "0.95"))
@@ -1875,7 +1716,7 @@ def get_service_status(name: str) -> str:
 
 
 def active_chat_model_snapshot(env: dict | None = None) -> dict:
-    """Return the currently active chat backend in a form saved configs can replay."""
+    """Return the active primary chat backend in a form saved configs can replay."""
     env = env or read_env()
     for item in builtin_chat_variants(env):
         if get_service_status(item['service']) == 'active':
@@ -1906,6 +1747,29 @@ def active_chat_model_snapshot(env: dict | None = None) -> dict:
         }
 
     return {"variant": None, "service": None, "label": "", "kind": "none"}
+
+
+def active_secondary_backend_snapshot(env: dict | None = None) -> dict:
+    env = normalize_env_keys(env or read_env())
+    if get_service_status('chat-backend2') != 'active':
+        return {"variant": None, "service": None, "label": "", "kind": "none"}
+    label = env.get("CHAT2_LABEL", "").strip() or "Secondary Backend"
+    return {
+        "variant": "secondary",
+        "service": "chat-backend2",
+        "label": label,
+        "kind": "secondary",
+        "model_name": env.get("CHAT2_MODEL_NAME", ""),
+        "model_path": env.get("CHAT2_MODEL_PATH", ""),
+    }
+
+
+def active_backend_slots_snapshot(env: dict | None = None) -> dict:
+    env = env or read_env()
+    return {
+        "primary": active_chat_model_snapshot(env),
+        "secondary": active_secondary_backend_snapshot(env),
+    }
 
 
 def saved_config_name(name: str) -> str:
@@ -1946,7 +1810,7 @@ def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str
         ServiceManager.start('chat-proxy')
         return True, "No saved chat backend was active; left chat backend unchanged.", []
 
-    for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend-bee', 'chat-backend',
+    for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend',
                 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
         ServiceManager.stop(svc)
     r = ServiceManager.start('chat-backend')
@@ -4181,7 +4045,7 @@ def api_llamacpp_update():
 def api_switch(variant):
     if variant in BUILTIN_CHAT_VARIANT_IDS:
         # Stop generic backend if running, then use existing switch script
-        for svc in ('chat-backend', 'chat-backend-bee', 'qwen-chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b'):
+        for svc in ('chat-backend', 'qwen-chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b'):
             ServiceManager.stop(svc)
         ok, output = run_script('switch-chat-model.sh', variant)
         return jsonify(ok=ok, output=output)
@@ -4193,7 +4057,7 @@ def api_switch(variant):
         return jsonify(ok=False, error='Unknown model variant'), 400
 
     # Stop all chat backends
-    for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend-bee', 'chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
+    for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
         ServiceManager.stop(svc)
 
     # Update env with custom model paths
@@ -4749,6 +4613,7 @@ def api_saved_configs_list():
         try:
             data = json.loads(f.read_text())
             active = data.get('_active_chat_model') if isinstance(data.get('_active_chat_model'), dict) else {}
+            slots = data.get('_active_backend_slots') if isinstance(data.get('_active_backend_slots'), dict) else {}
             configs.append({
                 'name': f.stem,
                 'display_name': data.get('_name', f.stem),
@@ -4756,6 +4621,7 @@ def api_saved_configs_list():
                 'description': data.get('_description', ''),
                 'is_default': f.stem == default_name,
                 'active_chat_model': active,
+                'active_backend_slots': slots,
             })
         except Exception:
             pass
@@ -4778,12 +4644,14 @@ def api_saved_configs_save():
     config['_description'] = (data or {}).get('description', '')
     config['_name'] = name
     active = (data or {}).get('active_chat_model')
+    slots = (data or {}).get('active_backend_slots')
     config['_active_chat_model'] = active if isinstance(active, dict) else active_chat_model_snapshot(env)
+    config['_active_backend_slots'] = slots if isinstance(slots, dict) else active_backend_slots_snapshot(env)
     
     active_services = []
     for svc in SERVICES:
         name = svc.get('name')
-        if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 'chat-backend-bee', 
+        if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 
                                 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
             continue
         if get_service_status(name) == 'active':
@@ -4827,6 +4695,9 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
         restart_needed.update(RESTART_HINTS.get(key, []))
 
     active = config.get('_active_chat_model') if isinstance(config.get('_active_chat_model'), dict) else {}
+    slots = config.get('_active_backend_slots') if isinstance(config.get('_active_backend_slots'), dict) else {}
+    if not active.get("variant") and isinstance(slots.get("primary"), dict):
+        active = slots.get("primary") or active
     launched = []
     launch_output = ''
     if launch:
@@ -4837,6 +4708,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
                 'error': launch_output or 'Failed to launch saved chat backend',
                 'restart_needed': sorted(restart_needed),
                 'active_chat_model': active,
+                'active_backend_slots': slots,
             }
         restart_needed.difference_update(SHARED_CHAT_BACKEND_RESTART)
         restart_needed.discard('chat-proxy')
@@ -4845,7 +4717,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
         if active_services is not None:
             for svc in SERVICES:
                 name = svc.get('name')
-                if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 'chat-backend-bee', 
+                if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 
                                         'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
                     continue
                 is_active = get_service_status(name) == 'active'
@@ -4855,11 +4727,21 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
                     launched.append(name)
                 elif not should_be_active and is_active:
                     ServiceManager.stop(name)
+        else:
+            secondary = slots.get("secondary") if isinstance(slots.get("secondary"), dict) else {}
+            if secondary.get("service") == "chat-backend2" and secondary.get("variant"):
+                if get_service_status("chat-backend2") != "active":
+                    ServiceManager.start("chat-backend2")
+                    launched.append("chat-backend2")
+                if get_service_status("chat-proxy2") != "active":
+                    ServiceManager.start("chat-proxy2")
+                    launched.append("chat-proxy2")
 
     return {
         'ok': True,
         'restart_needed': sorted(restart_needed),
         'active_chat_model': active,
+        'active_backend_slots': slots,
         'launched_services': launched,
         'output': launch_output,
     }

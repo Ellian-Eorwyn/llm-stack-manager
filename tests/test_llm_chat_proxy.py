@@ -204,6 +204,96 @@ class ResponseHelpersTests(unittest.TestCase):
         self.assertNotIn('"model":"chat-moe"', text)
         self.assertIn("data: [DONE]", text)
 
+    def test_sse_event_rewriter_rewrites_model_and_reasoning_visibility(self):
+        rewriter = proxy.SSEEventRewriter("think", "content")
+        chunk = (
+            b'data: {"model":"chat-dense","choices":[{"delta":{"reasoning_content":"step"}}]}\n\n'
+            b'data: [DONE]\n\n'
+        )
+        rewritten = rewriter.feed(chunk).decode("utf-8")
+        self.assertIn('"model":"think"', rewritten)
+        self.assertIn('"content":"step"', rewritten)
+        self.assertNotIn("reasoning_content", rewritten)
+
+    def test_stream_rewrite_is_not_safe_for_chunked_transfer(self):
+        self.assertFalse(proxy._stream_rewrite_safe({"transfer-encoding": "chunked"}))
+        self.assertFalse(proxy._stream_rewrite_safe({"transfer-encoding": "gzip, chunked"}))
+        self.assertTrue(proxy._stream_rewrite_safe({"content-type": "text/event-stream"}))
+
+    def test_stream_passthrough_can_be_forced(self):
+        original = proxy.PROXY_STREAM_PASSTHROUGH
+        try:
+            proxy.PROXY_STREAM_PASSTHROUGH = True
+            self.assertTrue(proxy._stream_passthrough_enabled({"content-type": "text/event-stream"}))
+        finally:
+            proxy.PROXY_STREAM_PASSTHROUGH = original
+
+    def test_stream_passthrough_still_handles_chunked_streams(self):
+        original = proxy.PROXY_STREAM_PASSTHROUGH
+        try:
+            proxy.PROXY_STREAM_PASSTHROUGH = False
+            self.assertTrue(proxy._stream_passthrough_enabled({"transfer-encoding": "chunked"}))
+        finally:
+            proxy.PROXY_STREAM_PASSTHROUGH = original
+
+
+class AggregateProxyTests(unittest.TestCase):
+    def test_aggregate_models_clone_backend_metadata_for_each_alias(self):
+        backend_payload = {
+            "object": "list",
+            "models": [
+                {
+                    "name": "chat-dense",
+                    "model": "chat-dense",
+                    "capabilities": ["completion"],
+                    "details": {"format": "gguf"},
+                }
+            ],
+            "data": [
+                {
+                    "id": "chat-dense",
+                    "aliases": ["chat-dense"],
+                    "object": "model",
+                    "created": 123,
+                    "owned_by": "llamacpp",
+                    "meta": {"n_ctx": 256000, "n_ctx_train": 262144},
+                }
+            ],
+        }
+        payload = proxy._aggregate_models_payload(backend_payload)
+
+        ids = [model["id"] for model in payload["data"]]
+        self.assertEqual(ids, [proxy.THINK_MODEL_NAME, proxy.NOTHINK_MODEL_NAME, proxy.CODE_MODEL_NAME])
+        for model in payload["data"]:
+            self.assertEqual(model["meta"]["n_ctx"], 256000)
+            self.assertEqual(model["aliases"], [model["id"]])
+
+        self.assertEqual([model["name"] for model in payload["models"]], ids)
+        self.assertEqual([model["model"] for model in payload["models"]], ids)
+        self.assertEqual(payload["models"][0]["details"]["format"], "gguf")
+
+    def test_aggregate_model_payload_returns_selected_alias_metadata(self):
+        backend_payload = {
+            "data": [
+                {
+                    "id": "chat-dense",
+                    "object": "model",
+                    "created": 123,
+                    "owned_by": "llamacpp",
+                    "meta": {"n_ctx": 256000},
+                }
+            ],
+        }
+        model = proxy._aggregate_model_payload(proxy.CODE_MODEL_NAME, backend_payload)
+        self.assertEqual(model["id"], proxy.CODE_MODEL_NAME)
+        self.assertEqual(model["meta"]["n_ctx"], 256000)
+
+    def test_profile_for_model_selects_chat_profiles_and_rejects_unknown(self):
+        self.assertEqual(proxy._profile_for_model(proxy.THINK_MODEL_NAME)["port_label"], "think")
+        self.assertEqual(proxy._profile_for_model(proxy.NOTHINK_MODEL_NAME)["port_label"], "chat")
+        self.assertEqual(proxy._profile_for_model(proxy.CODE_MODEL_NAME)["port_label"], "code")
+        self.assertIsNone(proxy._profile_for_model("unknown"))
+
 
 if __name__ == "__main__":
     unittest.main()
