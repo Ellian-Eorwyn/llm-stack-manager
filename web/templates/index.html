@@ -454,6 +454,18 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   color: var(--dim);
   font-size: 13px;
 }
+
+.cache-aware-card { border-color: rgba(129, 140, 248, .35); }
+.cache-aware-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.cache-aware-status {
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  background: rgba(3, 7, 18, .45); color: var(--dim); font-size: 12px;
+}
+.cache-aware-status.compatible { border-color: rgba(16, 185, 129, .45); color: #a7f3d0; }
+.cache-aware-status.warning { border-color: rgba(245, 158, 11, .45); color: #fde68a; }
+.cache-aware-status.incompatible { border-color: rgba(239, 68, 68, .45); color: #fecaca; }
+.cache-aware-status ul { margin: 6px 0 0 18px; }
+.cache-aware-snippet-label { color: var(--muted); font-size: 11px; margin-top: 10px; }
 @media (max-width: 900px) {
   .config-toolbar { grid-template-columns: 1fr; }
 }
@@ -1428,6 +1440,17 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
       </div>
 
+      <div class="cfg-panel cache-aware-card" style="margin-bottom:20px;" data-cache-aware-prefix="{{ backend_prefix }}">
+        <h4>Cache-Aware Scheduling</h4>
+        <p>Reserve slot 0 for interactive pi-forge requests and slot 1 for background work. The preset configures the llama.cpp backend; pi-forge scheduling remains opt-in in its own settings file.</p>
+        <div class="cache-aware-actions">
+          <button class="btn btn-primary btn-sm" type="button" onclick="applyCacheAwarePreset('{{ backend_prefix }}', '{{ section }}')">Enable Cache-Aware Scheduling</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="copyPiForgeSchedulingSnippet(this)">Copy pi-forge Merge Snippet</button>
+        </div>
+        <div id="cache-aware-status-{{ backend_prefix }}" class="cache-aware-status" aria-live="polite">Load configuration to check compatibility.</div>
+        <div class="cache-aware-snippet-label">Merge the copied JSON into <code>~/.pi-forge/agent/settings.json</code>. LLM Stack Manager does not modify that file.</div>
+      </div>
+
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Shared Backend Runtime</h4>
@@ -1839,6 +1862,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 </div>
 <div id="toast"></div>
 
+<script src="{{ url_for('static', filename='cache-aware-scheduling.js') }}"></script>
 <script>
 // -- state --
 let pollTimer  = null;
@@ -2968,6 +2992,8 @@ function syncConfigArgInput(targetId, silent = false) {
     const section = input.closest('.cfg-section')?.id?.replace(/^cfgsec-/, '').replace(/-/g, ' ') || 'Shared Backend';
     markDirty(section);
   }
+  if (targetId === 'cfg-CHAT_PRIMARY_CUSTOM_ARGS_JSON') refreshCacheAwareScheduling('CHAT_PRIMARY');
+  if (targetId === 'cfg-CHAT2_CUSTOM_ARGS_JSON') refreshCacheAwareScheduling('CHAT2');
 }
 
 function renderConfigArgRows(targetId, values = ['']) {
@@ -4050,10 +4076,113 @@ async function loadConfig() {
       }
     });
     initConfigArgEditors();
+    initCacheAwareScheduling();
+    refreshAllCacheAwareScheduling();
   } catch (e) { toast('Could not load config: ' + e, 'err'); }
 }
 
 function markDirty(section) { cfgDirty[section] = true; }
+
+const CACHE_AWARE_SUFFIXES = [
+  'N_PARALLEL',
+  'CTX_SIZE',
+  'CACHE_RAM',
+  'CTX_CHECKPOINTS',
+  'CACHE_IDLE_SLOTS',
+  'FIT',
+  'CUSTOM_ARGS_JSON',
+];
+
+function cacheAwareValues(prefix) {
+  return Object.fromEntries(CACHE_AWARE_SUFFIXES.map(suffix => {
+    const input = document.getElementById(`cfg-${prefix}_${suffix}`);
+    return [suffix, input?.value || ''];
+  }));
+}
+
+function refreshCacheAwareScheduling(prefix) {
+  const status = document.getElementById(`cache-aware-status-${prefix}`);
+  if (!status || typeof CacheAwareScheduling === 'undefined') return;
+  const result = CacheAwareScheduling.evaluate(cacheAwareValues(prefix));
+  const total = result.totalContext.toLocaleString('en-US');
+  const perSlot = result.perSlotContext.toLocaleString('en-US');
+  let headline = '';
+
+  status.classList.remove('compatible', 'warning', 'incompatible');
+  if (!result.compatible) {
+    status.classList.add('incompatible');
+    headline = '<strong>Incompatible with cache-aware scheduling.</strong>';
+  } else if (result.recommended) {
+    status.classList.add(result.conflicts.length ? 'warning' : 'compatible');
+    headline = '<strong>Compatible — recommended context profile is configured.</strong>';
+  } else {
+    status.classList.add('warning');
+    headline = '<strong>Compatible — 262,144 or more total context is recommended.</strong>';
+  }
+
+  const contextSummary = `<div>${total} total tokens across ${result.slots || 0} slots provides approximately ${perSlot} tokens per slot.</div>`;
+  const issues = result.issues.length
+    ? `<ul>${result.issues.map(issue => `<li>${escapeHtml(issue)}</li>`).join('')}</ul>`
+    : '';
+  const conflicts = result.conflicts.length
+    ? `<div style="margin-top:6px;"><strong>Custom argument warning:</strong> these later arguments may override the structured settings: ${result.conflicts.map(escapeHtml).join(', ')}</div>`
+    : '';
+  status.innerHTML = `${headline}${contextSummary}${issues}${conflicts}`;
+}
+
+function refreshAllCacheAwareScheduling() {
+  refreshCacheAwareScheduling('CHAT_PRIMARY');
+  refreshCacheAwareScheduling('CHAT2');
+}
+
+function initCacheAwareScheduling() {
+  for (const prefix of ['CHAT_PRIMARY', 'CHAT2']) {
+    for (const suffix of CACHE_AWARE_SUFFIXES) {
+      const input = document.getElementById(`cfg-${prefix}_${suffix}`);
+      if (!input || input.dataset.cacheAwareListener === '1') continue;
+      input.dataset.cacheAwareListener = '1';
+      input.addEventListener('input', () => refreshCacheAwareScheduling(prefix));
+      input.addEventListener('change', () => refreshCacheAwareScheduling(prefix));
+    }
+  }
+}
+
+function applyCacheAwarePreset(prefix, section) {
+  if (typeof CacheAwareScheduling === 'undefined') return;
+  const updates = CacheAwareScheduling.presetValues(prefix);
+  for (const [key, value] of Object.entries(updates)) {
+    const input = document.getElementById(`cfg-${key}`);
+    if (input) input.value = value;
+  }
+  markDirty(section);
+  refreshCacheAwareScheduling(prefix);
+  toast(`Cache-aware scheduling preset applied to ${section}. Save and restart the backend to activate it.`, 'ok');
+}
+
+async function copyPiForgeSchedulingSnippet(btn) {
+  if (typeof CacheAwareScheduling === 'undefined') return;
+  const snippet = CacheAwareScheduling.piForgeSnippet();
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(snippet);
+    } else {
+      const fallback = document.createElement('textarea');
+      fallback.value = snippet;
+      fallback.style.position = 'fixed';
+      fallback.style.opacity = '0';
+      document.body.appendChild(fallback);
+      fallback.select();
+      document.execCommand('copy');
+      fallback.remove();
+    }
+    const original = btn?.textContent;
+    if (btn) btn.textContent = 'Copied';
+    toast('Copied pi-forge scheduling merge snippet.', 'ok');
+    if (btn) setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch (error) {
+    toast(`Could not copy pi-forge settings: ${error}`, 'err');
+  }
+}
 
 async function saveCfgSection(section, btn) {
   const sec = document.getElementById('cfgsec-' + section.replace(/ /g, '-'));

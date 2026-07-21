@@ -39,6 +39,38 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertEqual(manager.RESTART_HINTS["CHAT2_MODEL_PATH"], ["chat-backend2"])
         self.assertEqual(manager.RESTART_HINTS["CHAT2_BATCH_SIZE"], ["chat-backend2"])
 
+    def test_cache_aware_scheduling_cards_render_for_both_backends(self):
+        template_dir = pathlib.Path(__file__).resolve().parents[1] / "web" / "templates"
+        original_searchpath = list(manager.app.jinja_loader.searchpath)
+        manager.app.jinja_loader.searchpath = [str(template_dir)]
+        with (
+            manager.app.test_client() as client,
+            patch.object(manager, "read_env", return_value={}),
+            patch.object(manager, "load_custom_models", return_value=[]),
+        ):
+            response = client.get("/")
+        manager.app.jinja_loader.searchpath = original_searchpath
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('data-cache-aware-prefix="CHAT_PRIMARY"', html)
+        self.assertIn('data-cache-aware-prefix="CHAT2"', html)
+        self.assertEqual(html.count("Enable Cache-Aware Scheduling"), 2)
+        self.assertIn("cache-aware-scheduling.js", html)
+        self.assertIn("~/.pi-forge/agent/settings.json", html)
+
+    def test_cache_aware_fields_restart_their_own_backends(self):
+        for suffix in (
+            "N_PARALLEL",
+            "CTX_SIZE",
+            "CACHE_RAM",
+            "CTX_CHECKPOINTS",
+            "CACHE_IDLE_SLOTS",
+            "FIT",
+        ):
+            self.assertEqual(manager.RESTART_HINTS[f"CHAT_PRIMARY_{suffix}"], ["chat-backend-dense"])
+            self.assertEqual(manager.RESTART_HINTS[f"CHAT2_{suffix}"], ["chat-backend2"])
+
     def test_primary_and_secondary_backend_normalize_from_legacy_keys(self):
         env = manager.normalize_env_keys({
             "CHAT_DENSE_LABEL": "Backend Dense",
