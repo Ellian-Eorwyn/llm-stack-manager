@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -49,6 +50,7 @@ def prepend_nvm_node() -> None:
     if truthy_env("LLM_STACK_USE_SYSTEM_NODE"):
         return
 
+
     version_dirs: list[Path] = []
     nvm_dir = os.environ.get("NVM_DIR")
     if nvm_dir:
@@ -70,6 +72,11 @@ def prepend_nvm_node() -> None:
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{current_path}" if current_path else str(bin_dir)
         print(f"Using Node.js from {bin_dir}", flush=True)
         return
+
+
+def cuda_path_version(path: Path) -> tuple[int, ...]:
+    match = re.search(r"cuda-([0-9]+(?:\.[0-9]+)*)", str(path))
+    return tuple(int(part) for part in match.group(1).split(".")) if match else (0,)
 
 
 def find_or_bootstrap_uv() -> str:
@@ -121,6 +128,25 @@ def build_cmake(dep: dict, jobs: int) -> None:
     build_dir = ROOT / dep.get("build_dir", f"{dep['path']}/build")
     target = dep.get("target", "")
     cmake_args = [str(x) for x in dep.get("cmake_args", [])]
+    if dep.get("require_gpu"):
+        if not any(arg.startswith("-DGGML_CUDA=") for arg in cmake_args):
+            cmake_args.append("-DGGML_CUDA=ON")
+        candidates = sorted(Path("/usr/local").glob("cuda-*/bin/nvcc"), key=cuda_path_version, reverse=True)
+        nvcc = str(candidates[0]) if candidates else (shutil.which("nvcc") or "")
+        if not nvcc:
+            raise SystemExit("CUDA toolkit compiler nvcc was not found; run the setup system-dependencies stage")
+        if not any(arg.startswith("-DCMAKE_CUDA_COMPILER=") for arg in cmake_args):
+            cmake_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")
+        if not any(arg.startswith("-DCMAKE_CUDA_ARCHITECTURES=") for arg in cmake_args):
+            probe = subprocess.run(
+                ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                capture_output=True, text=True,
+            )
+            architectures = sorted({line.strip().replace(".", "") for line in probe.stdout.splitlines() if re.fullmatch(r"\s*\d+\.\d+\s*", line)})
+            if not architectures:
+                raise SystemExit("Could not detect NVIDIA GPU compute capability with nvidia-smi")
+            cmake_args.append(f"-DCMAKE_CUDA_ARCHITECTURES={';'.join(architectures)}")
+            print(f"Detected CUDA architectures: {';'.join(architectures)}", flush=True)
     build_dir.mkdir(parents=True, exist_ok=True)
     run(["cmake", "-S", str(source), "-B", str(build_dir), *cmake_args])
     build_cmd = ["cmake", "--build", str(build_dir)]
@@ -136,20 +162,9 @@ def build_cmake(dep: dict, jobs: int) -> None:
 
 
 def verify_gpu_binary(binary: Path) -> None:
-    probe_model = ROOT / ".llama-cuda-probe-missing-model.gguf"
     try:
         result = subprocess.run(
-            [
-                str(binary),
-                "--model",
-                str(probe_model),
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "65534",
-                "--n-gpu-layers",
-                "1",
-            ],
+            [str(binary), "--list-devices"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -163,7 +178,7 @@ def verify_gpu_binary(binary: Path) -> None:
         "no usable gpu found",
         "ggml_cuda: not found",
     )
-    if "cuda" not in lowered or any(marker in lowered for marker in cpu_only_markers):
+    if result.returncode != 0 or "cuda" not in lowered or any(marker in lowered for marker in cpu_only_markers):
         raise SystemExit(
             "Built llama-server does not appear to have CUDA GPU offload support. "
             "Refusing to install a CPU-only backend because large models can exhaust RAM. "

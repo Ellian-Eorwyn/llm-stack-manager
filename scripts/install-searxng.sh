@@ -74,6 +74,17 @@ install_source() {
 
 write_settings() {
     local secret="${SEARXNG_SECRET:-}"
+    if [[ -z "${secret}" && -f "${SEARXNG_SETTINGS_PATH}" ]]; then
+        secret="$(python3 - "${SEARXNG_SETTINGS_PATH}" <<'PYPREVIOUSSECRET'
+import re
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+match = re.search(r'^\s*secret_key:\s*["\x27]?([^"\x27\s]+)', text, re.MULTILINE)
+print(match.group(1) if match else "")
+PYPREVIOUSSECRET
+)"
+    fi
     if [[ -z "${secret}" ]]; then
         secret="$(python3 - <<'PYSECRET'
 import secrets

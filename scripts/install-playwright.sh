@@ -27,15 +27,26 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 cd "${PLAYWRIGHT_DIR}"
+RUN_AS=()
+if [[ "${EUID}" -eq 0 ]]; then
+    OWNER="$(stat -c '%U' "${STACK_DIR}")"
+    [[ "${OWNER}" != "root" ]] && RUN_AS=(sudo -H -u "${OWNER}")
+fi
 if [[ -f package-lock.json ]]; then
-    npm ci
+    "${RUN_AS[@]}" npm ci
 else
-    npm install
+    "${RUN_AS[@]}" npm install
 fi
 
 if [[ "${PLAYWRIGHT_INSTALL_BROWSERS}" == "on" ]]; then
     mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
-    PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH}" npx playwright install "${PLAYWRIGHT_BROWSER}"
+    if [[ "${EUID}" -eq 0 && "${OWNER:-root}" != "root" ]]; then
+        chown -R "${OWNER}:$(stat -c '%G' "${STACK_DIR}")" "${PLAYWRIGHT_BROWSERS_PATH}"
+    fi
+    if [[ "${EUID}" -eq 0 ]]; then
+        npx playwright install-deps "${PLAYWRIGHT_BROWSER}"
+    fi
+    "${RUN_AS[@]}" env PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH}" npx playwright install "${PLAYWRIGHT_BROWSER}"
 fi
 
 echo "Playwright dependencies installed in ${PLAYWRIGHT_DIR}"

@@ -18,19 +18,13 @@ if [[ "${GLMOCR_SDK_ENABLED:-on}" != "on" ]]; then
     exit 0
 fi
 
-if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
-    echo "[glmocr-sdk] Creating Python venv at ${VENV_DIR}..."
-    python3 -m venv "${VENV_DIR}"
-fi
-
-if ! "${VENV_DIR}/bin/python" - <<'PYCHECK' >/dev/null 2>&1
+if [[ ! -x "${VENV_DIR}/bin/python" ]] || ! "${VENV_DIR}/bin/python" - <<'PYCHECK' >/dev/null 2>&1
 import glmocr
 import flask
 PYCHECK
 then
-    echo "[glmocr-sdk] Installing glmocr self-hosted server dependencies..."
-    "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-    "${VENV_DIR}/bin/python" -m pip install 'glmocr[selfhosted,server]'
+    echo "[glmocr-sdk] SDK environment is missing or incomplete. Run the Setup Wizard or scripts/install-glmocr-sdk.sh." >&2
+    exit 1
 fi
 
 mkdir -p "$(dirname "${CONFIG_PATH}")"

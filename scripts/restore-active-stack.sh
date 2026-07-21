@@ -131,18 +131,25 @@ PYDEFAULT
     fi
 fi
 
-DEFAULT_SERVICES=(
-    "${DEFAULT_CHAT_BACKEND}"
-    chat-proxy
-    chat-backend2
-    chat-proxy2
-    embed
-    embed2
-    rerank
-    task
-)
-if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-    DEFAULT_SERVICES+=(honcho-api honcho-deriver)
+if [[ -n "${LLM_STACK_SELECTED_COMPONENTS:-}" ]]; then
+    SELECTED=",${LLM_STACK_SELECTED_COMPONENTS},"
+    selected() { [[ "${SELECTED}" == *",$1,"* ]]; }
+    DEFAULT_SERVICES=()
+    selected primary && DEFAULT_SERVICES+=("${DEFAULT_CHAT_BACKEND}" chat-proxy)
+    selected secondary && DEFAULT_SERVICES+=(chat-backend2 chat-proxy2)
+    selected embedding && DEFAULT_SERVICES+=(embed)
+    selected embedding2 && DEFAULT_SERVICES+=(embed2)
+    selected reranker && DEFAULT_SERVICES+=(rerank)
+    selected task && DEFAULT_SERVICES+=(task)
+    selected ocr && DEFAULT_SERVICES+=(ocr)
+    selected glmocr-sdk && DEFAULT_SERVICES+=(glmocr-sdk)
+    selected playwright && DEFAULT_SERVICES+=(playwright-server)
+    selected honcho && DEFAULT_SERVICES+=(honcho-api honcho-deriver)
+else
+    DEFAULT_SERVICES=("${DEFAULT_CHAT_BACKEND}" chat-proxy chat-backend2 chat-proxy2 embed embed2 rerank task)
+    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
+        DEFAULT_SERVICES+=(honcho-api honcho-deriver)
+    fi
 fi
 
 if ! svc_is_active llm-manager 2>/dev/null; then

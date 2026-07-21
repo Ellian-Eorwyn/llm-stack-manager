@@ -1,0 +1,32 @@
+name: NVIDIA integration
+on:
+  workflow_dispatch:
+    inputs:
+      primary_model:
+        description: Absolute GGUF path on the runner
+        required: true
+      embedding_model:
+        description: Absolute embedding GGUF path on the runner
+        required: true
+      task_model:
+        description: Absolute task GGUF path on the runner
+        required: true
+      ocr_model:
+        description: Absolute GLM-OCR GGUF path on the runner
+        required: true
+
+jobs:
+  fresh-stack:
+    runs-on: [self-hosted, linux, x64, nvidia, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo LLM_STACK_SOURCE_DIR="$GITHUB_WORKSPACE" bash bootstrap-ubuntu.sh
+      - run: >-
+          sudo scripts/setup_engine.py select
+          --components primary,embedding,task,ocr,glmocr-sdk,searxng,playwright
+          --model primary=${{ inputs.primary_model }}
+          --model embedding=${{ inputs.embedding_model }}
+          --model task=${{ inputs.task_model }}
+          --model ocr=${{ inputs.ocr_model }}
+      - run: sudo scripts/setup_engine.py run --wait
+      - run: sudo bash tests/integration-nvidia.sh

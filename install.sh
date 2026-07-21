@@ -2,6 +2,12 @@
 # Install the git-friendly core LLM stack without touching any older stack tree.
 set -euo pipefail
 
+INSTALL_MODE="${1:---full}"
+case "${INSTALL_MODE}" in
+    --full|--manager-only|--configure-services) ;;
+    *) echo "Usage: sudo bash install.sh [--full|--manager-only|--configure-services]" >&2; exit 2 ;;
+esac
+
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/cross-platform.sh
 source "${STACK_DIR}/scripts/cross-platform.sh"
@@ -141,6 +147,42 @@ repair_glmocr_sdk_config
 # shellcheck source=/dev/null
 source "${CONFIG_FILE}"
 
+if [[ "${INSTALL_MODE}" == "--manager-only" ]]; then
+    if ! is_linux; then
+        echo "The fresh-machine manager-only bootstrap currently supports Ubuntu Linux only." >&2
+        exit 1
+    fi
+    cat > /etc/systemd/system/llm-manager.service <<UNIT
+[Unit]
+Description=LLM Stack Manager - trusted-LAN setup UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=${STACK_DIR}
+EnvironmentFile=${CONFIG_FILE}
+ExecStart=${STACK_DIR}/scripts/start-llm-manager.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=180
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=llm-manager
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    chmod 644 /etc/systemd/system/llm-manager.service
+    systemctl daemon-reload
+    systemctl enable --now llm-manager
+    echo "Manager-only bootstrap complete: http://127.0.0.1:${LLM_MANAGER_PORT:-8077}"
+    exit 0
+fi
+
 create_honcho_env() {
     if [[ -f "${HONCHO_ENV_FILE}" ]]; then
         echo "Keeping existing local Honcho env: ${HONCHO_ENV_FILE}"
@@ -198,12 +240,12 @@ else
     fi
 fi
 
-if [[ "${SEARXNG_ENABLED:-on}" == "on" ]]; then
+if [[ "${SEARXNG_ENABLED:-on}" == "on" && "${LLM_STACK_SKIP_EXTERNAL_INSTALL:-0}" != "1" ]]; then
     echo "Installing/configuring local SearXNG..."
     bash "${STACK_DIR}/scripts/install-searxng.sh"
 fi
 
-if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
+if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" && "${LLM_STACK_SKIP_EXTERNAL_INSTALL:-0}" != "1" ]]; then
     echo "Installing/configuring local Playwright server..."
     sudo -u "${SERVICE_USER}" env PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${STACK_DIR}/playwright/browsers}" bash "${STACK_DIR}/scripts/install-playwright.sh"
 fi
@@ -319,20 +361,55 @@ UNIT
     chmod 644 /etc/systemd/system/llm-stack-restore.service
     echo "  installed: llm-stack-restore.service"
 
-    install_unit "think"             "LLM Chat Thinking Legacy - llama-server"          "start-think.sh"             300
-    install_unit "nothink"           "LLM Chat Nothink Legacy - llama-server"          "start-nothink.sh"           300
-    install_unit "chat-backend"      "LLM Chat Custom Shared Backend - llama-server"   "start-chat-backend.sh"      300
-    install_unit "chat-backend-dense"  "LLM Chat Dense Shared Backend - llama-server"    "start-chat-backend-dense.sh"  300
-    install_unit "chat-backend-moe"  "LLM Chat MoE Shared Backend - llama-server"      "start-chat-backend-moe.sh"  300
-    install_unit "chat-proxy"        "LLM Chat Proxy - think/chat/code ports"          "start-chat-proxy.sh"        30
-    install_unit "chat-backend2"     "LLM Chat Custom Shared Backend 2 - llama-server" "start-chat-backend2.sh"     300
-    install_unit "chat-proxy2"       "LLM Chat Proxy 2 - think/chat/code ports"        "start-chat-proxy2.sh"       30
-    install_unit "embed"         "LLM Embedding Model - llama-server"              "start-embed.sh"         120
-    install_unit "embed2"        "LLM Embedding 2 Model - llama-server"            "start-embed2.sh"        120
-    install_unit "rerank"          "LLM Reranker Model - llama-server"               "start-rerank.sh"          120
-    install_unit "task"              "LLM Task Model - llama-server"                   "start-task.sh"              120
-    install_unit "ocr"               "LLM OCR GLM-OCR Backend - llama-server"          "start-ocr.sh"               120
-    install_unit "glmocr-sdk"        "LLM OCR GLM-OCR SDK Parser"                      "start-glmocr-sdk.sh"        300
+    setup_has_component() {
+        [[ -z "${LLM_STACK_SETUP_COMPONENTS:-}" || ",${LLM_STACK_SETUP_COMPONENTS}," == *",$1,"* ]]
+    }
+    remove_unselected_units() {
+        local component="$1"
+        shift
+        setup_has_component "${component}" && return 0
+        local unit
+        for unit in "$@"; do
+            systemctl disable --now "${unit}" 2>/dev/null || true
+            [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
+        done
+    }
+    if [[ -n "${LLM_STACK_SETUP_COMPONENTS:-}" ]]; then
+        remove_unselected_units primary chat-backend-dense chat-proxy
+        remove_unselected_units secondary chat-backend2 chat-proxy2
+        remove_unselected_units embedding embed
+        remove_unselected_units embedding2 embed2
+        remove_unselected_units reranker rerank
+        remove_unselected_units task task
+        remove_unselected_units ocr ocr
+        remove_unselected_units glmocr-sdk glmocr-sdk
+        remove_unselected_units playwright playwright-server
+        remove_unselected_units honcho honcho-api honcho-deriver
+        for unit in think nothink chat-backend chat-backend-moe; do
+            systemctl disable --now "${unit}" 2>/dev/null || true
+            [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
+        done
+    fi
+    if [[ -z "${LLM_STACK_SETUP_COMPONENTS:-}" ]]; then
+        install_unit "think"        "LLM Chat Thinking Legacy - llama-server"        "start-think.sh"        300
+        install_unit "nothink"      "LLM Chat Nothink Legacy - llama-server"         "start-nothink.sh"      300
+        install_unit "chat-backend" "LLM Chat Custom Shared Backend - llama-server"  "start-chat-backend.sh" 300
+        install_unit "chat-backend-moe" "LLM Chat MoE Shared Backend - llama-server" "start-chat-backend-moe.sh" 300
+    fi
+    if setup_has_component primary; then
+        install_unit "chat-backend-dense" "LLM Chat Primary Shared Backend - llama-server" "start-chat-backend-dense.sh" 300
+        install_unit "chat-proxy" "LLM Chat Proxy - think/chat/code ports" "start-chat-proxy.sh" 30
+    fi
+    if setup_has_component secondary; then
+        install_unit "chat-backend2" "LLM Chat Secondary Shared Backend - llama-server" "start-chat-backend2.sh" 300
+        install_unit "chat-proxy2" "LLM Chat Proxy 2 - think/chat/code ports" "start-chat-proxy2.sh" 30
+    fi
+    setup_has_component embedding && install_unit "embed" "LLM Embedding Model - llama-server" "start-embed.sh" 120
+    setup_has_component embedding2 && install_unit "embed2" "LLM Embedding 2 Model - llama-server" "start-embed2.sh" 120
+    setup_has_component reranker && install_unit "rerank" "LLM Reranker Model - llama-server" "start-rerank.sh" 120
+    setup_has_component task && install_unit "task" "LLM Task Model - llama-server" "start-task.sh" 120
+    setup_has_component ocr && install_unit "ocr" "LLM OCR GLM-OCR Backend - llama-server" "start-ocr.sh" 120
+    setup_has_component glmocr-sdk && install_unit "glmocr-sdk" "LLM OCR GLM-OCR SDK Parser" "start-glmocr-sdk.sh" 300
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         install_playwright_nginx_conf
         cat > /etc/systemd/system/playwright-server.service <<UNIT
@@ -366,20 +443,22 @@ UNIT
         install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
     fi
 
-    cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service|" /etc/systemd/system/chat-proxy.service
-    cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
-    cp_sed_inplace "s|^After=network.target$|After=network.target ocr.service|" /etc/systemd/system/glmocr-sdk.service
-    cp_sed_inplace "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
-    cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
+    [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service|" /etc/systemd/system/chat-proxy.service
+    [[ -f /etc/systemd/system/chat-proxy2.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
+    if [[ -f /etc/systemd/system/glmocr-sdk.service ]]; then
+        cp_sed_inplace "s|^After=network.target$|After=network.target ocr.service|" /etc/systemd/system/glmocr-sdk.service
+        cp_sed_inplace "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
+        cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
+    fi
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         cp_sed_inplace "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service embed.service embed2.service|" /etc/systemd/system/honcho-api.service
         cp_sed_inplace "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service embed.service embed2.service" /etc/systemd/system/honcho-api.service
         cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service embed.service embed2.service|" /etc/systemd/system/honcho-deriver.service
         cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service embed.service embed2.service" /etc/systemd/system/honcho-deriver.service
     fi
-    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
-    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
-    cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service" /etc/systemd/system/chat-backend.service
+    [[ -f /etc/systemd/system/chat-backend-dense.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
+    [[ -f /etc/systemd/system/chat-backend-moe.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
+    [[ -f /etc/systemd/system/chat-backend.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service" /etc/systemd/system/chat-backend.service
 
     systemctl daemon-reload
 

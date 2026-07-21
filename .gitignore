@@ -21,6 +21,7 @@
 
 # Python/runtime artifacts
 .venv/
+.test-venv/
 */.venv/
 __pycache__/
 *.py[cod]

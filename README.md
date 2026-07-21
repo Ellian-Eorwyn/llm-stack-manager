@@ -1,6 +1,56 @@
-# LLM Stack Core
+# LLM Stack Manager
 
-Git-friendly core version of the local LLM stack manager. This repo is designed to replace an older local tree gradually without modifying it during development.
+UI-guided local LLM stack installation and operation for Ubuntu 24.04 x86-64 systems with NVIDIA GPUs.
+
+> **Trusted LAN only:** the manager is intentionally unauthenticated and runs with privileges needed to install packages and control services. Never expose port 8077 to the public internet or configure router port forwarding for it.
+
+## Fresh Ubuntu 24.04 Installation
+
+Prerequisites:
+
+- Intel/AMD x86-64 processor and Ubuntu 24.04 LTS.
+- One or more NVIDIA GPUs.
+- A working NVIDIA driver: `nvidia-smi` must succeed. The installer manages a compatible CUDA toolkit but does not replace the kernel driver or handle Secure Boot.
+- At least 20 GiB free before model downloads; practical model storage requirements are usually much larger.
+
+Run the bootstrap from a terminal on the new machine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ellian-Eorwyn/llm-stack-manager/main/bootstrap-ubuntu.sh | sudo bash
+```
+
+The command installs the manager only and prints a URL such as `http://192.168.1.50:8077`. Open that URL, choose **Setup Wizard**, and:
+
+1. Run preflight.
+2. Confirm the component checklist.
+3. Select and download a GGUF for every selected model backend.
+4. Review generated GPU placement.
+5. Click **Install Selected Stack** and leave the page open until validation completes.
+
+The default checklist includes the primary chat/code backend, embedding backend, task backend, GLM-OCR model and SDK, SearXNG, and Playwright. Secondary backends, reranking, and Honcho remain optional.
+
+Downloads are written through `.part` files, resume when supported by the server, and are accepted only after a valid GGUF header is found. Repository/model provenance, SHA-256 values, selected components, GPU assignments, job progress, and validation results are retained in `config/install-state.json`.
+
+### Recovery and unattended operation
+
+The wizard can retry a failed job from its durable state. The same engine is available from the terminal:
+
+```bash
+sudo scripts/setup_engine.py preflight
+sudo scripts/setup_engine.py state
+sudo scripts/setup_engine.py run --wait
+sudo scripts/setup_engine.py validate
+```
+
+The UI uses a stable setup API under `/api/setup`: `preflight`, `selection`, `models/inspect`, `run`, `jobs/<id>`, `jobs/<id>/retry`, `validation`, `repair`, and `uninstall`. Long-running setup work returns a job id immediately; clients poll the durable job record rather than holding one HTTP request open.
+
+For an existing checkout, the bootstrap can be run without cloning another copy:
+
+```bash
+sudo LLM_STACK_SOURCE_DIR="$PWD" bash bootstrap-ubuntu.sh
+```
+
+When UFW is active, setup opens only the selected service ports and only to the detected private LAN subnet. If UFW is inactive, the wizard and installer display a warning.
 
 ## Included
 
@@ -37,8 +87,8 @@ sudo bash scripts/backup-active-stack.sh /mnt/LLMs/llamacpp/llm-stack
 The command prints a backup directory like `backups/pre-cutover-YYYYMMDD-HHMMSS`. Keep that path. Then install and start the new core stack:
 
 ```bash
-sudo bash install.sh
-sudo bash scripts/default-mode.sh
+sudo bash install.sh --full
+sudo bash scripts/restore-active-stack.sh
 bash validate.sh
 ```
 
@@ -50,18 +100,18 @@ sudo bash scripts/rollback-to-backup.sh /mnt/LLMs/llamacpp/llm-stack-git/backups
 
 Rollback restores systemd unit files and service state. It does not delete either stack directory and does not rewrite the old stack folder.
 
-## Install
+## Existing-machine / recovery install
 
 ```bash
-sudo bash install.sh
+sudo bash install.sh --full
 ```
 
-The installer creates local runtime directories, creates `config/llm-stack.env` if missing, clones/builds llama.cpp from `dependencies.json`, installs/configures SearXNG when `SEARXNG_ENABLED=on`, installs/configures Playwright when `PLAYWRIGHT_ENABLED=on`, writes systemd units pointing at this repo, and enables the default core services.
+`--full` preserves the legacy all-in-one recovery path. Fresh machines should use `bootstrap-ubuntu.sh` and the wizard. `--manager-only` installs only the UI; `--configure-services` regenerates service definitions after the setup engine has installed dependencies.
 
 Start the default core stack:
 
 ```bash
-sudo bash scripts/default-mode.sh
+sudo bash scripts/restore-active-stack.sh
 ```
 
 Switch the shared chat backend between built-in presets with:
@@ -101,9 +151,19 @@ bash update.sh --release --skip-deps
 sudo bash update.sh --release --skip-restart
 ```
 
-## Model Files
+## Model files and GPU portability
 
-Model files stay outside git. Edit `config/llm-stack.env` to point each model variable at the local GGUF files you want to use.
+Model files stay outside git. The wizard supports the primary, secondary, embedding, second embedding, task, OCR, and reranker slots. Baseline filenames in the example configuration are suggestions only; no model is silently downloaded.
+
+The CUDA build no longer assumes CUDA 13.3, compute capability 8.6, two GPUs, or GPU 1. Setup queries every GPU through `nvidia-smi`, selects a driver-compatible toolkit, builds a pinned llama.cpp revision for the detected compute capabilities, reserves 10% of reported free VRAM, and generates placement for the chosen model files. GLM-OCR layout processing is always restricted to one GPU.
+
+## Testing
+
+```bash
+bash test.sh
+```
+
+This creates an isolated test virtualenv, runs the Python and JavaScript suites, and checks shell syntax. GitHub CI runs the same checks on Ubuntu 24.04 with Node 22. A manually dispatched self-hosted NVIDIA workflow performs live service and endpoint checks using model paths supplied for that runner.
 
 ## Local Honcho Memory
 

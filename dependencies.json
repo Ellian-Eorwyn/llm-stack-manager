@@ -5,15 +5,14 @@
       "name": "llama.cpp",
       "type": "git-cmake",
       "repo": "https://github.com/ggml-org/llama.cpp.git",
-      "ref": "master",
+      "ref": "846e991ec3c7ccec49112ff2c5b00b710e5f551d",
       "path": "deps/llama.cpp",
       "build_dir": "deps/llama.cpp/build",
       "target": "llama-server",
       "binary": "deps/llama.cpp/build/bin/llama-server",
       "cmake_args": [
         "-DGGML_CUDA=ON",
-        "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.3/bin/nvcc",
-        "-DCMAKE_CUDA_ARCHITECTURES=86"
+        "-DCMAKE_BUILD_TYPE=Release"
       ],
       "require_gpu": true
     },

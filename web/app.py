@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import threading
@@ -34,6 +35,9 @@ try:
 except ImportError:
     grp = None
     pwd = None
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import setup_engine
 
 class ServiceManager:
     IS_MAC = sys.platform == 'darwin'
@@ -129,6 +133,7 @@ class ServiceManager:
             return r.returncode == 0 and r.stdout.strip() != "not-found"
 
 app = Flask(__name__)
+SETUP_RUNNER = setup_engine.SetupRunner()
 
 STACK_DIR   = Path(__file__).resolve().parent.parent
 CONFIG_FILE = STACK_DIR / "config" / "llm-stack.env"
@@ -3274,9 +3279,25 @@ def list_huggingface_repo_files(repo_ref: dict) -> list[dict]:
         files.append({
             "path": filename,
             "name": Path(filename).name,
-            "size": item.get("size"),
+            "size": item.get("size") or (item.get("lfs") or {}).get("size"),
+            "sha256": (item.get("lfs") or {}).get("sha256") or "",
         })
     return files
+
+
+def huggingface_repo_metadata(repo_ref: dict) -> dict:
+    repo_id = repo_ref["repo_id"]
+    api_url = f"https://huggingface.co/api/models/{quote(repo_id, safe='/')}"
+    req = urlrequest.Request(api_url, headers=huggingface_headers())
+    with urlrequest.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    card = payload.get("cardData") if isinstance(payload.get("cardData"), dict) else {}
+    return {
+        "license": card.get("license") or payload.get("license") or "not declared",
+        "gated": bool(payload.get("gated")),
+        "private": bool(payload.get("private")),
+        "revision_sha": payload.get("sha") or "",
+    }
 
 
 def score_mmproj_match(model_name: str, mmproj_name: str) -> tuple[int, int]:
@@ -3328,55 +3349,80 @@ def update_hf_download_job(job_id: str, **changes):
         job["updated_at"] = int(time.time())
 
 
-def stream_download_to_path(url: str, dest_path: Path, job_id: str | None = None, label: str = ""):
-    req = urlrequest.Request(url, headers=huggingface_headers())
+def stream_download_to_path(url: str, dest_path: Path, job_id: str | None = None, label: str = "", validate_gguf_file: bool = False, expected_sha256: str = ""):
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dest_path.with_name(dest_path.name + ".part")
-    downloaded = 0
+    free_bytes = shutil.disk_usage(dest_path.parent).free
+    headers = huggingface_headers()
+    downloaded = tmp_path.stat().st_size if tmp_path.exists() else 0
+    if downloaded:
+        headers["Range"] = f"bytes={downloaded}-"
+    req = urlrequest.Request(url, headers=headers)
     total = None
-    with urlrequest.urlopen(req, timeout=300) as resp, tmp_path.open("wb") as fh:
+    with urlrequest.urlopen(req, timeout=300) as resp:
+        partial = getattr(resp, "status", 200) == 206 and downloaded > 0
+        if not partial:
+            downloaded = 0
         total_header = resp.headers.get("Content-Length")
         try:
-            total = int(total_header) if total_header else None
+            remaining = int(total_header) if total_header else None
+            total = (downloaded + remaining) if remaining is not None else None
         except ValueError:
             total = None
-        while True:
-            chunk = resp.read(1024 * 1024)
-            if not chunk:
-                break
-            fh.write(chunk)
-            downloaded += len(chunk)
-            if job_id:
-                progress = None
-                if total:
-                    progress = round((downloaded / total) * 100, 1)
-                update_hf_download_job(
-                    job_id,
-                    current_file=label or dest_path.name,
-                    current_bytes=downloaded,
-                    total_bytes=total,
-                    progress=progress,
-                )
+        if total and total - downloaded > free_bytes:
+            raise RuntimeError(f"Not enough disk space for {dest_path.name}: need {total - downloaded} bytes")
+        with tmp_path.open("ab" if partial else "wb") as fh:
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                downloaded += len(chunk)
+                if job_id:
+                    progress = round((downloaded / total) * 100, 1) if total else None
+                    update_hf_download_job(
+                        job_id,
+                        current_file=label or dest_path.name,
+                        current_bytes=downloaded,
+                        total_bytes=total,
+                        progress=progress,
+                    )
+            fh.flush()
+            os.fsync(fh.fileno())
+    validation = {"ok": True, "sha256": ""}
+    if validate_gguf_file:
+        validation = setup_engine.validate_gguf(tmp_path)
+        if not validation["ok"]:
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Rejected download {dest_path.name}: {validation['error']}")
+        if expected_sha256 and validation.get("sha256", "").lower() != expected_sha256.lower():
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Rejected download {dest_path.name}: published SHA-256 does not match")
     tmp_path.replace(dest_path)
+    return validation
 
 
-def download_huggingface_model_bundle(repo_ref: dict, model_file: str, mmproj_file: str = "", job_id: str | None = None) -> dict:
+def download_huggingface_model_bundle(repo_ref: dict, model_file: str, mmproj_file: str = "", job_id: str | None = None, model_sha256: str = "", mmproj_sha256: str = "") -> dict:
     model_target = MODELS_DIR / Path(model_file).name
-    stream_download_to_path(
+    model_validation = stream_download_to_path(
         build_huggingface_download_url(repo_ref, model_file),
         model_target,
         job_id=job_id,
         label=Path(model_file).name,
+        validate_gguf_file=True,
+        expected_sha256=model_sha256,
     )
 
     mmproj_target = None
     if mmproj_file:
         mmproj_target = MODELS_DIR / derive_mmproj_target_name(Path(model_file).name)
-        stream_download_to_path(
+        mmproj_validation = stream_download_to_path(
             build_huggingface_download_url(repo_ref, mmproj_file),
             mmproj_target,
             job_id=job_id,
             label=Path(mmproj_file).name,
+            validate_gguf_file=True,
+            expected_sha256=mmproj_sha256,
         )
 
     return {
@@ -3384,13 +3430,15 @@ def download_huggingface_model_bundle(repo_ref: dict, model_file: str, mmproj_fi
         "mmproj_path": str(mmproj_target) if mmproj_target else "",
         "model_name": Path(model_file).name,
         "mmproj_name": mmproj_target.name if mmproj_target else "",
+        "model_sha256": model_validation.get("sha256", ""),
+        "mmproj_sha256": mmproj_validation.get("sha256", "") if mmproj_target else "",
     }
 
 
-def run_hf_download_job(job_id: str, repo_ref: dict, model_file: str, mmproj_file: str):
+def run_hf_download_job(job_id: str, repo_ref: dict, model_file: str, mmproj_file: str, model_sha256: str = "", mmproj_sha256: str = ""):
     try:
         update_hf_download_job(job_id, status="running", stage="Downloading model bundle")
-        result = download_huggingface_model_bundle(repo_ref, model_file, mmproj_file, job_id=job_id)
+        result = download_huggingface_model_bundle(repo_ref, model_file, mmproj_file, job_id=job_id, model_sha256=model_sha256, mmproj_sha256=mmproj_sha256)
         update_hf_download_job(
             job_id,
             ok=True,
@@ -3506,6 +3554,228 @@ def index():
 def api_status():
     statuses = {s['name']: get_service_status(s['name']) for s in patch_service_labels()}
     return jsonify(services=statuses, gpus=get_gpu_info())
+
+
+@app.route('/api/setup/preflight')
+def api_setup_preflight():
+    result = setup_engine.collect_preflight()
+    state = setup_engine.load_state()
+    state["preflight"] = result
+    setup_engine.save_state(state)
+    return jsonify(result)
+
+
+@app.route('/api/setup/selection', methods=['GET', 'PUT'])
+def api_setup_selection():
+    state = setup_engine.load_state()
+    if request.method == 'GET':
+        env = read_env()
+        configured_models = [
+            env.get('CHAT_PRIMARY_MODEL_PATH') or env.get('CHAT_DENSE_MODEL_PATH'),
+            env.get('EMBEDDING_MODEL_PATH'), env.get('TASK_MODEL_PATH'), env.get('OCR_MODEL_PATH'),
+        ]
+        setup_required = not setup_engine.STATE_FILE.exists() and not any(Path(path).is_file() for path in configured_models if path)
+        return jsonify(ok=True, selection=state['selection'], state_status=state.get('status', 'new'), setup_required=setup_required)
+    data = request.get_json(silent=True) or {}
+    components = setup_engine.resolve_components(data.get('components', state['selection'].get('components', [])))
+    models = data.get('models', state['selection'].get('models', {}))
+    if not isinstance(models, dict):
+        return jsonify(ok=False, error='models must be an object'), 400
+    new_selection = {
+        'components': components,
+        'models': models,
+        'allow_vram_override': bool(data.get('allow_vram_override', False)),
+    }
+    if new_selection != state.get('selection'):
+        state['completed_stages'] = [stage for stage in state.get('completed_stages', []) if stage == 'preflight']
+        state['status'] = 'selection_changed'
+    state['selection'] = new_selection
+    setup_engine.save_state(state)
+    return jsonify(ok=True, selection=state['selection'])
+
+
+@app.route('/api/setup/models/inspect', methods=['POST'])
+def api_setup_model_inspect():
+    data = request.get_json(silent=True) or {}
+    component = str(data.get('component') or '').strip()
+    if component not in setup_engine.MODEL_COMPONENTS:
+        return jsonify(ok=False, error='Unknown model component'), 400
+    local_path = str(data.get('path') or '').strip()
+    if local_path:
+        result = setup_engine.validate_gguf(Path(local_path))
+        return jsonify(ok=result['ok'], component=component, validation=result), (200 if result['ok'] else 400)
+    try:
+        repo_ref = parse_huggingface_repo_ref(data.get('repo_url', ''))
+        files = list_huggingface_repo_files(repo_ref)
+        metadata = huggingface_repo_metadata(repo_ref)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 502
+    model_files = []
+    mmproj_files = []
+    for item in files:
+        if not item['name'].lower().endswith('.gguf'):
+            continue
+        target = mmproj_files if is_mmproj_gguf(item['path'], item.get('size')) else model_files
+        target.append(item)
+    return jsonify(ok=True, component=component, repo=repo_ref, metadata=metadata, model_files=model_files, mmproj_files=mmproj_files)
+
+
+def _start_setup_job(retry_of=''):
+    job = SETUP_RUNNER.create_job(retry_of)
+    threading.Thread(target=SETUP_RUNNER.run, args=(job['id'],), daemon=True).start()
+    return job
+
+
+@app.route('/api/setup/run', methods=['POST'])
+def api_setup_run():
+    if os.geteuid() != 0 and not ServiceManager.IS_MAC:
+        return jsonify(ok=False, error='The manager must run as root to install system services'), 403
+    job = _start_setup_job()
+    return jsonify(ok=True, job=job), 202
+
+
+@app.route('/api/setup/jobs/<job_id>')
+def api_setup_job(job_id):
+    job = SETUP_RUNNER.job(job_id)
+    if not job:
+        return jsonify(ok=False, error='Setup job not found'), 404
+    return jsonify(ok=True, job=job)
+
+
+@app.route('/api/setup/jobs/<job_id>/retry', methods=['POST'])
+def api_setup_job_retry(job_id):
+    prior = SETUP_RUNNER.job(job_id)
+    if not prior:
+        return jsonify(ok=False, error='Setup job not found'), 404
+    if prior.get('status') not in {'failed', 'needs_attention', 'interrupted'}:
+        return jsonify(ok=False, error='Only failed or interrupted jobs can be retried'), 409
+    job = _start_setup_job(job_id)
+    return jsonify(ok=True, job=job), 202
+
+
+@app.route('/api/setup/validation')
+def api_setup_validation():
+    result = setup_engine.validate_installation()
+    state = setup_engine.load_state()
+    state['last_validation'] = result
+    setup_engine.save_state(state)
+    return jsonify(result)
+
+
+@app.route('/api/setup/placement')
+def api_setup_placement():
+    state = setup_engine.load_state()
+    preflight = state.get('preflight') or setup_engine.collect_preflight()
+    components = setup_engine.resolve_components(state['selection'].get('components', []))
+    models = {}
+    for component, model in state['selection'].get('models', {}).items():
+        if component not in components:
+            continue
+        item = dict(model)
+        path = Path(str(item.get('path') or ''))
+        if path.is_file():
+            item['size'] = path.stat().st_size
+        models[component] = item
+    result = setup_engine.plan_gpu_placement(preflight.get('gpus', []), models, bool(state['selection'].get('allow_vram_override')))
+    return jsonify(result), (200 if result.get('ok') else 400)
+
+
+@app.route('/api/setup/repair', methods=['POST'])
+def api_setup_repair():
+    if os.geteuid() != 0 and not ServiceManager.IS_MAC:
+        return jsonify(ok=False, error='Repair requires a root-run manager'), 403
+    action = str((request.get_json(silent=True) or {}).get('action') or '')
+    commands = {
+        'packages': ['bash', str(SCRIPTS_DIR / 'install-system-dependencies.sh'), '--full'],
+        'dependencies': [str(SCRIPTS_DIR / 'install-dependencies.py'), '--update', '--force'],
+        'services': ['bash', str(STACK_DIR / 'install.sh'), '--configure-services'],
+    }
+    command = commands.get(action)
+    if not command:
+        return jsonify(ok=False, error='Unknown repair action'), 400
+    try:
+        if action == 'dependencies':
+            command = SETUP_RUNNER._owner_command(command)
+        env = os.environ.copy()
+        if action == 'services':
+            selection = setup_engine.load_state()['selection']['components']
+            env.update(LLM_STACK_SKIP_DEP_UPDATE='1', LLM_STACK_SKIP_EXTERNAL_INSTALL='1', LLM_STACK_SETUP_COMPONENTS=','.join(selection))
+        result = subprocess.run(command, cwd=STACK_DIR, capture_output=True, text=True, timeout=7200, env=env)
+        output = (result.stdout + result.stderr).strip()
+        if result.returncode == 0 and action == 'services':
+            activation = subprocess.run(['bash', str(SCRIPTS_DIR / 'activate-selected-stack.sh')], cwd=STACK_DIR, capture_output=True, text=True, timeout=900)
+            output += '\n' + (activation.stdout + activation.stderr).strip()
+            result = activation
+        return jsonify(ok=result.returncode == 0, output=output)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 500
+
+
+@app.route('/api/setup/uninstall', methods=['POST'])
+def api_setup_uninstall():
+    if os.geteuid() != 0 and not ServiceManager.IS_MAC:
+        return jsonify(ok=False, error='Uninstall requires a root-run manager'), 403
+    data = request.get_json(silent=True) or {}
+    scope = str(data.get('scope') or '')
+    state = setup_engine.load_state()
+    if scope == 'model':
+        component = str(data.get('component') or '')
+        model = state['selection'].get('models', {}).get(component)
+        if not model:
+            return jsonify(ok=False, error='No selected model for that component'), 404
+        removed = []
+        models_root = MODELS_DIR.resolve()
+        for key in ('path', 'mmproj_path'):
+            value = model.get(key)
+            if not value:
+                continue
+            path = Path(value).resolve()
+            if not path.is_relative_to(models_root):
+                return jsonify(ok=False, error='Refusing to remove a model outside the managed models directory'), 400
+            if path.exists():
+                path.unlink()
+                removed.append(str(path))
+        state['selection']['models'].pop(component, None)
+        setup_engine.save_state(state)
+        return jsonify(ok=True, removed=removed)
+    if scope == 'services':
+        removed = []
+        ServiceManager.run_cmd(['systemctl', 'disable', '--now', 'llm-stack-restore'], timeout=30)
+        restore_unit = Path('/etc/systemd/system/llm-stack-restore.service')
+        if restore_unit.exists():
+            restore_unit.unlink()
+            removed.append(str(restore_unit))
+        for services in setup_engine.COMPONENT_SERVICES.values():
+            for service in services:
+                ServiceManager.run_cmd(['systemctl', 'disable', '--now', service], timeout=30)
+                unit = Path('/etc/systemd/system') / f'{service}.service'
+                if unit.exists():
+                    unit.unlink()
+                    removed.append(str(unit))
+        managed_links = [
+            Path('/etc/nginx/sites-enabled/llm-stack-manager'),
+            Path('/etc/nginx/sites-available/llm-stack-manager'),
+            Path('/etc/nginx/default.d/playwright.conf'),
+            Path('/etc/nginx/default.d/searxng.conf'),
+            Path('/etc/uwsgi/apps-enabled/searxng.ini'),
+        ]
+        for path in managed_links:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+                removed.append(str(path))
+        default_site = Path('/etc/nginx/sites-available/default')
+        default_link = Path('/etc/nginx/sites-enabled/default')
+        if default_site.exists() and not default_link.exists():
+            default_link.symlink_to(default_site)
+        ServiceManager.run_cmd(['nginx', '-t'], timeout=15)
+        ServiceManager.run_cmd(['systemctl', 'reload', 'nginx'], timeout=30)
+        ServiceManager.run_cmd(['systemctl', 'daemon-reload'], timeout=30)
+        state['status'] = 'services_removed'
+        setup_engine.save_state(state)
+        return jsonify(ok=True, removed=removed, models_preserved=True)
+    return jsonify(ok=False, error='Unknown uninstall scope'), 400
 
 
 @app.route('/api/service/<name>/<action>', methods=['POST'])
@@ -4174,6 +4444,11 @@ def api_huggingface_download_create():
 
     try:
         repo_ref = parse_huggingface_repo_ref(data.get('repo_url', ''))
+        requested_revision = str(data.get('revision') or '').strip()
+        if requested_revision:
+            if not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', requested_revision):
+                return jsonify(ok=False, error='Invalid Hugging Face revision'), 400
+            repo_ref['revision'] = requested_revision
     except ValueError as exc:
         return jsonify(ok=False, error=str(exc)), 400
 
@@ -4188,6 +4463,8 @@ def api_huggingface_download_create():
         "revision": repo_ref["revision"],
         "model_file": model_file,
         "mmproj_file": (data.get('mmproj_file') or '').strip(),
+        "expected_model_sha256": (data.get('model_sha256') or '').strip(),
+        "expected_mmproj_sha256": (data.get('mmproj_sha256') or '').strip(),
         "current_file": "",
         "current_bytes": 0,
         "total_bytes": None,
@@ -4200,7 +4477,7 @@ def api_huggingface_download_create():
 
     thread = threading.Thread(
         target=run_hf_download_job,
-        args=(job_id, repo_ref, job["model_file"], job["mmproj_file"]),
+        args=(job_id, repo_ref, job["model_file"], job["mmproj_file"], job["expected_model_sha256"], job["expected_mmproj_sha256"]),
         daemon=True,
     )
     thread.start()
