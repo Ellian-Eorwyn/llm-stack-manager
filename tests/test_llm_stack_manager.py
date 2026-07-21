@@ -364,6 +364,117 @@ class CustomModelApiTests(unittest.TestCase):
 
 
 class SavedConfigTests(unittest.TestCase):
+    def test_save_current_records_exact_form_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_dir = pathlib.Path(tmp)
+            env = {
+                "CHAT_PRIMARY_CTX_SIZE": "32768",
+                "CHAT_PRIMARY_SPLIT_MODE": "layer",
+                "CHAT_PRIMARY_TENSOR_SPLIT": "1,1",
+                "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0,1",
+            }
+            form = {
+                "CHAT_PRIMARY_CTX_SIZE": "128000",
+                "CHAT_PRIMARY_SPLIT_MODE": "none",
+                "CHAT_PRIMARY_TENSOR_SPLIT": "",
+                "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0",
+            }
+
+            with (
+                manager.app.test_client() as client,
+                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(manager, "read_env", return_value=env),
+                patch.object(manager, "get_service_status", return_value="inactive"),
+            ):
+                resp = client.post("/api/saved-configs", json={"name": "OneGpu", "config": form})
+
+            self.assertEqual(resp.status_code, 200)
+            data = json.loads((saved_dir / "OneGpu.json").read_text())
+            self.assertEqual(data["_config_form"]["CHAT_PRIMARY_CTX_SIZE"], "128000")
+            self.assertEqual(data["_config_form"]["CHAT_PRIMARY_SPLIT_MODE"], "none")
+            self.assertEqual(data["_config_form"]["CHAT_PRIMARY_TENSOR_SPLIT"], "")
+            self.assertEqual(data["_config_form"]["CHAT_PRIMARY_GPU_VISIBLE_DEVICES"], "0")
+
+    def test_apply_saved_config_prefers_form_snapshot_over_top_level_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_dir = pathlib.Path(tmp)
+            config_file = saved_dir / "llm-stack.env"
+            config_file.write_text(
+                "CHAT_PRIMARY_CTX_SIZE=32768\n"
+                "CHAT_PRIMARY_SPLIT_MODE=layer\n"
+                "CHAT_PRIMARY_TENSOR_SPLIT=1,1\n"
+                "CHAT_PRIMARY_GPU_VISIBLE_DEVICES=0,1\n"
+            )
+            (saved_dir / "OneGpu.json").write_text(json.dumps({
+                "CHAT_PRIMARY_CTX_SIZE": "262144",
+                "CHAT_CTX_SIZE": "262144",
+                "CHAT_PRIMARY_SPLIT_MODE": "layer",
+                "CHAT_PRIMARY_TENSOR_SPLIT": "1,1",
+                "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0,1",
+                "_config_form": {
+                    "CHAT_PRIMARY_CTX_SIZE": "128000",
+                    "CHAT_PRIMARY_SPLIT_MODE": "none",
+                    "CHAT_PRIMARY_TENSOR_SPLIT": "",
+                    "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0",
+                },
+                "_active_chat_model": {"variant": None, "service": None, "label": "", "kind": "none"},
+            }))
+
+            with (
+                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(manager, "CONFIG_FILE", config_file),
+            ):
+                result = manager.apply_saved_config("OneGpu", launch=False)
+            content = config_file.read_text()
+
+            self.assertTrue(result["ok"])
+            self.assertIn("CHAT_PRIMARY_CTX_SIZE=128000", content)
+            self.assertIn('CHAT_PRIMARY_TENSOR_SPLIT=""', content)
+            self.assertIn("CHAT_PRIMARY_SPLIT_MODE=none", content)
+            self.assertIn("CHAT_PRIMARY_GPU_VISIBLE_DEVICES=0", content)
+
+    def test_apply_saved_config_prefers_canonical_pane_key_over_legacy_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_dir = pathlib.Path(tmp)
+            config_file = saved_dir / "llm-stack.env"
+            config_file.write_text("CHAT_DENSE_CTX_SIZE=32768\nCHAT_CTX_SIZE=32768\n")
+            (saved_dir / "Context.json").write_text(json.dumps({
+                "CHAT_PRIMARY_CTX_SIZE": "128000",
+                "CHAT_DENSE_CTX_SIZE": "32768",
+                "CHAT_CTX_SIZE": "262144",
+                "_active_chat_model": {"variant": None, "service": None, "label": "", "kind": "none"},
+            }))
+
+            with (
+                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(manager, "CONFIG_FILE", config_file),
+            ):
+                result = manager.apply_saved_config("Context", launch=False)
+            content = config_file.read_text()
+
+            self.assertTrue(result["ok"])
+            self.assertIn("CHAT_PRIMARY_CTX_SIZE=128000", content)
+            self.assertNotIn("CHAT_DENSE_CTX_SIZE=32768", content)
+
+    def test_apply_saved_config_accepts_numeric_json_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved_dir = pathlib.Path(tmp)
+            config_file = saved_dir / "llm-stack.env"
+            config_file.write_text("CHAT_PRIMARY_CTX_SIZE=32768\n")
+            (saved_dir / "Numeric.json").write_text(json.dumps({
+                "CHAT_PRIMARY_CTX_SIZE": 128000,
+                "_active_chat_model": {"variant": None, "service": None, "label": "", "kind": "none"},
+            }))
+
+            with (
+                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(manager, "CONFIG_FILE", config_file),
+            ):
+                result = manager.apply_saved_config("Numeric", launch=False)
+
+            self.assertTrue(result["ok"])
+            self.assertIn("CHAT_PRIMARY_CTX_SIZE=128000", config_file.read_text())
+
     def test_save_records_primary_and_secondary_backend_slots(self):
         with tempfile.TemporaryDirectory() as tmp:
             saved_dir = pathlib.Path(tmp)
