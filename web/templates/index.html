@@ -1357,7 +1357,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   </div>
 
   {% for section, fields in config_sections.items() %}
-  <div class="cfg-section {% if loop.first %}active{% endif %}" id="cfgsec-{{ section|replace(' ','-') }}">
+  <div class="cfg-section {% if loop.first %}active{% endif %}" id="cfgsec-{{ section|replace(' ','-') }}" data-section="{{ section }}">
     <div class="cfg-shell">
       <div class="cfg-section-head">
         <div>
@@ -1395,41 +1395,6 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set spec_keys = [backend_prefix ~ '_SPEC_METHOD', backend_prefix ~ '_SPEC_NGRAM_MOD', backend_prefix ~ '_SPEC_DRAFT_MODEL_PATH', backend_prefix ~ '_SPEC_DRAFT_N_GPU_LAYERS', backend_prefix ~ '_SPEC_DRAFT_DEVICES', backend_prefix ~ '_SPEC_DRAFT_TYPE_K', backend_prefix ~ '_SPEC_DRAFT_TYPE_V', backend_prefix ~ '_SPEC_DRAFT_N_MAX', backend_prefix ~ '_SPEC_DRAFT_N_MIN', backend_prefix ~ '_SPEC_DRAFT_P_MIN', backend_prefix ~ '_SPEC_DRAFT_P_SPLIT', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MATCH', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MIN', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MAX', backend_prefix ~ '_SPEC_NGRAM_SIZE_N', backend_prefix ~ '_SPEC_NGRAM_SIZE_M', backend_prefix ~ '_SPEC_NGRAM_MIN_HITS'] %}
       {% set custom_args_key = backend_prefix ~ '_CUSTOM_ARGS_JSON' %}
 
-      {% if section == 'Primary Backend' %}
-      <div class="cfg-panel" style="margin-bottom:20px;">
-        <h4>Download GGUFs From Hugging Face</h4>
-        <p>Download a quantized model directly into the local <code>models/</code> folder. If an MMProj GGUF is present in the repo, it will be downloaded alongside the model and renamed to match the selected model filename. When the download finishes, this page reloads so the backend path dropdowns show the new files.</p>
-        <div class="hf-grid" style="margin-bottom:0;">
-          <div class="field wide">
-            <label>Repo URL</label>
-            <div class="hf-inline">
-              <input type="text" id="shared-hf-repo-url" class="mono" placeholder="https://huggingface.co/owner/repo or owner/repo">
-              <button class="btn btn-primary btn-sm" id="shared-hf-load-files-btn" onclick="loadSharedBackendHuggingFaceRepoFiles(this)">Load Files</button>
-            </div>
-          </div>
-          <div class="field">
-            <label>Quantized Model GGUF</label>
-            <select id="shared-hf-model-file-select">
-              <option value="">-- Select model file --</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Matched MMProj</label>
-            <input type="text" id="shared-hf-mmproj-match" class="mono" placeholder="No MMProj detected" readonly>
-          </div>
-          <div class="field wide">
-            <label>MMProj Rename Preview</label>
-            <input type="text" id="shared-hf-mmproj-rename" class="mono" placeholder="Will appear after model selection" readonly>
-          </div>
-        </div>
-        <div class="hf-inline">
-          <button class="btn btn-success btn-sm" id="shared-hf-download-btn" onclick="downloadSharedBackendHuggingFaceModel(this)" disabled>Download To Models Folder</button>
-          <span class="hf-status" id="shared-hf-status-text"></span>
-        </div>
-        <div class="hf-download-meta" id="shared-hf-download-meta"></div>
-      </div>
-      {% endif %}
-
       <div class="cfg-panel" style="margin-bottom:20px;">
         <h4>Model Identity And Files</h4>
         <p>These values identify the selected backend slot and the GGUF files it loads.</p>
@@ -1437,6 +1402,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
           {% for f in fields if f.key in identity_keys %}
           {{ render_config_field(f, section) }}
           {% endfor %}
+          <div class="field">
+            <label for="quick-gpu-{{ backend_prefix }}">GPU Placement</label>
+            <select id="quick-gpu-{{ backend_prefix }}" class="quick-gpu-placement" data-prefix="{{ backend_prefix }}" onchange="applyQuickGpuPlacement(this)">
+              <option value="custom">Custom</option>
+              <option value="gpu0">GPU 0 only</option>
+              <option value="gpu1">GPU 1 only</option>
+              <option value="gpu01">GPU 0 + 1</option>
+            </select>
+            <span class="hint">Updates GPU Devices, Main GPU Index, Split Mode, and Tensor Split.</span>
+          </div>
         </div>
       </div>
 
@@ -1514,6 +1489,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
             {% for f in fields if f.key in task_identity_keys %}
             {{ render_config_field(f, section) }}
             {% endfor %}
+            <div class="field">
+              <label for="quick-gpu-TASK">GPU Placement</label>
+              <select id="quick-gpu-TASK" class="quick-gpu-placement" data-prefix="TASK" onchange="applyQuickGpuPlacement(this)">
+                <option value="custom">Custom</option>
+                <option value="gpu0">GPU 0 only</option>
+                <option value="gpu1">GPU 1 only</option>
+                <option value="gpu01">GPU 0 + 1</option>
+              </select>
+              <span class="hint">Updates GPU Devices, Main GPU Index, Split Mode, and Tensor Split.</span>
+            </div>
           </div>
         </div>
 
@@ -1563,6 +1548,63 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
           {% for f in fields if f.key == 'TASK_CUSTOM_ARGS_JSON' %}
           {{ render_config_field(f, section) }}
           {% endfor %}
+        </div>
+      </div>
+      {% elif section == 'OCR' %}
+      {% set ocr_identity_keys = ['OCR_MODEL_NAME', 'OCR_MODEL_PATH', 'OCR_MMPROJ_PATH', 'OCR_CTX_SIZE'] %}
+      {% set ocr_runtime_keys = ['OCR_N_PARALLEL', 'OCR_BATCH_SIZE', 'OCR_UBATCH_SIZE', 'OCR_FLASH_ATTN', 'OCR_FIT', 'OCR_PROMPT'] %}
+      {% set ocr_gpu_keys = ['OCR_GPU_VISIBLE_DEVICES', 'OCR_DEVICE', 'OCR_N_GPU_LAYERS', 'OCR_MAIN_GPU', 'OCR_TENSOR_SPLIT', 'OCR_SPLIT_MODE', 'OCR_KV_OFFLOAD', 'OCR_OP_OFFLOAD', 'OCR_MMPROJ_OFFLOAD', 'OCR_CACHE_TYPE_K', 'OCR_CACHE_TYPE_V', 'OCR_NO_MMAP', 'OCR_MLOCK'] %}
+      {% set ocr_sampling_keys = ['OCR_TEMP', 'OCR_TOP_P', 'OCR_TOP_K', 'OCR_MIN_P'] %}
+      {% set ocr_custom_keys = ['OCR_CUSTOM_ARGS_JSON', 'OCR_HOST', 'OCR_PORT', 'OCR_LOG_PREFIX'] %}
+      <div class="cfg-panel-grid">
+        <div class="cfg-panel">
+          <h4>Model Identity And Files</h4>
+          <p>Set the OCR model identity, GGUF files, base context window, and quick GPU placement.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in ocr_identity_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+            <div class="field">
+              <label for="quick-gpu-OCR">GPU Placement</label>
+              <select id="quick-gpu-OCR" class="quick-gpu-placement" data-prefix="OCR" onchange="applyQuickGpuPlacement(this)">
+                <option value="custom">Custom</option>
+                <option value="gpu0">GPU 0 only</option>
+                <option value="gpu1">GPU 1 only</option>
+                <option value="gpu01">GPU 0 + 1</option>
+              </select>
+              <span class="hint">Updates GPU Devices, Main GPU Index, Split Mode, and Tensor Split.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Runtime</h4>
+          <p>These launch-time settings control batching, fit behavior, and the default OCR prompt.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in ocr_runtime_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>GPU Placement And Memory</h4>
+          <p>Use these when the quick placement control is not specific enough.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in ocr_gpu_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>Sampling And Service</h4>
+          <p>Sampling defaults and local service settings for the OCR backend.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in ocr_sampling_keys + ocr_custom_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
         </div>
       </div>
       {% elif section == 'Thinking Endpoint' %}
@@ -1880,8 +1922,6 @@ let customArgsDirty = false;
 let customArgPresetTimer = null;
 let huggingFaceRepoFiles = [];
 let huggingFaceDownloadJobId = null;
-let sharedBackendRepoFiles = [];
-let sharedBackendDownloadJobId = null;
 let transcriptionModelsByEngine = {};
 let transcriptionCapabilities = {};
 let transcriptRepoInfoByEngine = {};
@@ -3304,7 +3344,6 @@ function initCustomModelForm() {
     el?.addEventListener('input', scheduleCustomArgPresetRefresh);
   });
   document.getElementById('hf-model-file-select')?.addEventListener('change', handleHuggingFaceModelSelection);
-  document.getElementById('shared-hf-model-file-select')?.addEventListener('change', handleSharedBackendHuggingFaceModelSelection);
 }
 
 function setHfStatus(message = '', type = '') {
@@ -3414,159 +3453,6 @@ function handleHuggingFaceModelSelection() {
   fillCustomModelIdentityFromPath(file.name || file.path);
   scheduleCustomArgPresetRefresh();
   setHfStatus(file.matched_mmproj ? 'Model and MMProj ready to download' : 'Model ready to download; no MMProj found', 'ok');
-}
-
-function setSharedHfStatus(message = '', type = '') {
-  const el = document.getElementById('shared-hf-status-text');
-  if (!el) return;
-  el.textContent = message;
-  el.className = `hf-status${type ? ' ' + type : ''}`;
-}
-
-function resetSharedBackendHuggingFacePicker() {
-  sharedBackendRepoFiles = [];
-  sharedBackendDownloadJobId = null;
-  const sel = document.getElementById('shared-hf-model-file-select');
-  if (sel) sel.innerHTML = '<option value="">-- Select model file --</option>';
-  const mmprojMatch = document.getElementById('shared-hf-mmproj-match');
-  const mmprojRename = document.getElementById('shared-hf-mmproj-rename');
-  const downloadBtn = document.getElementById('shared-hf-download-btn');
-  const meta = document.getElementById('shared-hf-download-meta');
-  if (mmprojMatch) mmprojMatch.value = '';
-  if (mmprojRename) mmprojRename.value = '';
-  if (downloadBtn) downloadBtn.disabled = true;
-  if (meta) meta.innerHTML = '';
-  setSharedHfStatus('');
-}
-
-async function loadSharedBackendHuggingFaceRepoFiles(btn) {
-  const repoUrl = document.getElementById('shared-hf-repo-url').value.trim();
-  if (!repoUrl) {
-    setSharedHfStatus('Enter a Hugging Face repo URL first', 'err');
-    return;
-  }
-  const orig = btn.textContent;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>';
-  resetSharedBackendHuggingFacePicker();
-  try {
-    const d = await fetchJSON('/api/huggingface/repo-files', 'POST', { repo_url: repoUrl });
-    if (!d.ok) {
-      setSharedHfStatus(d.error || 'Failed to load repo files', 'err');
-      return;
-    }
-    sharedBackendRepoFiles = d.model_files || [];
-    const sel = document.getElementById('shared-hf-model-file-select');
-    sel.innerHTML = '<option value="">-- Select model file --</option>';
-    sharedBackendRepoFiles.forEach(file => {
-      const opt = document.createElement('option');
-      opt.value = file.path;
-      const sizePart = file.size ? ` · ${formatBytes(file.size)}` : '';
-      opt.textContent = `${file.name}${sizePart}`;
-      sel.appendChild(opt);
-    });
-    document.getElementById('shared-hf-download-meta').innerHTML = [
-      `<span class="meta-chip">Repo: ${escapeHtml(d.repo_id || '-')}</span>`,
-      `<span class="meta-chip">Revision: ${escapeHtml(d.revision || 'main')}</span>`,
-      `<span class="meta-chip">Models: ${escapeHtml(sharedBackendRepoFiles.length)}</span>`,
-    ].join('');
-    setSharedHfStatus(sharedBackendRepoFiles.length ? 'Select a GGUF file to download' : 'No non-MMProj GGUF files found in this repo', sharedBackendRepoFiles.length ? 'ok' : 'err');
-  } catch (e) {
-    setSharedHfStatus(`Failed to load repo files: ${e}`, 'err');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = orig;
-  }
-}
-
-function handleSharedBackendHuggingFaceModelSelection() {
-  const selected = document.getElementById('shared-hf-model-file-select').value;
-  const file = sharedBackendRepoFiles.find(item => item.path === selected);
-  const mmprojMatch = document.getElementById('shared-hf-mmproj-match');
-  const mmprojRename = document.getElementById('shared-hf-mmproj-rename');
-  const downloadBtn = document.getElementById('shared-hf-download-btn');
-  if (!file) {
-    if (mmprojMatch) mmprojMatch.value = '';
-    if (mmprojRename) mmprojRename.value = '';
-    if (downloadBtn) downloadBtn.disabled = true;
-    return;
-  }
-  if (mmprojMatch) mmprojMatch.value = file.matched_mmproj || '';
-  if (mmprojRename) mmprojRename.value = file.renamed_mmproj || '';
-  if (downloadBtn) downloadBtn.disabled = false;
-  setSharedHfStatus(file.matched_mmproj ? 'Model and MMProj ready to download' : 'Model ready to download; no MMProj found', 'ok');
-}
-
-async function pollSharedBackendHuggingFaceDownload(jobId) {
-  while (sharedBackendDownloadJobId === jobId) {
-    const d = await fetchJSON(`/api/huggingface/downloads/${jobId}`);
-    if (!d.ok || !d.job) {
-      setSharedHfStatus(d.error || 'Download job disappeared', 'err');
-      sharedBackendDownloadJobId = null;
-      return null;
-    }
-    const job = d.job;
-    const meta = document.getElementById('shared-hf-download-meta');
-    const fileLabel = job.current_file ? escapeHtml(job.current_file) : escapeHtml(job.model_file || '');
-    const progressLabel = job.total_bytes
-      ? `${formatBytes(job.current_bytes)} / ${formatBytes(job.total_bytes)}`
-      : formatBytes(job.current_bytes);
-    meta.innerHTML = [
-      `<span class="meta-chip">Status: ${escapeHtml(job.status || '-')}</span>`,
-      `<span class="meta-chip">Stage: ${escapeHtml(job.stage || '-')}</span>`,
-      `<span class="meta-chip">File: ${fileLabel || '-'}</span>`,
-      `<span class="meta-chip">Transferred: ${escapeHtml(progressLabel)}</span>`,
-      job.progress != null ? `<span class="meta-chip">Progress: ${escapeHtml(job.progress)}%</span>` : '',
-    ].join('');
-    if (job.status === 'done') {
-      sharedBackendDownloadJobId = null;
-      return job;
-    }
-    if (job.status === 'error') {
-      sharedBackendDownloadJobId = null;
-      setSharedHfStatus(job.error || 'Download failed', 'err');
-      return null;
-    }
-    setSharedHfStatus(`${job.stage || 'Downloading'}${job.current_file ? ` · ${job.current_file}` : ''}`, '');
-    await new Promise(resolve => setTimeout(resolve, 1500));
-  }
-  return null;
-}
-
-async function downloadSharedBackendHuggingFaceModel(btn) {
-  const repoUrl = document.getElementById('shared-hf-repo-url').value.trim();
-  const modelFile = document.getElementById('shared-hf-model-file-select').value;
-  const match = sharedBackendRepoFiles.find(item => item.path === modelFile);
-  if (!repoUrl || !modelFile || !match) {
-    setSharedHfStatus('Load a repo and select a model file first', 'err');
-    return;
-  }
-  const orig = btn.textContent;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Downloading...';
-  setSharedHfStatus('Starting download...', '');
-  try {
-    const d = await fetchJSON('/api/huggingface/downloads', 'POST', {
-      repo_url: repoUrl,
-      model_file: modelFile,
-      mmproj_file: match.matched_mmproj || '',
-    });
-    if (!d.ok || !d.job) {
-      setSharedHfStatus(d.error || 'Failed to start download', 'err');
-      return;
-    }
-    sharedBackendDownloadJobId = d.job.id;
-    const job = await pollSharedBackendHuggingFaceDownload(d.job.id);
-    if (!job || !job.result) return;
-    setSharedHfStatus('Download complete. Reloading to refresh the Dense and MoE dropdowns...', 'ok');
-    toast(`Downloaded ${job.result.model_name || 'model'}; refreshing page`, 'ok');
-    setTimeout(() => location.reload(), 700);
-  } catch (e) {
-    setSharedHfStatus(`Download failed: ${e}`, 'err');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = orig;
-  }
 }
 
 function setTranscriptHfStatus(engineId, message = '', type = '') {
@@ -4078,6 +3964,7 @@ async function loadConfig() {
     initConfigArgEditors();
     initCacheAwareScheduling();
     refreshAllCacheAwareScheduling();
+    syncQuickGpuPlacementSelects();
   } catch (e) { toast('Could not load config: ' + e, 'err'); }
 }
 
@@ -4182,6 +4069,48 @@ async function copyPiForgeSchedulingSnippet(btn) {
   } catch (error) {
     toast(`Could not copy pi-forge settings: ${error}`, 'err');
   }
+}
+
+function quickGpuValueFor(prefix) {
+  const devices = (document.getElementById(`cfg-${prefix}_GPU_VISIBLE_DEVICES`)?.value || '').trim();
+  const mainGpu = (document.getElementById(`cfg-${prefix}_MAIN_GPU`)?.value || '').trim();
+  const splitMode = (document.getElementById(`cfg-${prefix}_SPLIT_MODE`)?.value || '').trim();
+  const tensorSplit = (document.getElementById(`cfg-${prefix}_TENSOR_SPLIT`)?.value || '').trim();
+
+  if (devices === '0' && mainGpu === '0' && splitMode === 'none' && tensorSplit === '') return 'gpu0';
+  if (devices === '1' && mainGpu === '0' && splitMode === 'none' && tensorSplit === '') return 'gpu1';
+  if (devices === '0,1' && mainGpu === '0' && splitMode === 'layer' && tensorSplit === '1,1') return 'gpu01';
+  return 'custom';
+}
+
+function syncQuickGpuPlacementSelects() {
+  document.querySelectorAll('.quick-gpu-placement[data-prefix]').forEach(sel => {
+    sel.value = quickGpuValueFor(sel.dataset.prefix);
+  });
+}
+
+function applyQuickGpuPlacement(sel) {
+  const prefix = sel?.dataset?.prefix;
+  if (!prefix || sel.value === 'custom') return;
+  const presets = {
+    gpu0: { devices: '0', mainGpu: '0', splitMode: 'none', tensorSplit: '' },
+    gpu1: { devices: '1', mainGpu: '0', splitMode: 'none', tensorSplit: '' },
+    gpu01: { devices: '0,1', mainGpu: '0', splitMode: 'layer', tensorSplit: '1,1' },
+  };
+  const preset = presets[sel.value];
+  if (!preset) return;
+  const values = {
+    [`${prefix}_GPU_VISIBLE_DEVICES`]: preset.devices,
+    [`${prefix}_MAIN_GPU`]: preset.mainGpu,
+    [`${prefix}_SPLIT_MODE`]: preset.splitMode,
+    [`${prefix}_TENSOR_SPLIT`]: preset.tensorSplit,
+  };
+  for (const [key, value] of Object.entries(values)) {
+    const el = document.getElementById('cfg-' + key);
+    if (el) el.value = value;
+  }
+  const section = sel.closest('.cfg-section')?.dataset?.section || '';
+  if (section) markDirty(section);
 }
 
 async function saveCfgSection(section, btn) {
@@ -4373,7 +4302,7 @@ async function loadSavedConfig(launch = false) {
     if (d.ok) {
       toast(launch ? 'Config applied and backend launch requested.' : 'Config applied. Reloading values...', 'ok');
       await loadConfig();
-      await refreshActiveModel();
+      await pollActiveModel();
       await loadSavedConfigsList();
       if (d.restart_needed && d.restart_needed.length) {
         toast('Restart needed: ' + d.restart_needed.join(', '), 'info');

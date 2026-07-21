@@ -1628,7 +1628,10 @@ def update_env_values(updates: dict):
 def normalize_config_updates(updates: dict) -> dict:
     normalized = {}
     for key, value in updates.items():
-        normalized[LEGACY_ENV_KEY_MAP.get(key, key)] = value
+        target = LEGACY_ENV_KEY_MAP.get(key, key)
+        if target in normalized and key in LEGACY_ENV_KEY_MAP:
+            continue
+        normalized[target] = value
     return normalized
 
 
@@ -1656,8 +1659,23 @@ def filter_config_updates(updates: dict, env: dict | None = None) -> dict:
     return {
         key: "" if value is None else str(value)
         for key, value in normalized.items()
-        if key in allowed
+        if key in allowed and (value is None or isinstance(value, (str, int, float, bool)))
     }
+
+
+def config_form_snapshot(values: dict, env: dict | None = None) -> dict:
+    """Exact UI form values from a saved profile, filtered to valid config keys."""
+    return filter_config_updates(values, env)
+
+
+def saved_config_apply_updates(config: dict) -> dict:
+    updates = {k: v for k, v in config.items()
+               if not k.startswith('_') and (v is None or isinstance(v, (str, int, float, bool)))}
+    updates = filter_config_updates(updates)
+    form_snapshot = config.get("_config_form")
+    if isinstance(form_snapshot, dict):
+        updates.update(config_form_snapshot(form_snapshot))
+    return updates
 
 
 def builtin_chat_variants(env: dict | None = None) -> list[dict]:
@@ -4639,7 +4657,9 @@ def api_saved_configs_save():
     config = normalize_env_keys(env)
     form_config = (data or {}).get('config')
     if isinstance(form_config, dict):
-        config.update(filter_config_updates(form_config, env))
+        snapshot = config_form_snapshot(form_config, env)
+        config.update(snapshot)
+        config['_config_form'] = snapshot
     config['_timestamp'] = int(time.time())
     config['_description'] = (data or {}).get('description', '')
     config['_name'] = name
@@ -4682,9 +4702,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
     if not path.exists():
         return {'ok': False, 'error': 'Config not found'}
     config = json.loads(path.read_text())
-    updates = {k: v for k, v in config.items()
-               if not k.startswith('_') and isinstance(v, str)}
-    updates = filter_config_updates(updates)
+    updates = saved_config_apply_updates(config)
     updates = apply_code_chat_mirrors(updates)
     try:
         update_env_values(updates)
@@ -4762,6 +4780,9 @@ def update_saved_config_values(name: str, updates: dict) -> dict:
         if not filtered:
             return {'ok': True, 'name': safe_name, 'updated_keys': []}
         data.update(filtered)
+        form_snapshot = data.get('_config_form') if isinstance(data.get('_config_form'), dict) else {}
+        form_snapshot.update(filtered)
+        data['_config_form'] = form_snapshot
         data['_timestamp'] = int(time.time())
         path.write_text(json.dumps(data, indent=2))
         return {'ok': True, 'name': safe_name, 'updated_keys': sorted(filtered.keys())}
