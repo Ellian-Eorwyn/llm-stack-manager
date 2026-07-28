@@ -634,6 +634,34 @@ class UpdateCliTests(unittest.TestCase):
         # --skip-deps is what avoids install-dependencies.py, i.e. the cmake rebuild.
         self.assertRegex(self.update, r"--manager-only\)\s*\n\s*MANAGER_ONLY=1\s*\n\s*SKIP_DEPS=1")
 
+    def test_skip_deps_is_handed_down_to_install(self):
+        """Regression: --skip-deps only skipped update.sh's own dependency call.
+
+        install.sh then ran install-dependencies.py --update itself and
+        rebuilt llama.cpp from source anyway, so a "fast" update still paid for
+        a full CUDA compile.
+        """
+        self.assertRegex(
+            self.update,
+            r'env LLM_STACK_SKIP_DEP_UPDATE="\$\{SKIP_DEPS\}"[^\n]*\\\n\s*'
+            r'LLM_STACK_SKIP_EXTERNAL_INSTALL="\$\{MANAGER_ONLY\}"[^\n]*\\\n\s*'
+            r'bash "\$\{STACK_DIR\}/install\.sh"',
+        )
+
+    def test_install_honours_the_dependency_skip_gate(self):
+        """The other half of the same regression: the gate must exist and wrap
+        the only call that builds llama.cpp."""
+        gate = re.search(
+            r'if \[\[ "\$\{LLM_STACK_SKIP_DEP_UPDATE:-0\}" == "1" \]\]; then(.*?)\nfi',
+            self.install, re.S)
+        self.assertIsNotNone(gate, "install.sh lost its dependency-update gate")
+        self.assertIn("install-dependencies.py", gate.group(1))
+        # And no ungated build call survives elsewhere in the file.
+        for line in self.install.splitlines():
+            if "install-dependencies.py" in line and "--update" in line:
+                self.assertIn(line, gate.group(1),
+                              f"ungated dependency build: {line.strip()}")
+
     def test_manager_only_restarts_no_model_backend(self):
         cheap = re.search(r"CHEAP_RESTART_SERVICES=\(([^)]*)\)", self.update)
         self.assertIsNotNone(cheap)

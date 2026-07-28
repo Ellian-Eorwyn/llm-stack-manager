@@ -109,6 +109,9 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     source "${CONFIG_FILE}"
 fi
 
+# Honour the same env gate install.sh uses, so setting it once covers both.
+[[ "${LLM_STACK_SKIP_DEP_UPDATE:-0}" == "1" ]] && SKIP_DEPS=1
+
 cd "${STACK_DIR}"
 if [[ ! -d .git ]]; then
     echo "This directory is not a git repository yet: ${STACK_DIR}" >&2
@@ -222,7 +225,13 @@ else
 fi
 
 if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
-    bash "${STACK_DIR}/install.sh"
+    # install.sh runs its own install-dependencies.py --update, which cmake-builds
+    # llama.cpp. Skipping our call is not enough; the gate has to be handed down
+    # or --skip-deps silently still pays for a CUDA rebuild. A manager-only
+    # update also has no reason to reinstall SearXNG and Playwright.
+    env LLM_STACK_SKIP_DEP_UPDATE="${SKIP_DEPS}" \
+        LLM_STACK_SKIP_EXTERNAL_INSTALL="${MANAGER_ONLY}" \
+        bash "${STACK_DIR}/install.sh"
     if [[ "${SKIP_RESTART}" != "1" && "${MANAGER_ONLY}" == "1" ]]; then
         source "${STACK_DIR}/scripts/cross-platform.sh"
         for svc in "${CHEAP_RESTART_SERVICES[@]}"; do
