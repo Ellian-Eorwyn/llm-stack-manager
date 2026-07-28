@@ -32,6 +32,7 @@ echo "[rerank] Fit to VRAM:      ${RERANK_FIT:-on}"
 # Build optional boolean flags from config
 OPTS=()
 [[ "${RERANK_LOG_PREFIX:-true}" == "true" ]] && OPTS+=(--log-prefix)
+[[ "${RERANK_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${RERANK_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${RERANK_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
 [[ "${RERANK_JINJA:-off}" == "on" ]] && OPTS+=(--jinja)

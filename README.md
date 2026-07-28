@@ -55,6 +55,10 @@ When UFW is active, setup opens only the selected service ports and only to the 
 ## Included
 
 - LLM Stack Manager (`web/app.py`) and web UI.
+- `llm-stack-manager` CLI for fast updates, status, restarts, and logs.
+- Backend telemetry (`web/telemetry.py`, `/api/backend/telemetry`): per-slot context, throughput,
+  speculative-decode acceptance, prompt-cache eviction and slot-scheduling latency, collected from
+  `/props`, `/slots`, `/metrics` and the service journal.
 - llama.cpp shared chat backend launchers.
 - `llm-chat-proxy.py` exposing think, chat, and code ports from one backend.
 - Embedding, reranker, and task model launchers.
@@ -129,13 +133,36 @@ bash validate.sh
 
 ## Update
 
-After this directory is initialized as a git repo and connected to GitHub:
+`install.sh` installs a `llm-stack-manager` CLI to `/usr/local/bin`. The everyday update is:
 
 ```bash
-sudo bash update.sh
+sudo llm-stack-manager update
 ```
 
-`update.sh` fetches from GitHub, updates to the latest GitHub release/tag by default, updates/builds dependencies, regenerates units when run as root, and restarts active core services.
+This pulls the latest `main`, regenerates systemd units, and restarts only the manager and the
+proxies. It deliberately does **not** rebuild llama.cpp and does **not** restart model backends, so a
+code update costs a few seconds instead of a CUDA compile plus a multi-GB model reload, and the
+running backends keep their warm prompt caches. If the update changed a model backend's launcher
+script, it says so and names the service, leaving the restart timing to you.
+
+When a dependency bump really is wanted:
+
+```bash
+sudo llm-stack-manager update --full
+```
+
+Other commands:
+
+```bash
+llm-stack-manager status            # services, GPU/host memory, throughput, warnings
+llm-stack-manager logs chat-backend-dense
+sudo llm-stack-manager restart chat-proxy
+llm-stack-manager --help
+```
+
+`update.sh` remains the underlying script (`--manager-only` is what the fast path runs). Called
+without options it fetches from GitHub, updates to the latest GitHub release/tag by default,
+updates/builds dependencies, regenerates units when run as root, and restarts active core services.
 
 For development machines that should track the latest `main` branch instead of releases:
 

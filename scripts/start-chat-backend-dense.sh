@@ -45,6 +45,7 @@ CHAT_FIT="${CHAT_PRIMARY_FIT:-${CHAT_FIT:-on}}"
 CHAT_FIT_TARGET="${CHAT_PRIMARY_FIT_TARGET:-${CHAT_FIT_TARGET:-}}"
 CHAT_FIT_CTX="${CHAT_PRIMARY_FIT_CTX:-${CHAT_FIT_CTX:-}}"
 CHAT_CACHE_IDLE_SLOTS="${CHAT_PRIMARY_CACHE_IDLE_SLOTS:-${CHAT_CACHE_IDLE_SLOTS:-on}}"
+CHAT_METRICS="${CHAT_PRIMARY_METRICS:-${CHAT_METRICS:-on}}"
 CHAT_CACHE_REUSE="${CHAT_PRIMARY_CACHE_REUSE:-${CHAT_CACHE_REUSE:-0}}"
 CHAT_TEMP="${CHAT_PRIMARY_TEMP:-${CHAT_TEMP:-1.0}}"
 CHAT_TOP_P="${CHAT_PRIMARY_TOP_P:-${CHAT_TOP_P:-0.95}}"
@@ -89,6 +90,7 @@ echo "[chat-backend-dense] Placement:        split=${CHAT_SPLIT_MODE} kv-offload
 echo "[chat-backend-dense] CPU threads:      ${CHAT_THREADS:--1} (batch=${CHAT_THREADS_BATCH:--1})"
 echo "[chat-backend-dense] KV cache:         K=${CHAT_CACHE_TYPE_K} V=${CHAT_CACHE_TYPE_V}"
 echo "[chat-backend-dense] Prompt cache:     ram=${CHAT_CACHE_RAM:-8192} MiB ctx-checkpoints=${CHAT_CTX_CHECKPOINTS:-32}"
+echo "[chat-backend-dense] Metrics:          ${CHAT_METRICS:-on}"
 echo "[chat-backend-dense] SWA full cache:   ${CHAT_SWA_FULL:-off}"
 echo "[chat-backend-dense] Reasoning format: ${CHAT_REASONING_FORMAT:-deepseek}"
 echo "[chat-backend-dense] Fit to VRAM:      ${CHAT_FIT:-on}"
@@ -97,6 +99,7 @@ echo "[chat-backend-dense] Chat template:    ${CHAT_TEMPLATE_ID:-model default}"
 
 OPTS=()
 [[ "${CHAT_LOG_PREFIX:-true}" == "true" ]] && OPTS+=(--log-prefix)
+[[ "${CHAT_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${CHAT_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${CHAT_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
 [[ -n "${CHAT_DEVICE:-}" ]] && OPTS+=(--device "${CHAT_DEVICE}")

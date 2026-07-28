@@ -41,6 +41,7 @@ echo "[chat-backend] Chat template:    ${CHAT_TEMPLATE_ID:-model default}"
 
 OPTS=()
 [[ "${CHAT_LOG_PREFIX:-true}" == "true" ]] && OPTS+=(--log-prefix)
+[[ "${CHAT_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${CHAT_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${CHAT_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
 [[ -n "${CHAT_DEVICE:-}" ]] && OPTS+=(--device "${CHAT_DEVICE}")

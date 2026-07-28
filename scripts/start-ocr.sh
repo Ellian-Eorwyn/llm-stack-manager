@@ -53,6 +53,7 @@ echo "[ocr] Fit to VRAM:      ${OCR_FIT:-off}"
 
 OPTS=()
 [[ "${OCR_LOG_PREFIX:-true}" == "true" ]] && OPTS+=(--log-prefix)
+[[ "${OCR_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${OCR_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${OCR_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
 [[ -n "${OCR_DEVICE:-}" ]] && OPTS+=(--device "${OCR_DEVICE}")

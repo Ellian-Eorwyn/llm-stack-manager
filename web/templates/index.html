@@ -239,6 +239,43 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 .active-indicator { font-size: 11px; color: var(--success); font-weight: 600; }
 
 /* -- Service groups -- */
+/* -- Backend telemetry -- */
+.tele-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.tele-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px;
+}
+.tele-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
+.tele-name { font-weight: 600; font-size: 13px; color: var(--text); }
+.tele-unit { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+.tele-model {
+  font-size: 11px; color: var(--dim); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 8px;
+}
+.tele-ctx { font-size: 11px; color: var(--dim); margin-bottom: 8px; }
+.tele-ctx strong { color: var(--text); font-family: var(--mono); font-weight: 600; }
+.tele-slot { margin-bottom: 6px; }
+.tele-slot-label {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 11px; color: var(--dim); font-family: var(--mono); margin-bottom: 3px;
+}
+.tele-slot-busy { color: var(--success); }
+.tele-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-top: 10px; }
+.tele-metric { background: var(--surface2); border-radius: 8px; padding: 6px 8px; }
+.tele-metric-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.tele-metric-value { font-size: 14px; font-weight: 600; font-family: var(--mono); color: var(--text); }
+.tele-metric-sub { font-size: 10px; color: var(--dim); font-family: var(--mono); }
+.tele-metric.is-warn .tele-metric-value { color: var(--warning); }
+.tele-empty { font-size: 11px; color: var(--muted); }
+.tele-alerts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.tele-alert {
+  font-size: 12px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+  border-left-width: 3px;
+}
+.tele-alert.warn { border-left-color: var(--warning); color: var(--text); }
+.tele-alert.info { border-left-color: var(--accent); color: var(--dim); }
+
 .svc-group { margin-bottom: 28px; }
 .group-hdr {
   font-size: 11px; font-weight: 600; text-transform: uppercase;
@@ -987,6 +1024,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       <button class="btn btn-success" id="custom-model-submit-btn" onclick="addModel()">Add Model</button>
       <button class="btn btn-ghost" onclick="toggleAddModel()">Cancel</button>
     </div>
+  </div>
+
+  <!-- Backend telemetry -->
+  <div class="svc-group" id="group-telemetry">
+    <div class="group-hdr">
+      <span>Backend Telemetry</span>
+      <span class="tele-unit" id="telemetry-window"></span>
+    </div>
+    <div class="tele-alerts" id="telemetry-alerts"></div>
+    <div class="tele-grid" id="telemetry-cards"></div>
   </div>
 
   <!-- Built-in service groups -->
@@ -2088,16 +2135,166 @@ function refreshBuiltInModelButtons(updates) {
 function startPolling() {
   poll();
   pollTimer = setInterval(poll, 5000);
+  // A backgrounded tab has nothing to show, so stop paying for the polls.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) poll();
+  });
 }
 
 async function poll() {
+  if (document.hidden) return;
   try {
     const d = await fetchJSON('/api/status');
     applyStatuses(d.services);
     applyGpus(d.gpus);
   } catch {}
+  try { await pollTelemetry(); } catch {}
   try { await pollActiveModel(); } catch {}
   try { await loadTtsOverview(true); } catch {}
+}
+
+// -- backend telemetry --
+const TELEMETRY_WINDOW_SECONDS = 3600;
+
+function teleNumber(value, digits = 1) {
+  return Number.isFinite(value) ? Number(value).toFixed(digits) : '—';
+}
+
+function teleInt(value) {
+  return Number.isFinite(value) ? Number(value).toLocaleString('en-US') : '—';
+}
+
+function teleMetric(label, value, sub, warn) {
+  return `<div class="tele-metric${warn ? ' is-warn' : ''}">
+    <div class="tele-metric-label">${escapeHtml(label)}</div>
+    <div class="tele-metric-value">${escapeHtml(value)}</div>
+    ${sub ? `<div class="tele-metric-sub">${escapeHtml(sub)}</div>` : ''}
+  </div>`;
+}
+
+function telemetrySlotsHtml(slots) {
+  if (!slots?.length) return '<div class="tele-empty">No slot detail available.</div>';
+  return slots.map(s => {
+    const pct = Number.isFinite(s.ctx_pct) ? s.ctx_pct : 0;
+    const state = s.is_processing ? 'busy' : 'idle';
+    return `<div class="tele-slot">
+      <div class="tele-slot-label">
+        <span>slot ${s.id}${s.is_processing ? ' <span class="tele-slot-busy">busy</span>' : ''}</span>
+        <span>${teleInt(s.n_prompt_tokens)} / ${teleInt(s.n_ctx)} (${teleNumber(pct)}%)</span>
+      </div>
+      <div class="bar-wrap" title="slot ${s.id} ${state}">
+        <div class="bar-segment" style="width:${Math.min(100, pct)}%; background-color:${s.is_processing ? 'var(--success)' : 'var(--accent)'};"></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function telemetryCardHtml(backend) {
+  const props = backend.props || {};
+  const stats = backend.stats || {};
+  const tp = stats.throughput || {};
+  const cache = stats.cache || {};
+  const sched = stats.scheduling || {};
+
+  if (!backend.active) {
+    return `<div class="tele-card">
+      <div class="tele-card-head"><span class="tele-name">${escapeHtml(backend.label)}</span>
+      <span class="tele-unit">inactive</span></div>
+      <div class="tele-empty">Backend is not running.</div>
+    </div>`;
+  }
+
+  // llama-server divides --ctx-size across slots, so the per-slot figure is the
+  // one that actually limits a request. Show both to keep that visible.
+  const perSlot = props.n_ctx_per_slot;
+  const ctxLine = Number.isFinite(perSlot)
+    ? `<strong>${teleInt(perSlot)}</strong> tokens per slot × ${props.total_slots || 1}
+       = <strong>${teleInt(props.n_ctx_total)}</strong> total`
+    : 'Context unknown';
+
+  const gen = tp.generation_tps || {};
+  const draft = tp.draft_acceptance || {};
+  const delay = sched.select_to_launch_seconds || {};
+  const evicted = cache.evicted_mib || {};
+  const perLaunch = cache.evictions_per_launch;
+  const methods = sched.select_methods || {};
+  const methodText = Object.keys(methods).length
+    ? Object.entries(methods).map(([k, v]) => `${k}:${v}`).join(' ')
+    : '—';
+
+  const metrics = [
+    teleMetric('Gen tok/s',
+      teleNumber(tp.last_generation_tps ?? gen.p50),
+      `p50 ${teleNumber(gen.p50)} · p90 ${teleNumber(gen.p90)}`),
+    teleMetric('Draft accept',
+      draft.p50 != null ? `${teleNumber(draft.p50 * 100, 0)}%` : '—',
+      `mean len ${teleNumber((tp.draft_mean_len || {}).p50)}`),
+    teleMetric('Evict / launch',
+      perLaunch != null ? teleNumber(perLaunch, 2) : '—',
+      `${teleInt(cache.evictions)} of ${teleInt(cache.launches)}`,
+      perLaunch != null && perLaunch >= 0.25),
+    teleMetric('Evicted p50',
+      evicted.p50 != null ? `${teleNumber(evicted.p50, 0)}M` : '—',
+      `max ${evicted.max != null ? teleNumber(evicted.max, 0) + 'M' : '—'}`),
+    teleMetric('Slot delay p90',
+      delay.p90 != null ? `${teleNumber(delay.p90, 2)}s` : '—',
+      `p99 ${delay.p99 != null ? teleNumber(delay.p99, 2) + 's' : '—'}`,
+      delay.p90 != null && delay.p90 >= 1),
+    teleMetric('Checkpoint p50',
+      (cache.checkpoint_mib || {}).p50 != null ? `${teleNumber(cache.checkpoint_mib.p50, 0)}M` : '—',
+      `${teleInt(cache.checkpoint_erasures)} erased`),
+    teleMetric('Slot select', methodText, 'by id = client-pinned'),
+    teleMetric('Prompt tok/s',
+      teleNumber((tp.prompt_tps || {}).p50),
+      `p90 ${teleNumber((tp.prompt_tps || {}).p90)}`),
+  ].join('');
+
+  return `<div class="tele-card">
+    <div class="tele-card-head">
+      <span class="tele-name">${escapeHtml(backend.label)}</span>
+      <span class="tele-unit">${escapeHtml(backend.unit || '')}${backend.metrics_available ? ' · metrics' : ''}</span>
+    </div>
+    <div class="tele-model" title="${escapeHtml(props.model_path || '')}">
+      ${escapeHtml((props.model_path || '').split('/').pop() || 'unknown model')}
+      ${props.model_ftype ? '· ' + escapeHtml(props.model_ftype) : ''}
+      ${props.build_info ? '· ' + escapeHtml(props.build_info) : ''}
+    </div>
+    <div class="tele-ctx">${ctxLine}</div>
+    ${telemetrySlotsHtml(backend.slots)}
+    <div class="tele-metrics">${metrics}</div>
+  </div>`;
+}
+
+function applyTelemetry(payload) {
+  const cards = document.getElementById('telemetry-cards');
+  const alerts = document.getElementById('telemetry-alerts');
+  const windowLabel = document.getElementById('telemetry-window');
+  if (!cards) return;
+
+  const host = payload.host || {};
+  if (windowLabel) {
+    const minutes = Math.round((payload.window_seconds || 0) / 60);
+    const swap = host.swap_used_pct != null
+      ? ` · RAM ${host.mem_used_pct}% · swap ${host.swap_used_pct}% (${formatG(host.swap_used_mib)})`
+      : '';
+    windowLabel.textContent = `last ${minutes}m${swap}`;
+  }
+
+  if (alerts) {
+    alerts.innerHTML = (payload.warnings || []).map(w =>
+      `<div class="tele-alert ${w.level === 'warn' ? 'warn' : 'info'}">${escapeHtml(w.text)}</div>`
+    ).join('');
+  }
+
+  const active = (payload.backends || []).filter(b => b.active);
+  cards.innerHTML = active.length
+    ? active.map(telemetryCardHtml).join('')
+    : '<div class="tele-empty">No llama.cpp backends are running.</div>';
+}
+
+async function pollTelemetry() {
+  const payload = await fetchJSON(`/api/backend/telemetry?window=${TELEMETRY_WINDOW_SECONDS}`);
+  applyTelemetry(payload);
 }
 
 function applyStatuses(statuses) {

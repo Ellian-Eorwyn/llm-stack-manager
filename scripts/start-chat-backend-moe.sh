@@ -45,6 +45,7 @@ CHAT_FIT="${CHAT_SECONDARY_FIT:-${CHAT_FIT:-on}}"
 CHAT_FIT_TARGET="${CHAT_SECONDARY_FIT_TARGET:-${CHAT_FIT_TARGET:-}}"
 CHAT_FIT_CTX="${CHAT_SECONDARY_FIT_CTX:-${CHAT_FIT_CTX:-}}"
 CHAT_CACHE_IDLE_SLOTS="${CHAT_SECONDARY_CACHE_IDLE_SLOTS:-${CHAT_CACHE_IDLE_SLOTS:-on}}"
+CHAT_METRICS="${CHAT_SECONDARY_METRICS:-${CHAT_METRICS:-on}}"
 CHAT_CACHE_REUSE="${CHAT_SECONDARY_CACHE_REUSE:-${CHAT_CACHE_REUSE:-0}}"
 CHAT_TEMP="${CHAT_SECONDARY_TEMP:-${CHAT_TEMP:-1.0}}"
 CHAT_TOP_P="${CHAT_SECONDARY_TOP_P:-${CHAT_TOP_P:-0.95}}"
@@ -97,6 +98,7 @@ echo "[chat-backend-moe] Chat template:    ${CHAT_TEMPLATE_ID:-model default}"
 
 OPTS=()
 [[ "${CHAT_LOG_PREFIX:-true}" == "true" ]] && OPTS+=(--log-prefix)
+[[ "${CHAT_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${CHAT_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${CHAT_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
 [[ -n "${CHAT_DEVICE:-}" ]] && OPTS+=(--device "${CHAT_DEVICE}")

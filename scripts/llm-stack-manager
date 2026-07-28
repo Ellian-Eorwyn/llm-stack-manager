@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# =============================================================================
+# llm-stack-manager — front door for the installed stack.
+#
+# Installed to /usr/local/bin by install.sh, and resolves the stack directory
+# from its own symlink target, so it works from any working directory.
+#
+# The headline command is `update`, which deliberately does NOT rebuild
+# llama.cpp or restart model backends: those cost a CUDA compile and a multi-GB
+# model reload respectively, and almost no change to this repo needs either.
+# Use `update --full` when a dependency bump really is wanted.
+# =============================================================================
+set -euo pipefail
+
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "${SELF}" ]]; do
+    LINK_TARGET="$(readlink "${SELF}")"
+    if [[ "${LINK_TARGET}" == /* ]]; then
+        SELF="${LINK_TARGET}"
+    else
+        SELF="$(cd "$(dirname "${SELF}")" && pwd)/${LINK_TARGET}"
+    fi
+done
+STACK_DIR="${LLM_STACK_DIR:-$(cd "$(dirname "${SELF}")/.." && pwd)}"
+CONFIG_FILE="${STACK_DIR}/config/llm-stack.env"
+
+MODEL_BACKENDS=(chat-backend-dense chat-backend-moe chat-backend chat-backend2 embed embed2 rerank task ocr)
+SUPPORT_SERVICES=(llm-manager chat-proxy chat-proxy2 glmocr-sdk playwright-server)
+
+usage() {
+    cat <<EOF
+Usage: llm-stack-manager <command> [options]
+
+Commands:
+  update [--full]    Pull the latest code, regenerate systemd units, and restart
+                     the manager and proxies. Model backends keep running with
+                     their warm prompt caches and llama.cpp is not rebuilt.
+                     --full also updates/rebuilds dependencies (recompiles
+                     llama.cpp) and restarts every active service.
+  status             Service states, GPU/host memory, and backend throughput.
+  restart <service>  Restart one service (tab-completable names below).
+  logs <service>     Follow a service's journal.
+  url                Print the manager URL.
+  dir                Print the stack directory.
+
+Services:
+  ${SUPPORT_SERVICES[*]}
+  ${MODEL_BACKENDS[*]}
+
+Stack directory: ${STACK_DIR}
+EOF
+}
+
+need_root() {
+    if [[ "${EUID}" -ne 0 ]]; then
+        echo "This command needs root. Re-run with: sudo llm-stack-manager $*" >&2
+        exit 1
+    fi
+}
+
+manager_port() {
+    local port=""
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        port="$(grep -E '^LLM_MANAGER_PORT=' "${CONFIG_FILE}" | tail -n 1 | cut -d= -f2- | tr -d '"'"'"' ' || true)"
+    fi
+    printf '%s\n' "${port:-8077}"
+}
+
+known_service() {
+    local candidate="$1" svc
+    for svc in "${SUPPORT_SERVICES[@]}" "${MODEL_BACKENDS[@]}"; do
+        [[ "${svc}" == "${candidate}" ]] && return 0
+    done
+    return 1
+}
+
+cmd_update() {
+    local full=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --full) full=1; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) echo "Unknown option for update: $1" >&2; exit 2 ;;
+        esac
+    done
+    need_root update
+    if [[ "${full}" == "1" ]]; then
+        echo "Full update: dependencies will be rebuilt and all active services restarted."
+        exec bash "${STACK_DIR}/update.sh"
+    fi
+    exec bash "${STACK_DIR}/update.sh" --manager-only
+}
+
+cmd_status() {
+    local port; port="$(manager_port)"
+    echo "Stack:   ${STACK_DIR}"
+    echo "Manager: http://localhost:${port}"
+    if command -v git >/dev/null 2>&1 && [[ -d "${STACK_DIR}/.git" ]]; then
+        echo "Version: $(git -C "${STACK_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    fi
+    echo ""
+    printf '%-22s %s\n' "SERVICE" "STATE"
+    local svc state
+    for svc in "${SUPPORT_SERVICES[@]}" "${MODEL_BACKENDS[@]}"; do
+        state="$(systemctl is-active "${svc}" 2>/dev/null || true)"
+        [[ "${state}" == "inactive" || -z "${state}" ]] && continue
+        printf '%-22s %s\n' "${svc}" "${state}"
+    done
+
+    # The telemetry endpoint already assembles GPU, host memory and per-backend
+    # throughput, so reuse it rather than re-deriving any of it here.
+    if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        echo ""
+        curl -fsS -m 20 "http://127.0.0.1:${port}/api/backend/telemetry?window=3600" 2>/dev/null \
+            | python3 "${STACK_DIR}/scripts/stack-status.py" || true
+    fi
+}
+
+cmd_restart() {
+    local svc="${1:-}"
+    if [[ -z "${svc}" ]]; then
+        echo "Usage: llm-stack-manager restart <service>" >&2
+        exit 2
+    fi
+    if ! known_service "${svc}"; then
+        echo "Unknown service: ${svc}" >&2
+        echo "Known services: ${SUPPORT_SERVICES[*]} ${MODEL_BACKENDS[*]}" >&2
+        exit 2
+    fi
+    need_root "restart ${svc}"
+    systemctl restart "${svc}"
+    systemctl is-active "${svc}"
+}
+
+cmd_logs() {
+    local svc="${1:-}"
+    if [[ -z "${svc}" ]] || ! known_service "${svc}"; then
+        echo "Usage: llm-stack-manager logs <service>" >&2
+        echo "Known services: ${SUPPORT_SERVICES[*]} ${MODEL_BACKENDS[*]}" >&2
+        exit 2
+    fi
+    exec journalctl -u "${svc}" -f -n 100 --no-pager --output=short-iso
+}
+
+case "${1:-}" in
+    update)  shift; cmd_update "$@" ;;
+    status)  shift; cmd_status "$@" ;;
+    restart) shift; cmd_restart "$@" ;;
+    logs)    shift; cmd_logs "$@" ;;
+    url)     echo "http://localhost:$(manager_port)" ;;
+    dir)     echo "${STACK_DIR}" ;;
+    ""|-h|--help|help) usage ;;
+    *)
+        echo "Unknown command: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac

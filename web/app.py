@@ -39,6 +39,11 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import setup_engine
 
+# Explicit rather than relying on the script directory, so importing app.py by
+# path (as the tests do) resolves sibling modules the same way systemd does.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import telemetry
+
 class ServiceManager:
     IS_MAC = sys.platform == 'darwin'
 
@@ -318,6 +323,7 @@ CODE_TO_CHAT_MIRRORS = {
 # ---------------------------------------------------------------------------
 LLAMA_SPEC_METHOD_OPTIONS = ["off", "draft-model", "draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"]
 LLAMA_CACHE_IDLE_OPTIONS = ["on", "off"]
+LLAMA_METRICS_OPTIONS = ["on", "off"]
 
 CONFIG_FIELDS = [
     {"section": "Chat Templates", "key": "CHAT_TEMPLATE_MANAGER", "label": "Template Manager", "type": "template_manager", "hint": "Create and edit reusable llama.cpp Jinja chat templates"},
@@ -365,6 +371,7 @@ CONFIG_FIELDS = [
     {"section": "Secondary Backend", "key": "CHAT2_FIT_TARGET",            "label": "Fit Target MiB",          "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
     {"section": "Secondary Backend", "key": "CHAT2_FIT_CTX",               "label": "Minimum Fit Context",     "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
     {"section": "Secondary Backend", "key": "CHAT2_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",        "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
+    {"section": "Secondary Backend", "key": "CHAT2_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "Secondary Backend", "key": "CHAT2_CACHE_REUSE",           "label": "Cache Reuse Chunk",       "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
     {"section": "Secondary Backend", "key": "CHAT2_SPEC_METHOD",           "label": "Speculative Method",      "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
     {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",       "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
@@ -424,6 +431,7 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_FIT_TARGET",            "label": "Fit Target MiB",         "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
     {"section": "Shared Backend", "key": "CHAT_FIT_CTX",               "label": "Minimum Fit Context",    "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
     {"section": "Shared Backend", "key": "CHAT_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",       "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
+    {"section": "Shared Backend", "key": "CHAT_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "Shared Backend", "key": "CHAT_CACHE_REUSE",           "label": "Cache Reuse Chunk",      "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
@@ -484,6 +492,7 @@ CONFIG_FIELDS = [
     {"section": "Task Model",  "key": "TASK_FIT_TARGET",            "label": "Fit Target MiB",       "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
     {"section": "Task Model",  "key": "TASK_FIT_CTX",               "label": "Minimum Fit Context",  "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
     {"section": "Task Model",  "key": "TASK_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",     "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
+    {"section": "Task Model", "key": "TASK_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "Task Model",  "key": "TASK_CACHE_REUSE",           "label": "Cache Reuse Chunk",    "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
     {"section": "Task Model",  "key": "TASK_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",     "type": "custom_args", "hint": "Extra llama.cpp flags applied to the task model launcher"},
     {"section": "Task Model",  "key": "TASK_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
@@ -559,6 +568,7 @@ CONFIG_FIELDS = [
     {"section": "Embedding",   "key": "EMBED_CACHE_TYPE_V",         "label": "KV Cache Value Type",  "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
     {"section": "Embedding",   "key": "EMBED_BATCH_SIZE",           "label": "Batch Size",           "type": "number"},
     {"section": "Embedding",   "key": "EMBED_UBATCH_SIZE",          "label": "Micro-Batch Size",     "type": "number"},
+    {"section": "Embedding", "key": "EMBED_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "Embedding",   "key": "EMBED_NO_MMAP",              "label": "Disable mmap",         "type": "select", "options": ["false", "true"]},
     {"section": "Embedding",   "key": "EMBED_MLOCK",                "label": "Lock Memory",          "type": "select", "options": ["false", "true"]},
     {"section": "Embedding",   "key": "EMBED_GPU_VISIBLE_DEVICES",  "label": "GPU Devices",          "type": "text"},
@@ -584,6 +594,7 @@ CONFIG_FIELDS = [
     {"section": "Embedding 2", "key": "EMBED2_CACHE_TYPE_V",        "label": "KV Cache Value Type",  "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
     {"section": "Embedding 2", "key": "EMBED2_BATCH_SIZE",          "label": "Batch Size",           "type": "number"},
     {"section": "Embedding 2", "key": "EMBED2_UBATCH_SIZE",         "label": "Micro-Batch Size",     "type": "number"},
+    {"section": "Embedding 2", "key": "EMBED2_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "Embedding 2", "key": "EMBED2_NO_MMAP",             "label": "Disable mmap",         "type": "select", "options": ["false", "true"]},
     {"section": "Embedding 2", "key": "EMBED2_MLOCK",               "label": "Lock Memory",          "type": "select", "options": ["false", "true"]},
     {"section": "Embedding 2", "key": "EMBED2_GPU_VISIBLE_DEVICES", "label": "GPU Devices",          "type": "text"},
@@ -609,6 +620,7 @@ CONFIG_FIELDS = [
     {"section": "Reranker",    "key": "RERANK_CACHE_TYPE_V",        "label": "KV Cache Value Type",  "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
     {"section": "Reranker",    "key": "RERANK_BATCH_SIZE",          "label": "Batch Size",           "type": "number"},
     {"section": "Reranker",    "key": "RERANK_UBATCH_SIZE",         "label": "Micro-Batch Size",     "type": "number"},
+    {"section": "Reranker", "key": "RERANK_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "Reranker",    "key": "RERANK_NO_MMAP",             "label": "Disable mmap",         "type": "select", "options": ["false", "true"]},
     {"section": "Reranker",    "key": "RERANK_MLOCK",               "label": "Lock Memory",          "type": "select", "options": ["false", "true"]},
     {"section": "Reranker",    "key": "RERANK_GPU_VISIBLE_DEVICES", "label": "GPU Devices",          "type": "text"},
@@ -639,6 +651,7 @@ CONFIG_FIELDS = [
     {"section": "OCR",        "key": "OCR_MMPROJ_OFFLOAD",       "label": "MMProj Offload",       "type": "select", "options": ["on", "off"]},
     {"section": "OCR",        "key": "OCR_BATCH_SIZE",           "label": "Batch Size",           "type": "number"},
     {"section": "OCR",        "key": "OCR_UBATCH_SIZE",          "label": "Micro-Batch Size",     "type": "number"},
+    {"section": "OCR", "key": "OCR_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "OCR",        "key": "OCR_FLASH_ATTN",           "label": "Flash Attention",      "type": "select", "options": ["on", "off", "auto"]},
     {"section": "OCR",        "key": "OCR_CACHE_TYPE_K",         "label": "KV Cache Key Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
     {"section": "OCR",        "key": "OCR_CACHE_TYPE_V",         "label": "KV Cache Value Type",  "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
@@ -927,6 +940,7 @@ RESTART_HINTS = {
     "CHAT_CACHE_TYPE_V":         ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_BATCH_SIZE":           ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_UBATCH_SIZE":          ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
+    "CHAT_METRICS":              ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_NO_MMAP":              ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_MLOCK":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_GPU_VISIBLE_DEVICES":  ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
@@ -1031,6 +1045,7 @@ RESTART_HINTS = {
     "TASK_MMPROJ_OFFLOAD":       ["task"],
     "TASK_BATCH_SIZE":           ["task"],
     "TASK_UBATCH_SIZE":          ["task"],
+    "TASK_METRICS":              ["task"],
     "TASK_NO_MMAP":              ["task"],
     "TASK_MLOCK":                ["task"],
     "TASK_GPU_VISIBLE_DEVICES":  ["task"],
@@ -1078,6 +1093,7 @@ RESTART_HINTS = {
     "EMBED_CACHE_TYPE_V":        ["embed"],
     "EMBED_BATCH_SIZE":          ["embed"],
     "EMBED_UBATCH_SIZE":         ["embed"],
+    "EMBED_METRICS":             ["embed"],
     "EMBED_NO_MMAP":             ["embed"],
     "EMBED_MLOCK":               ["embed"],
     "EMBED_GPU_VISIBLE_DEVICES": ["embed"],
@@ -1102,6 +1118,7 @@ RESTART_HINTS = {
     "EMBED2_CACHE_TYPE_V":       ["embed2"],
     "EMBED2_BATCH_SIZE":         ["embed2"],
     "EMBED2_UBATCH_SIZE":        ["embed2"],
+    "EMBED2_METRICS":            ["embed2"],
     "EMBED2_NO_MMAP":            ["embed2"],
     "EMBED2_MLOCK":              ["embed2"],
     "EMBED2_GPU_VISIBLE_DEVICES":["embed2"],
@@ -1126,6 +1143,7 @@ RESTART_HINTS = {
     "RERANK_CACHE_TYPE_V":       ["rerank"],
     "RERANK_BATCH_SIZE":         ["rerank"],
     "RERANK_UBATCH_SIZE":        ["rerank"],
+    "RERANK_METRICS":            ["rerank"],
     "RERANK_NO_MMAP":            ["rerank"],
     "RERANK_MLOCK":              ["rerank"],
     "RERANK_GPU_VISIBLE_DEVICES":["rerank"],
@@ -3572,6 +3590,26 @@ def index():
 def api_status():
     statuses = {s['name']: get_service_status(s['name']) for s in patch_service_labels()}
     return jsonify(services=statuses, gpus=get_gpu_info())
+
+
+@app.route('/api/backend/telemetry')
+def api_backend_telemetry():
+    """Runtime detail for every active llama.cpp backend.
+
+    Combines /props, /slots and /metrics with parsed journal history, so the UI
+    can show throughput, prompt-cache behaviour and slot scheduling rather than
+    just "active". Widening `window` re-seeds the journal backfill, which makes
+    this endpoint usable for before/after comparisons of backend settings.
+    """
+    window = telemetry.clamp_window(
+        request.args.get('window'), telemetry.DEFAULT_WINDOW_SECONDS)
+    return jsonify(telemetry.collect(
+        read_env(),
+        get_service_status,
+        get_gpu_info(),
+        read_meminfo(),
+        window_seconds=window,
+    ))
 
 
 @app.route('/api/setup/preflight')

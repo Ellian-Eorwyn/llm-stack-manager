@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -562,6 +563,94 @@ class SavedConfigTests(unittest.TestCase):
         self.assertEqual(data["CHAT_TEMP"], "0.6")
         self.assertEqual(data["CHAT_TOP_K"], "20")
         self.assertEqual(data["_name"], "Default")
+
+
+class MetricsFlagTests(unittest.TestCase):
+    """`--metrics` is what promotes the telemetry panel from journal-derived
+    stats to backend counters, so every llama.cpp backend must expose it."""
+
+    def test_every_llamacpp_backend_exposes_a_metrics_toggle(self):
+        sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
+        for key, section in [
+            ("CHAT_PRIMARY_METRICS", "Primary Backend"),
+            ("CHAT2_METRICS", "Secondary Backend"),
+            ("EMBED_METRICS", "Embedding"),
+            ("EMBED2_METRICS", "Embedding 2"),
+            ("RERANK_METRICS", "Reranker"),
+            ("TASK_METRICS", "Task Model"),
+            ("OCR_METRICS", "OCR"),
+        ]:
+            self.assertEqual(sections.get(key), section, key)
+
+    def test_metrics_changes_restart_only_their_own_backend(self):
+        self.assertEqual(manager.RESTART_HINTS["CHAT_PRIMARY_METRICS"], ["chat-backend-dense"])
+        self.assertEqual(manager.RESTART_HINTS["CHAT2_METRICS"], ["chat-backend2"])
+        self.assertEqual(manager.RESTART_HINTS["EMBED_METRICS"], ["embed"])
+        self.assertEqual(manager.RESTART_HINTS["TASK_METRICS"], ["task"])
+
+    def test_launchers_gate_the_flag_on_the_env_key(self):
+        root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+        for script, prefix in [
+            ("start-chat-backend.sh", "CHAT"),
+            ("start-chat-backend2.sh", "CHAT2"),
+            ("start-chat-backend-moe.sh", "CHAT"),
+            ("start-chat-backend-dense.sh", "CHAT"),
+            ("start-embed.sh", "EMBED"),
+            ("start-embed2.sh", "EMBED2"),
+            ("start-rerank.sh", "RERANK"),
+            ("start-task.sh", "TASK"),
+            ("start-ocr.sh", "OCR"),
+        ]:
+            text = (root / script).read_text()
+            self.assertIn(f'"${{{prefix}_METRICS:-on}}" == "on" ]] && OPTS+=(--metrics)', text, script)
+
+    def test_metrics_toggle_is_a_recognised_config_key(self):
+        filtered = manager.filter_config_updates({"CHAT_PRIMARY_METRICS": "off"}, env={})
+        self.assertEqual(filtered, {"CHAT_PRIMARY_METRICS": "off"})
+
+
+class UpdateCliTests(unittest.TestCase):
+    """The fast update path must not rebuild llama.cpp or reload models."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        cls.cli = (root / "scripts" / "llm-stack-manager").read_text()
+        cls.update = (root / "update.sh").read_text()
+        cls.install = (root / "install.sh").read_text()
+
+    def test_cli_is_executable(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        self.assertTrue((root / "scripts" / "llm-stack-manager").stat().st_mode & 0o111)
+
+    def test_plain_update_takes_the_manager_only_path(self):
+        self.assertIn('exec bash "${STACK_DIR}/update.sh" --manager-only', self.cli)
+
+    def test_full_update_is_opt_in(self):
+        self.assertIn("--full", self.cli)
+        self.assertIn('exec bash "${STACK_DIR}/update.sh"\n', self.cli)
+
+    def test_manager_only_skips_dependency_builds(self):
+        # --skip-deps is what avoids install-dependencies.py, i.e. the cmake rebuild.
+        self.assertRegex(self.update, r"--manager-only\)\s*\n\s*MANAGER_ONLY=1\s*\n\s*SKIP_DEPS=1")
+
+    def test_manager_only_restarts_no_model_backend(self):
+        cheap = re.search(r"CHEAP_RESTART_SERVICES=\(([^)]*)\)", self.update)
+        self.assertIsNotNone(cheap)
+        services = cheap.group(1).split()
+        for backend in ("chat-backend-dense", "chat-backend-moe", "chat-backend",
+                        "chat-backend2", "embed", "rerank", "task", "ocr"):
+            self.assertNotIn(backend, services)
+        self.assertIn("llm-manager", services)
+        self.assertIn("chat-proxy", services)
+
+    def test_stale_backend_launchers_are_reported(self):
+        self.assertIn("changed_backend_files", self.update)
+        self.assertIn("still running the previous code", self.update)
+
+    def test_install_links_the_cli_onto_path(self):
+        self.assertIn('ln -sfn "${STACK_DIR}/scripts/llm-stack-manager" /usr/local/bin/llm-stack-manager',
+                      self.install)
 
 
 if __name__ == "__main__":

@@ -573,6 +573,11 @@ if [[ "${HONCHO_ENABLED:-off}" == "on" && "${HONCHO_CONFIGURE_HERMES:-on}" == "o
     SERVICE_USER="${SERVICE_USER}" SERVICE_GROUP="${SERVICE_GROUP}" bash "${STACK_DIR}/scripts/configure-hermes-honcho.sh" || true
 fi
 
+if [[ "${EUID}" -eq 0 && -d /usr/local/bin ]]; then
+    ln -sfn "${STACK_DIR}/scripts/llm-stack-manager" /usr/local/bin/llm-stack-manager
+    echo "Installed CLI: /usr/local/bin/llm-stack-manager"
+fi
+
 echo "Install complete. The active stack will automatically be restored on reboot."
 echo "You can manually restore your saved settings at any time with:"
 echo "  sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
@@ -580,6 +585,8 @@ echo ""
 echo "Or access the web UI at http://localhost:5001"
 echo ""
 echo "Useful Commands:"
+echo "  - Update (fast, no llama.cpp rebuild): sudo llm-stack-manager update"
+echo "  - Stack overview: llm-stack-manager status"
 echo "  - Restart manager: sudo systemctl restart llm-manager"
 echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 

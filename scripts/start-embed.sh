@@ -30,6 +30,7 @@ echo "[embed] Fit to VRAM:      ${EMBED_FIT:-on}"
 # Build optional boolean flags from config
 OPTS=()
 [[ "${EMBED_LOG_PREFIX:-true}" == "true" ]] && OPTS+=(--log-prefix)
+[[ "${EMBED_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${EMBED_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${EMBED_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
 [[ "${EMBED_JINJA:-off}" == "on" ]] && OPTS+=(--jinja)

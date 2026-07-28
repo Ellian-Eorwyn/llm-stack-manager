@@ -42,6 +42,7 @@ echo "[task] Chat template:    ${TASK_CHAT_TEMPLATE_ID:-model default}"
 # Build optional boolean flags from config
 OPTS=()
 [[ "${TASK_LOG_PREFIX:-true}" == "true" ]] && OPTS+=(--log-prefix)
+[[ "${TASK_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${TASK_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${TASK_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
 [[ -n "${TASK_DEVICE:-}" ]] && OPTS+=(--device "${TASK_DEVICE}")
