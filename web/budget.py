@@ -210,31 +210,74 @@ def model_geometry(metadata: dict) -> dict:
     layers = max(0, block_count - nextn)
 
     head_count = int(_first(metadata, arch, "attention.head_count", default=0) or 0)
-    head_count_kv = _first(metadata, arch, "attention.head_count_kv", default=head_count)
-    # Some architectures publish this per layer; the maximum is the safe budget.
-    if isinstance(head_count_kv, list):
-        head_count_kv = max(head_count_kv) if head_count_kv else head_count
-    elif isinstance(head_count_kv, dict):
-        head_count_kv = head_count
-    head_count_kv = int(head_count_kv or head_count or 0)
+    raw_head_count_kv = _first(metadata, arch, "attention.head_count_kv", default=head_count)
 
     embedding_length = int(_first(metadata, arch, "embedding_length", default=0) or 0)
     default_head_dim = embedding_length // head_count if head_count else 0
     key_length = int(_first(metadata, arch, "attention.key_length", default=default_head_dim) or 0)
     value_length = int(_first(metadata, arch, "attention.value_length", default=default_head_dim) or 0)
 
-    # Which layers actually hold a KV cache.
+    # Which layers actually hold a KV cache, and which of those grow with
+    # context. Three different architectures answer this three different ways:
+    #
+    #   * recurrent_layer_arr / full_attention_interval - hybrid attention
+    #     (Qwen3.6). Recurrent layers hold a fixed state, not a KV cache.
+    #   * attention.sliding_window_pattern - interleaved local/global attention
+    #     (Gemma). The sliding-window layers hold only their window, so they do
+    #     not grow with context at all; only the global layers do.
+    #   * neither - every layer is a full-attention layer.
+    #
+    # Missing the third case is expensive in the direction that matters. Pricing
+    # Gemma4-31B's 50 sliding-window layers at the full 255998 tokens predicted
+    # 254,998 MiB of KV against roughly 11,050 MiB it actually holds.
     recurrent_flags = _first(metadata, arch, "recurrent_layer_arr")
     interval = int(_first(metadata, arch, "full_attention_interval", default=0) or 0)
+    swa_pattern = _first(metadata, arch, "attention.sliding_window_pattern")
+    swa_layers = 0
     if isinstance(recurrent_flags, list) and recurrent_flags:
         full_attention_layers = sum(1 for flag in recurrent_flags if not flag)
         recurrent_layers = len(recurrent_flags) - full_attention_layers
     elif interval > 1:
         full_attention_layers = layers // interval
         recurrent_layers = layers - full_attention_layers
+    elif isinstance(swa_pattern, list) and swa_pattern:
+        # True marks a sliding-window layer, False a global one.
+        swa_layers = sum(1 for flag in swa_pattern if flag)
+        full_attention_layers = len(swa_pattern) - swa_layers
+        recurrent_layers = 0
     else:
         full_attention_layers = layers
         recurrent_layers = 0
+
+    # Head counts can be published per layer, and on an interleaved model the
+    # two layer classes differ: Gemma4-31B gives its sliding-window layers 16 KV
+    # heads and its global layers 4. Collapsing that to the maximum charges
+    # every context-scaling layer four times what it costs.
+    def _heads_for(indices) -> int:
+        if not isinstance(raw_head_count_kv, list) or not raw_head_count_kv:
+            return 0
+        picked = [raw_head_count_kv[i] for i in indices if i < len(raw_head_count_kv)]
+        return int(max(picked)) if picked else 0
+
+    if isinstance(raw_head_count_kv, list) and raw_head_count_kv:
+        head_count_kv = int(max(raw_head_count_kv))
+        if isinstance(swa_pattern, list) and swa_pattern:
+            head_count_kv_full = _heads_for(
+                [i for i, flag in enumerate(swa_pattern) if not flag]) or head_count_kv
+            head_count_kv_swa = _heads_for(
+                [i for i, flag in enumerate(swa_pattern) if flag]) or head_count_kv
+        else:
+            head_count_kv_full = head_count_kv_swa = head_count_kv
+    else:
+        if isinstance(raw_head_count_kv, dict):
+            raw_head_count_kv = head_count
+        head_count_kv = int(raw_head_count_kv or head_count or 0)
+        head_count_kv_full = head_count_kv_swa = head_count_kv
+
+    # Sliding-window layers may also use narrower keys and values than the
+    # global ones (Gemma4: 256 against 512).
+    key_length_swa = int(_first(metadata, arch, "attention.key_length_swa", default=key_length) or 0)
+    value_length_swa = int(_first(metadata, arch, "attention.value_length_swa", default=value_length) or 0)
 
     d_inner = int(_first(metadata, arch, "ssm.inner_size", default=0) or 0)
     d_state = int(_first(metadata, arch, "ssm.state_size", default=0) or 0)
@@ -257,11 +300,16 @@ def model_geometry(metadata: dict) -> dict:
         "layers": layers,
         "full_attention_layers": full_attention_layers,
         "recurrent_layers": recurrent_layers,
+        "swa_layers": swa_layers,
         "full_attention_interval": interval,
         "head_count": head_count,
         "head_count_kv": head_count_kv,
+        "head_count_kv_full": head_count_kv_full,
+        "head_count_kv_swa": head_count_kv_swa,
         "key_length": key_length,
         "value_length": value_length,
+        "key_length_swa": key_length_swa,
+        "value_length_swa": value_length_swa,
         "embedding_length": embedding_length,
         "train_context_length": int(_first(metadata, arch, "context_length", default=0) or 0),
         "ssm": {"d_inner": d_inner, "d_state": d_state, "d_conv": d_conv, "n_group": n_group},
@@ -278,14 +326,46 @@ def model_geometry(metadata: dict) -> dict:
 # memory terms
 # --------------------------------------------------------------------------
 
+def _element_bytes(type_k: str, type_v: str) -> tuple[float, float]:
+    return (KV_TYPE_BYTES.get(str(type_k).lower(), KV_TYPE_BYTES["f16"]),
+            KV_TYPE_BYTES.get(str(type_v).lower(), KV_TYPE_BYTES["f16"]))
+
+
 def kv_bytes_per_token(geometry: dict, type_k: str = "q8_0", type_v: str = "q8_0") -> float:
-    """KV cache bytes for one token across every full-attention layer."""
-    bytes_k = KV_TYPE_BYTES.get(str(type_k).lower(), KV_TYPE_BYTES["f16"])
-    bytes_v = KV_TYPE_BYTES.get(str(type_v).lower(), KV_TYPE_BYTES["f16"])
-    per_layer = geometry["head_count_kv"] * (
+    """KV cache bytes for one token across the layers that grow with context.
+
+    Sliding-window layers are excluded on purpose: they hold their window and
+    nothing more, however long the context is, so they are a fixed cost rather
+    than a per-token one. See `swa_kv_bytes`.
+    """
+    bytes_k, bytes_v = _element_bytes(type_k, type_v)
+    per_layer = geometry.get("head_count_kv_full", geometry["head_count_kv"]) * (
         geometry["key_length"] * bytes_k + geometry["value_length"] * bytes_v
     )
     return per_layer * geometry["full_attention_layers"]
+
+
+def swa_kv_bytes(geometry: dict, ctx_size: int, type_k: str = "q8_0",
+                 type_v: str = "q8_0", swa_full: bool = False) -> float:
+    """KV bytes held by sliding-window layers.
+
+    These layers only ever need their window, so on a model like Gemma4 — 50 of
+    60 layers sliding over 1024 tokens — they cost a few hundred MiB at any
+    context. `--swa-full` is the exception: it keeps the full context for them
+    too, which is a real and very large memory decision on such a model rather
+    than the inert flag it is on a model with no sliding-window attention.
+    """
+    layers = geometry.get("swa_layers") or 0
+    if not layers:
+        return 0.0
+    bytes_k, bytes_v = _element_bytes(type_k, type_v)
+    per_layer_token = geometry.get("head_count_kv_swa", geometry["head_count_kv"]) * (
+        geometry.get("key_length_swa", geometry["key_length"]) * bytes_k
+        + geometry.get("value_length_swa", geometry["value_length"]) * bytes_v
+    )
+    window = geometry.get("sliding_window") or 0
+    held = ctx_size if (swa_full or not window) else min(ctx_size, window)
+    return per_layer_token * layers * held
 
 
 def recurrent_state_bytes(geometry: dict) -> float:
@@ -308,19 +388,39 @@ def recurrent_state_bytes(geometry: dict) -> float:
 def checkpoint_bytes(geometry: dict, ctx_size: int, type_k: str, type_v: str) -> tuple[float, float]:
     """(fixed, per_token) bytes for one context checkpoint.
 
-    A checkpoint snapshots recurrent state in full, plus one full-attention
-    layer's worth of KV per token. On a pure-attention model the fixed term
-    vanishes and the whole cache is the per-token term, which is why the same
-    `--ctx-checkpoints` value behaves so differently across models.
+    A checkpoint saves only the part of the memory that cannot be rolled back
+    and recomputed. llama.cpp writes it with LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY,
+    and both `llama_kv_cache_iswa::state_write` and
+    `llama_memory_hybrid::state_write` skip the base attention cache under that
+    flag, writing only the sliding-window or recurrent state respectively. The
+    full-attention KV is never in a checkpoint: it can always be rebuilt by
+    reprocessing the prompt, which is the whole reason it is not saved.
 
-    Both terms are validated against `erasing old context checkpoint` journal
-    lines on this box: 149.6 MiB fixed and ~0.002 MiB/token observed, against
-    149.62 and 0.00208 predicted.
+    So the fixed term is the state that cannot be rebuilt:
+
+      * hybrid attention - the recurrent state. Measured: `erasing old context
+        checkpoint` journal lines on this box report 150.0 MiB against 149.62
+        predicted, with ~0.002 MiB/token against 0.00208.
+      * sliding-window attention - the window. On Gemma4-31B that is 50 layers
+        over a 1024-token window, about 425 MiB, regardless of context. Derived
+        from the source rather than observed: that backend is used rarely
+        enough that it has produced no checkpoint lines to check against, so
+        this term is the one to re-examine first if a prediction looks wrong.
+      * neither - llama.cpp does not create checkpoints at all for a plain
+        full-attention model (see the `n_swa > 0` guard on `do_checkpoint`), so
+        the cost is zero rather than the whole KV cache.
+
+    Charging the full-attention KV here is what predicted 254,998 MiB per
+    checkpoint for a backend whose checkpoints are a few hundred MiB.
     """
     fixed = recurrent_state_bytes(geometry)
-    per_token = kv_bytes_per_token(geometry, type_k, type_v)
+    per_token = 0.0
     if geometry["is_hybrid"]:
-        per_token /= max(1, geometry["full_attention_layers"])
+        # The small residual the journal shows alongside the recurrent state.
+        per_token = kv_bytes_per_token(geometry, type_k, type_v) / max(
+            1, geometry["full_attention_layers"])
+    if geometry.get("swa_layers"):
+        fixed += swa_kv_bytes(geometry, ctx_size, type_k, type_v, swa_full=False)
     return fixed, per_token
 
 
@@ -389,7 +489,13 @@ def predict(geometry: dict, settings: dict) -> dict:
 
     per_slot_ctx = ctx_size // parallel if parallel else ctx_size
 
+    swa_full = str(settings.get("swa_full") or "off").lower() == "on"
     kv_mib = kv_bytes_per_token(geometry, type_k, type_v) * ctx_size / MIB
+    # Sliding-window layers are held per sequence, so they scale with slots
+    # rather than with context.
+    swa_mib = swa_kv_bytes(geometry, ctx_size // parallel if parallel else ctx_size,
+                           type_k, type_v, swa_full) * parallel / MIB
+    kv_mib += swa_mib
     recurrent_mib = recurrent_state_bytes(geometry) * parallel / MIB
 
     # Multi-token-prediction reuses the main model's weights but keeps its own
@@ -439,6 +545,7 @@ def predict(geometry: dict, settings: dict) -> dict:
             "weights_mib": round(weights_mib),
             "projector_mib": round(projector_mib),
             "kv_mib": round(kv_mib),
+            "swa_kv_mib": round(swa_mib),
             "recurrent_mib": round(recurrent_mib),
             "draft_mib": round(draft_mib),
             "compute_mib": round(compute_mib),
@@ -528,11 +635,27 @@ def evaluate(geometry: dict, settings: dict, prediction: dict,
         })
 
     # Dead and contradictory flags.
-    if str(settings.get("swa_full") or "off").lower() == "on" and not geometry["supports_swa"]:
+    swa_full_on = str(settings.get("swa_full") or "off").lower() == "on"
+    if swa_full_on and not geometry["supports_swa"]:
         issues.append({
             "level": "warn", "code": "swa_full_unsupported",
             "text": "Full SWA KV cache is enabled, but this model has no sliding-window attention. "
                     "llama-server logs 'swa_full is not supported by this model' and ignores it.",
+        })
+    elif swa_full_on and geometry.get("swa_layers"):
+        # On a model that does have sliding-window attention this flag is the
+        # opposite of inert: it stops the window layers being windows.
+        windowed = swa_kv_bytes(geometry, prediction["per_slot_context"],
+                                settings.get("cache_type_k") or "f16",
+                                settings.get("cache_type_v") or "f16",
+                                swa_full=False) * prediction["slots"] / MIB
+        issues.append({
+            "level": "warn", "code": "swa_full_expensive",
+            "text": f"Full SWA KV cache is enabled, so this model's {geometry['swa_layers']} "
+                    f"sliding-window layers hold the whole context instead of their "
+                    f"{geometry['sliding_window']:,}-token window: "
+                    f"{prediction['vram']['swa_kv_mib']:,} MiB rather than {round(windowed):,} MiB. "
+                    "Turn it off unless something needs context reuse across those layers.",
         })
 
     fit_ctx = str(settings.get("fit_ctx") or "").strip()
@@ -773,7 +896,10 @@ def recommend(geometry: dict, gpus: list[dict], host: dict, slots: int = 2,
         # llama-server disables --cache-reuse outright for multimodal backends,
         # so recommending a chunk size there recommends a dead flag.
         "cache_reuse": 0 if carried.get("projector_mib") else 256,
-        "swa_full": "on" if geometry["supports_swa"] else "off",
+        # Off on every model, and for two different reasons: inert where there
+        # is no sliding-window attention, and very expensive where there is —
+        # it is what makes the window layers stop being windows.
+        "swa_full": "off",
         # Auto-fit exists to shrink the context at launch, which is the one
         # thing a cache-aware slot layout cannot tolerate. Off means --fit-ctx
         # has nothing to act on, so it is cleared with it.

@@ -41,6 +41,30 @@ QWEN36_27B = {
     "qwen35.ssm.group_count": 16,
 }
 
+# Interleaved local/global attention, taken from the Gemma4-31B this box runs.
+# Five sliding-window layers to every global one, and the two classes differ in
+# both head count and head dimension: the window layers are wide (16 heads x
+# 256) but only ever hold 1024 tokens, while the layers that actually grow with
+# context are narrow (4 heads x 512). Pricing all 60 layers as wide global ones
+# predicted 254,998 MiB of KV against roughly 11,050 MiB it holds.
+_GEMMA_PATTERN = [(index % 6) != 5 for index in range(60)]
+GEMMA4_31B = {
+    "general.architecture": "gemma4",
+    "general.name": "Gemma4-31B",
+    "general.file_type": 15,
+    "gemma4.block_count": 60,
+    "gemma4.context_length": 262144,
+    "gemma4.embedding_length": 5376,
+    "gemma4.attention.head_count": 32,
+    "gemma4.attention.head_count_kv": [16 if swa else 4 for swa in _GEMMA_PATTERN],
+    "gemma4.attention.key_length": 512,
+    "gemma4.attention.value_length": 512,
+    "gemma4.attention.key_length_swa": 256,
+    "gemma4.attention.value_length_swa": 256,
+    "gemma4.attention.sliding_window": 1024,
+    "gemma4.attention.sliding_window_pattern": _GEMMA_PATTERN,
+}
+
 # A conventional dense model: no SSM keys, no attention interval, so every
 # layer holds KV and checkpoints carry no fixed cost.
 DENSE_8B = {
@@ -61,7 +85,7 @@ DENSE_8B = {
 # a GGUF file, so the reader is tested against bytes rather than a mock
 # --------------------------------------------------------------------------
 
-_TYPE_STRING, _TYPE_ARRAY, _TYPE_UINT32 = 8, 9, 4
+_TYPE_STRING, _TYPE_ARRAY, _TYPE_UINT32, _TYPE_BOOL = 8, 9, 4, 7
 
 
 def _encode_string(text: str) -> bytes:
@@ -73,9 +97,19 @@ def _encode_value(value) -> bytes:
     if isinstance(value, str):
         return struct.pack("<I", _TYPE_STRING) + _encode_string(value)
     if isinstance(value, list):
-        # A string array, as the tokenizer's token list is.
-        body = b"".join(_encode_string(item) for item in value)
-        return struct.pack("<I", _TYPE_ARRAY) + struct.pack("<I", _TYPE_STRING) \
+        # Per-layer metadata arrives as bool or int arrays (Gemma's sliding
+        # window pattern and per-layer KV head counts); the tokenizer's token
+        # list arrives as a string array.
+        if value and isinstance(value[0], bool):
+            body = b"".join(struct.pack("<?", bool(item)) for item in value)
+            item_type = _TYPE_BOOL
+        elif value and isinstance(value[0], int):
+            body = b"".join(struct.pack("<I", int(item)) for item in value)
+            item_type = _TYPE_UINT32
+        else:
+            body = b"".join(_encode_string(item) for item in value)
+            item_type = _TYPE_STRING
+        return struct.pack("<I", _TYPE_ARRAY) + struct.pack("<I", item_type) \
             + struct.pack("<Q", len(value)) + body
     return struct.pack("<I", _TYPE_UINT32) + struct.pack("<I", int(value))
 
@@ -223,10 +257,104 @@ class MemoryTermsTest(unittest.TestCase):
         self.assertAlmostEqual(fixed / budget.MIB, 149.6, delta=0.1)
         self.assertAlmostEqual(per_token / budget.MIB, 0.002, delta=0.0005)
 
-    def test_dense_checkpoints_have_no_fixed_cost(self):
+    def test_sliding_window_checkpoints_hold_the_window_not_the_context(self):
+        """PARTIAL_ONLY saves kv_swa and skips the base cache, so a checkpoint
+        is the window however long the context is."""
+        gemma = budget.model_geometry(GEMMA4_31B)
+        short, _ = budget.checkpoint_bytes(gemma, 8192, "q8_0", "q8_0")
+        long, per_token = budget.checkpoint_bytes(gemma, 255998, "q8_0", "q8_0")
+        self.assertEqual(short, long)
+        self.assertEqual(per_token, 0.0)
+        self.assertAlmostEqual(long / budget.MIB, 425.0, delta=1.0)
+
+    def test_a_plain_attention_model_checkpoints_nothing(self):
+        """A checkpoint saves only state that cannot be rebuilt by reprocessing
+        the prompt. A full-attention model has none, and llama.cpp does not
+        create checkpoints for one — see the `n_swa > 0` guard on
+        `do_checkpoint` in server-context.cpp."""
         fixed, per_token = budget.checkpoint_bytes(self.dense, 8192, "q8_0", "q8_0")
         self.assertEqual(fixed, 0.0)
-        self.assertGreater(per_token, 0.0)
+        self.assertEqual(per_token, 0.0)
+
+
+class InterleavedAttentionTest(unittest.TestCase):
+    """Gemma-style local/global attention, the geometry that made the model
+    predict 284 GiB for a backend that runs in 37 GiB."""
+
+    def setUp(self):
+        self.gemma = budget.model_geometry(GEMMA4_31B)
+
+    def test_layers_are_split_into_window_and_global(self):
+        self.assertEqual(self.gemma["swa_layers"], 50)
+        self.assertEqual(self.gemma["full_attention_layers"], 10)
+        self.assertEqual(self.gemma["recurrent_layers"], 0)
+        self.assertTrue(self.gemma["supports_swa"])
+
+    def test_per_layer_head_counts_are_not_collapsed_to_the_maximum(self):
+        """Taking the max charged the context-scaling layers 16 heads when they
+        have 4 — four times the cost, on exactly the term that grows."""
+        self.assertEqual(self.gemma["head_count_kv_swa"], 16)
+        self.assertEqual(self.gemma["head_count_kv_full"], 4)
+
+    def test_window_layers_use_their_own_head_dimension(self):
+        self.assertEqual(self.gemma["key_length"], 512)
+        self.assertEqual(self.gemma["key_length_swa"], 256)
+
+    def test_only_global_layers_scale_with_context(self):
+        per_token = budget.kv_bytes_per_token(self.gemma, "q8_0", "q8_0")
+        expected = 4 * (512 + 512) * (34 / 32) * 10
+        self.assertAlmostEqual(per_token, expected, delta=1.0)
+
+    def test_window_layers_cost_the_window_whatever_the_context(self):
+        short = budget.swa_kv_bytes(self.gemma, 8192, "q8_0", "q8_0")
+        long = budget.swa_kv_bytes(self.gemma, 255998, "q8_0", "q8_0")
+        self.assertEqual(short, long)
+        self.assertAlmostEqual(long / budget.MIB, 425.0, delta=1.0)
+
+    def test_swa_full_makes_the_window_layers_hold_everything(self):
+        windowed = budget.swa_kv_bytes(self.gemma, 255998, "q8_0", "q8_0")
+        full = budget.swa_kv_bytes(self.gemma, 255998, "q8_0", "q8_0", swa_full=True)
+        self.assertGreater(full, windowed * 200)
+
+    def test_the_prediction_matches_the_running_backend(self):
+        """Live on this box: 18,978 + 18,258 MiB across two GPUs for
+        Gemma4-31B-Q4_K_M at --ctx-size 255998 --parallel 1, with a 1145 MiB
+        projector. The model predicted 284,145 MiB before this was fixed."""
+        prediction = budget.predict(dict(self.gemma, file_size_mib=17821), {
+            "ctx_size": 255998, "parallel": 1, "devices": 2, "ubatch": 512,
+            "cache_type_k": "q8_0", "cache_type_v": "q8_0",
+            "tensor_split": "1,1", "weights_mib": 17821, "projector_mib": 1145,
+        })
+        self.assertAlmostEqual(prediction["vram"]["kv_mib"], 11050, delta=200)
+        self.assertLess(abs(prediction["vram"]["total_mib"] - 37236), 2000)
+
+    def test_it_fits_the_hardware_it_actually_runs_on(self):
+        prediction = budget.predict(dict(self.gemma, file_size_mib=17821), {
+            "ctx_size": 255998, "parallel": 1, "devices": 2,
+            "cache_type_k": "q8_0", "cache_type_v": "q8_0",
+            "tensor_split": "1,1", "weights_mib": 17821, "projector_mib": 1145,
+        })
+        gpus = [{"index": 0, "mem_total": 24576}, {"index": 1, "mem_total": 24576}]
+        verdict = budget.evaluate(self.gemma, {}, prediction, gpus, {"mem_available_mib": 25864})
+        self.assertNotIn("vram_overcommit", {issue["code"] for issue in verdict["issues"]})
+
+    def test_swa_full_is_reported_as_expensive_rather_than_inert(self):
+        settings = {"swa_full": "on", "cache_type_k": "q8_0", "cache_type_v": "q8_0"}
+        prediction = budget.predict(dict(self.gemma, file_size_mib=17821),
+                                    dict(settings, ctx_size=255998, parallel=1, devices=2))
+        verdict = budget.evaluate(self.gemma, settings, prediction, [], {})
+        codes = {issue["code"] for issue in verdict["issues"]}
+        self.assertIn("swa_full_expensive", codes)
+        self.assertNotIn("swa_full_unsupported", codes)
+
+    def test_swa_full_is_never_recommended(self):
+        """It was recommended wherever the model supported SWA, which is the
+        one place it is expensive rather than merely ignored."""
+        recommendation = budget.recommend(
+            dict(self.gemma, file_size_mib=17821),
+            [{"index": 0, "mem_total": 24576}, {"index": 1, "mem_total": 24576}],
+            {"mem_available_mib": 25864})
+        self.assertEqual(recommendation["swa_full"], "off")
 
 
 class PredictionTest(unittest.TestCase):
@@ -587,6 +715,38 @@ class LiveModelTest(unittest.TestCase):
         geometry = budget.model_geometry(budget.read_gguf_metadata(LIVE_MODEL))
         self.assertAlmostEqual(
             budget.recurrent_state_bytes(geometry) / budget.MIB, 149.6, delta=0.1)
+
+
+LIVE_SWA_MODEL = pathlib.Path(
+    "/mnt/LLMs/llamacpp/llm-stack-git/models/"
+    "Gemma4-31B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf")
+
+
+@unittest.skipUnless(LIVE_SWA_MODEL.is_file(), "live SWA model not present on this host")
+class LiveSlidingWindowModelTest(unittest.TestCase):
+    """Guards the interleaved-attention fixture against the real file."""
+
+    def test_real_file_matches_the_fixture(self):
+        geometry = budget.model_geometry(budget.read_gguf_metadata(LIVE_SWA_MODEL))
+        expected = budget.model_geometry(GEMMA4_31B)
+        for key in ("layers", "swa_layers", "full_attention_layers", "sliding_window",
+                    "head_count_kv_full", "head_count_kv_swa",
+                    "key_length", "key_length_swa", "value_length", "value_length_swa"):
+            self.assertEqual(geometry[key], expected[key], key)
+
+    def test_the_live_configuration_is_not_reported_as_overcommitted(self):
+        """It runs on this box, so a model that says it cannot is wrong."""
+        geometry = budget.model_geometry(budget.read_gguf_metadata(LIVE_SWA_MODEL))
+        settings = {"ctx_size": 255998, "parallel": 1, "devices": 2,
+                    "cache_type_k": "q8_0", "cache_type_v": "q8_0",
+                    "tensor_split": "1,1", "projector_mib": 1145}
+        prediction = budget.predict(geometry, settings)
+        gpus = [{"index": 0, "mem_total": 24576}, {"index": 1, "mem_total": 24576}]
+        verdict = budget.evaluate(geometry, settings, prediction, gpus,
+                                  {"mem_available_mib": 25864})
+        self.assertNotIn("vram_overcommit", {issue["code"] for issue in verdict["issues"]})
+        # Observed live: 18,978 + 18,258 MiB for this process across both GPUs.
+        self.assertLess(abs(prediction["vram"]["total_mib"] - 37236), 2000)
 
 
 if __name__ == "__main__":

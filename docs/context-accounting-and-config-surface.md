@@ -80,6 +80,7 @@ bar. The ones worth knowing about:
 | `vram_overcommit` | **error** — predicted peak exceeds the GPU |
 | `cache_ram_shortfall` | Checkpoints want more than `--cache-ram`; expect eviction on most requests |
 | `swa_full_unsupported` | `--swa-full` on a model with no sliding-window attention. llama-server logs `swa_full is not supported by this model` and ignores it |
+| `swa_full_expensive` | `--swa-full` on a model that *does* have sliding-window attention, where it stops the window layers being windows |
 | `fit_ctx_without_fit` | `--fit-ctx` set with auto-fit off, so it does nothing |
 | `cache_reuse_with_multimodal` | llama-server disables `--cache-reuse` when a projector is loaded |
 | `context_above_trained` | Total context above what the model was trained for |
@@ -92,6 +93,51 @@ That path also runs at startup, where refusing would leave the stack with no
 configuration at all.
 
 `POST /api/config/preflight` runs the same check without writing.
+
+## 3b. Not every layer holds a KV cache, and not every one that does grows
+
+Three architectures answer "which layers hold KV" three different ways, and the
+budget model has to know all three or it is wrong by an order of magnitude.
+
+| Metadata | Meaning | Example |
+| --- | --- | --- |
+| `recurrent_layer_arr` / `full_attention_interval` | Hybrid attention. Recurrent layers hold fixed state, not KV | Qwen3.6-27B: 48 recurrent, 16 full |
+| `attention.sliding_window_pattern` | Interleaved local/global. Window layers hold only their window | Gemma4-31B: 50 window, 10 global |
+| neither | Every layer is a full-attention layer | a conventional dense model |
+
+Missing the middle row cost a 7.6× overestimate. Gemma4-31B was predicted to
+need 284,145 MiB and refused as unfittable, on a box where it runs in 37,236
+MiB. Three compounding mistakes, all in the same direction:
+
+1. **Per-layer head counts collapsed with `max()`.** Gemma publishes
+   `head_count_kv` per layer — 16 for the window layers, 4 for the global ones.
+   Taking the maximum charged 16 heads to every layer, including the only ten
+   that actually scale with context.
+2. **Window layers priced at full context.** 50 of 60 layers hold 1024 tokens,
+   not 255,998.
+3. **`key_length_swa` / `value_length_swa` ignored.** Window layers use 256, not
+   512.
+
+The same bug ran through the checkpoint term. A checkpoint saves only state that
+cannot be rebuilt by reprocessing the prompt: llama.cpp writes it with
+`LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`, and both `llama_kv_cache_iswa::state_write`
+and `llama_memory_hybrid::state_write` skip the base attention cache under that
+flag. So a checkpoint is the recurrent state, or the window, and for a plain
+full-attention model it does not exist at all — the `n_swa > 0` guard on
+`do_checkpoint` in `server-context.cpp` means none are created. Charging the
+full-attention KV predicted 254,998 MiB per checkpoint for a backend whose
+checkpoints are about 425 MiB.
+
+`--swa-full` deserves its own note. On a model with no sliding-window attention
+it is inert. On one that has it, it is the flag that makes the window layers
+stop being windows: on Gemma4-31B it takes the KV cache from 11,050 MiB to
+roughly 117,000 MiB. `recommend()` used to turn it *on* wherever the model
+supported it, which was exactly backwards. It is now off everywhere, for those
+two different reasons.
+
+Validated with `budget.py --validate` against the running backend: 37,558 MiB
+predicted against 37,236 MiB observed, −0.9%. `LiveSlidingWindowModelTest`
+guards it against the real file.
 
 ## 4. The dual env-key naming, and how it ends
 
