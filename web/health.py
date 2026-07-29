@@ -63,7 +63,8 @@ SWEEP_INTERVAL_SECONDS = 10.0
 # meanings they always had; the other three are new.
 STATE_ACTIVE = "active"
 STATE_DEGRADED = "degraded"      # running, but not serving
-STATE_FAILED = "failed"          # systemd says the unit failed
+STATE_FAILED = "failed"          # systemd says the unit failed, or it keeps dying
+STATE_STARTING = "starting"      # mid-launch
 STATE_STOPPED = "stopped"        # not running, and not expected to be
 STATE_INACTIVE = "inactive"      # not running, but expected on
 STATE_UNKNOWN = "unknown"        # unit not installed
@@ -261,10 +262,64 @@ def record_expectation(name: str, expected: str, source: str = "operator",
     return data
 
 
+class RestartTracker:
+    """Notices services that keep dying, which no single sample can.
+
+    `ocr` was observed at 32 restarts, failing to allocate its compute buffers
+    on a full GPU and being bounced by `Restart=on-failure` every few seconds.
+    Every poll caught it in a different phase — `activating`, `failed`, briefly
+    `active` — so the panel showed it as starting, or down, or fine, and never
+    as the thing it was. `NRestarts` climbing between two polls is unambiguous.
+    """
+
+    def __init__(self, window: int = 3):
+        self._seen: dict[str, int] = {}
+        self._flapping: dict[str, int] = {}
+        self.window = window
+
+    def observe(self, counts: dict) -> dict:
+        """Feed a poll's restart counts; return {service: restarts observed}."""
+        for name, count in counts.items():
+            previous = self._seen.get(name)
+            self._seen[name] = count
+            if previous is None:
+                continue
+            if count > previous:
+                self._flapping[name] = self._flapping.get(name, 0) + (count - previous)
+            elif name in self._flapping:
+                # A quiet poll clears it: a service that restarted once and then
+                # stayed up is not flapping, and should go green again.
+                del self._flapping[name]
+        # A service that has gone away entirely stops being tracked.
+        for name in list(self._flapping):
+            if name not in counts:
+                del self._flapping[name]
+        return dict(self._flapping)
+
+    def flapping(self) -> dict:
+        return dict(self._flapping)
+
+    def reset(self, name: str | None = None) -> None:
+        """Forget history, so a deliberate restart is not read as a flap."""
+        if name is None:
+            self._seen.clear()
+            self._flapping.clear()
+        else:
+            self._seen.pop(name, None)
+            self._flapping.pop(name, None)
+
+
+RESTARTS = RestartTracker()
+
+
+def _disabled_by_flag(name: str, env: dict) -> bool:
+    flag = ENABLED_FLAGS.get(name)
+    return bool(flag) and str(env.get(flag, "")).strip().lower() == "off"
+
+
 def expectation_for(name: str, env: dict, expectations: dict) -> str:
     """`on`, `off`, or `unspecified` when nobody has said."""
-    flag = ENABLED_FLAGS.get(name)
-    if flag and str(env.get(flag, "")).strip().lower() == "off":
+    if _disabled_by_flag(name, env):
         return "off"
     entry = expectations.get(name)
     if isinstance(entry, dict) and entry.get("expected") in {"on", "off"}:
@@ -277,15 +332,19 @@ def expectation_for(name: str, env: dict, expectations: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def collect(env: dict, statuses: dict, probes: dict | None = None,
-            expectations: dict | None = None) -> dict:
+            expectations: dict | None = None, flapping: dict | None = None) -> dict:
     """One health entry per service, from unit state, probes and upstreams.
 
     `statuses` is the map `/api/status` already computes, so this adds no
     subprocesses. `probes` is the background sweep's cache; an empty one means
     the first sweep has not landed yet, and every service falls back to being
     judged on its unit state alone rather than being reported as broken.
+    `flapping` is `RestartTracker.flapping()`, which outranks everything: a
+    service that keeps dying is not usefully described by whichever phase of
+    dying this particular poll caught.
     """
     probes = probes or {}
+    flapping = flapping or {}
     expectations = read_expectations() if expectations is None else expectations
     resolved: dict[str, dict] = {}
     resolving: set[str] = set()
@@ -322,8 +381,20 @@ def collect(env: dict, statuses: dict, probes: dict | None = None,
             "checked_at": (probe_result or {}).get("checked_at"),
         }
 
-        if unit == STATE_FAILED:
+        restarts = flapping.get(name, 0)
+        entry["restarts"] = restarts
+
+        if restarts:
+            # Outranks every other reading. A unit that cannot start is caught
+            # in `activating` as often as in `failed`, and each of those on its
+            # own reads as something far less alarming than "this keeps dying".
+            entry["state"] = STATE_FAILED
+            entry["reason"] = (f"restarted {restarts} time{'' if restarts == 1 else 's'} "
+                               f"while being watched — it is not staying up")
+        elif unit == STATE_FAILED:
             entry["reason"] = "the unit failed — check its logs"
+        elif unit == STATE_STARTING:
+            entry["reason"] = "starting up"
         elif unit == STATE_ACTIVE:
             unmet = [group for group in upstreams if not group["ok"]]
             if probe_result is not None and not probe_result["ok"]:
@@ -337,8 +408,14 @@ def collect(env: dict, statuses: dict, probes: dict | None = None,
                 entry["reason"] = "expected to be running"
             else:
                 entry["state"] = STATE_STOPPED
-                entry["reason"] = ("turned off in the configuration" if expected == "off"
-                                   else "not running")
+                # Distinguishing these matters: one is a switch in the config
+                # file, the other is somebody having pressed Stop.
+                if expected == "off" and _disabled_by_flag(name, env):
+                    entry["reason"] = "turned off in the configuration"
+                elif expected == "off":
+                    entry["reason"] = "stopped on purpose"
+                else:
+                    entry["reason"] = "not running"
 
         resolving.discard(name)
         resolved[name] = entry

@@ -43,7 +43,8 @@ The states a card can now show:
 | --- | --- |
 | `active` | running, probe answered, upstreams up |
 | `degraded` | running, but the probe failed or an upstream is down |
-| `failed` | systemd says the unit failed |
+| `failed` | systemd says the unit failed, or it will not stay up |
+| `starting` | mid-launch |
 | `stopped` | not running, and not expected to be — neutral |
 | `inactive` | not running, but expected on |
 | `unknown` | unit not installed |
@@ -55,7 +56,35 @@ rendered `degraded` must not vanish from telemetry. The richer verdict rides
 alongside as a parallel `health` map on `/api/status`; `services` keeps exactly
 the shape it always had.
 
-## 3. Expectation had to be recorded, because nothing carried it
+## 3. A service that keeps dying looked like anything but
+
+Found by running the above against a real failure rather than a staged one.
+Starting the OCR SDK pulled `ocr` up with it through `Wants=`, `ocr` could not
+allocate its compute buffers on a full GPU, and `Restart=on-failure` bounced it
+32 times.
+
+Every poll caught a different phase. Sampled in `activating` the card read
+`starting`; sampled between attempts it read `stopped`, neutral grey; caught in
+the second where the process was up before it died, `active`, green. All three
+were accurate about the instant and all three were useless — the thing worth
+saying was "this will not stay up", and no single sample of `ActiveState` can
+say it.
+
+`NRestarts` climbing between two polls can. `RestartTracker` keeps the previous
+count per unit, and a service whose count has risen is reported `failed` with
+the number, outranking whatever phase the poll landed in. Restraints on that:
+
+- A first sample proves nothing and is never a verdict.
+- A count that stops climbing clears it, so a service that restarted once and
+  then stayed up goes green again.
+- systemd zeroes `NRestarts` on a clean stop, so a decrease clears it too.
+- A stop or restart through the manager forgets that service's history, rather
+  than carrying a flap verdict across the action meant to resolve it.
+
+`activating` also became its own `starting` state along the way, since a service
+mid-launch is not one that is down.
+
+## 4. Expectation had to be recorded, because nothing carried it
 
 Three plausible sources were checked live and all three were wrong:
 
@@ -75,7 +104,7 @@ panel only claims a service *should* be up when somebody said so. The single
 exception is a `*_ENABLED` flag set to `off`, which does mean expected-off — the
 start script exits 0 without launching anything, so the unit cannot come up.
 
-## 4. Probes run off the request path
+## 5. Probes run off the request path
 
 `/api/status` is polled every five seconds and already spawns a `systemctl` call
 per service. Ten HTTP probes inline would have blown that interval precisely
@@ -91,7 +120,7 @@ Measured after the change: `/api/status` returns in 0.26s (dominated by
 `is_active` + `is_installed` into one `systemctl show` halved the subprocess
 count per poll.
 
-## 5. `validate.sh`
+## 6. `validate.sh`
 
 It used to fail on any service that was off, which made a clean run mean
 "everything is installed" rather than "everything that should be running works".
@@ -101,7 +130,7 @@ the backend on `CHAT_BACKEND_PORT` directly — checking only the proxy ports
 meant a backend that had died behind a live proxy read as a proxy fault — and
 warns when the OCR SDK is up without its backend.
 
-## 6. What enforces this
+## 7. What enforces this
 
 | Claim | Test |
 | --- | --- |
@@ -113,3 +142,7 @@ warns when the OCR SDK is up without its backend.
 | The service and component graphs agree | `DependencyGraphTests.test_service_graph_agrees_with_the_component_graph` |
 | `/api/status` keeps its shape | `ServiceHealthTests.test_status_carries_health_without_changing_the_services_map` |
 | A missing probe does not blank a card | `CollectTests.test_a_service_with_no_probe_yet_is_judged_on_its_unit_state` |
+| A flapping service outranks the sampled phase | `CollectTests.test_a_service_that_keeps_dying_outranks_whatever_phase_was_sampled` |
+| One sample is never a flap verdict | `RestartTrackerTests.test_a_first_sample_cannot_prove_anything` |
+| A service that settles goes green again | `RestartTrackerTests.test_a_steady_count_clears_it` |
+| Status and restart count cost one call | `ServiceHealthTests.test_statuses_and_restart_counts_come_from_one_pass` |

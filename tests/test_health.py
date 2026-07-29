@@ -205,6 +205,69 @@ class CollectTests(unittest.TestCase):
         entries = self.collect({"embed2": "unknown"})
         self.assertEqual(entries["embed2"]["state"], "unknown")
 
+    def test_a_service_mid_launch_is_not_reported_as_down(self):
+        entries = self.collect({"ocr": "starting"})
+        self.assertEqual(entries["ocr"]["state"], "starting")
+
+    def test_a_service_that_keeps_dying_outranks_whatever_phase_was_sampled(self):
+        """Observed live: `ocr` at 32 restarts, unable to allocate on a full GPU.
+
+        Each poll caught a different phase — `activating`, `failed`, briefly
+        `active` — so it rendered as starting, or down, or fine, and never as a
+        service that could not stay up.
+        """
+        for sampled in ("starting", "active", "inactive", "failed"):
+            entries = health.collect({}, {"ocr": sampled}, {}, {}, flapping={"ocr": 32})
+            self.assertEqual(entries["ocr"]["state"], "failed", sampled)
+            self.assertIn("32 times", entries["ocr"]["reason"])
+            self.assertEqual(entries["ocr"]["restarts"], 32)
+
+    def test_stopped_on_purpose_reads_differently_from_switched_off(self):
+        # One is somebody pressing Stop; the other is a flag in the config file.
+        pressed = self.collect({"ocr": "inactive"}, expectations={"ocr": {"expected": "off"}})
+        self.assertEqual(pressed["ocr"]["reason"], "stopped on purpose")
+        flagged = self.collect({"glmocr-sdk": "inactive"}, env={"GLMOCR_SDK_ENABLED": "off"})
+        self.assertEqual(flagged["glmocr-sdk"]["reason"], "turned off in the configuration")
+
+
+class RestartTrackerTests(unittest.TestCase):
+    def test_a_first_sample_cannot_prove_anything(self):
+        tracker = health.RestartTracker()
+        self.assertEqual(tracker.observe({"ocr": 32}), {})
+
+    def test_a_climbing_count_between_polls_is_a_flap(self):
+        tracker = health.RestartTracker()
+        tracker.observe({"ocr": 30})
+        self.assertEqual(tracker.observe({"ocr": 32}), {"ocr": 2})
+        self.assertEqual(tracker.observe({"ocr": 33}), {"ocr": 3})
+
+    def test_a_steady_count_clears_it(self):
+        # Restarted once and then stayed up. Not flapping; the card goes green.
+        tracker = health.RestartTracker()
+        tracker.observe({"embed": 0})
+        self.assertEqual(tracker.observe({"embed": 1}), {"embed": 1})
+        self.assertEqual(tracker.observe({"embed": 1}), {})
+
+    def test_a_stop_resets_the_counter_without_looking_like_a_flap(self):
+        # systemd zeroes NRestarts on a clean stop, so the count goes down.
+        tracker = health.RestartTracker()
+        tracker.observe({"ocr": 32})
+        tracker.observe({"ocr": 34})
+        self.assertEqual(tracker.observe({"ocr": 0}), {})
+
+    def test_resetting_one_service_leaves_the_others(self):
+        tracker = health.RestartTracker()
+        tracker.observe({"ocr": 1, "embed": 1})
+        tracker.observe({"ocr": 2, "embed": 2})
+        tracker.reset("ocr")
+        self.assertEqual(set(tracker.flapping()), {"embed"})
+
+    def test_a_service_that_disappears_stops_being_tracked(self):
+        tracker = health.RestartTracker()
+        tracker.observe({"ocr": 1})
+        tracker.observe({"ocr": 2})
+        self.assertEqual(tracker.observe({}), {})
+
 
 class ProberTests(unittest.TestCase):
     def test_only_running_services_are_probed(self):

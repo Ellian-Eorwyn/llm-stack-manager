@@ -78,25 +78,30 @@ class ServiceManager:
                 "installed": plist.exists(),
                 "active": pid > 0,
                 "failed": False,
+                "starting": False,
                 "active_state": "active" if pid > 0 else "inactive",
                 "sub_state": "",
                 "result": "",
                 "main_pid": pid,
+                "n_restarts": 0,
             }
 
         r = cls.run_cmd(
             ["systemctl", "show", name,
-             "--property=LoadState,ActiveState,SubState,Result,MainPID"],
+             "--property=LoadState,ActiveState,SubState,Result,MainPID,NRestarts"],
             timeout=5)
         fields = {}
         for line in (r.stdout or "").splitlines():
             key, _, value = line.partition("=")
             fields[key.strip()] = value.strip()
         active_state = fields.get("ActiveState", "")
-        try:
-            main_pid = int(fields.get("MainPID", "0") or "0")
-        except ValueError:
-            main_pid = 0
+
+        def as_int(key):
+            try:
+                return int(fields.get(key, "0") or "0")
+            except ValueError:
+                return 0
+
         return {
             "installed": r.returncode == 0 and fields.get("LoadState", "") not in ("", "not-found"),
             "active": active_state == "active",
@@ -105,10 +110,17 @@ class ServiceManager:
             # a later `stop`, so a unit that crashed once and was then stopped
             # on purpose would otherwise read as failed forever.
             "failed": active_state == "failed",
+            # A unit that cannot start spends most of its time here rather than
+            # in `failed`, because `Restart=` bounces it before anyone looks.
+            "starting": active_state in ("activating", "reloading"),
             "active_state": active_state,
             "sub_state": fields.get("SubState", ""),
             "result": fields.get("Result", ""),
-            "main_pid": main_pid,
+            "main_pid": as_int("MainPID"),
+            # Cumulative since the unit was last reset. The count alone proves
+            # nothing; a count that climbs between polls is a service failing to
+            # come up, which is the state a panel most needs to shout about.
+            "n_restarts": as_int("NRestarts"),
         }
 
     @classmethod
@@ -1921,6 +1933,23 @@ def patch_service_labels(env: dict | None = None) -> list[dict]:
     return patched
 
 
+def status_from_unit_state(state: dict) -> str:
+    """The one place a systemd unit state becomes a status string."""
+    if state['active']:
+        return 'active'
+    # A crashed unit used to be indistinguishable from a stopped one, since
+    # `is-active` reports neither as active. Callers that compare against
+    # 'active' are unaffected; the services panel now has something to say.
+    if state['failed']:
+        return 'failed'
+    # A unit that cannot start is caught here far more often than in `failed`,
+    # because `Restart=` puts it back into `activating` within seconds. Its own
+    # state, so a service mid-launch is not read as one that is down.
+    if state.get('starting'):
+        return 'starting'
+    return 'inactive' if state['installed'] else 'unknown'
+
+
 def get_service_status(name: str) -> str:
     if is_searxng_service(name):
         ok, output = run_searxng_manager('status')
@@ -1938,15 +1967,7 @@ def get_service_status(name: str) -> str:
             return output.strip() or 'unknown'
         return 'failed'
     try:
-        state = ServiceManager.state(name)
-        if state['active']:
-            return 'active'
-        # A crashed unit used to be indistinguishable from a stopped one, since
-        # `is-active` reports neither as active. Callers that compare against
-        # 'active' are unaffected; the services panel now has something to say.
-        if state['failed']:
-            return 'failed'
-        return 'inactive' if state['installed'] else 'unknown'
+        return status_from_unit_state(ServiceManager.state(name))
     except Exception:
         return 'unknown'
 
@@ -1961,6 +1982,11 @@ def record_service_expectation(name: str, action: str, ok: bool, source: str = '
     """
     if not ok:
         return
+    # systemd zeroes NRestarts on a clean stop, so this is belt and braces —
+    # but a service the operator just cycled should start from no history
+    # either way, rather than carrying a flap verdict across the action that
+    # was meant to resolve it.
+    health.RESTARTS.reset(name)
     health.record_expectation(name, 'off' if action == 'stop' else 'on', source=source)
 
 
@@ -3798,17 +3824,44 @@ def index():
                            models_dir=str(MODELS_DIR))
 
 
-def all_service_statuses(env: dict | None = None) -> dict:
-    """Unit state for every service the panel shows, plus every upstream.
+def service_names(env: dict | None = None) -> set:
+    """Every service the panel shows, plus every unit named as an upstream.
 
     Units that only appear as somebody's upstream are asked about too: the panel
     shows one card for the primary backend, but three mutually exclusive units
     can serve it, and a proxy whose backend is one of the other two is not
     degraded.
     """
-    env = env or read_env()
-    panel = {s['name'] for s in patch_service_labels(env)}
-    return {name: get_service_status(name) for name in panel | health.dependency_units()}
+    return {s['name'] for s in patch_service_labels(env or read_env())} | health.dependency_units()
+
+
+def service_unit_snapshot(env: dict | None = None) -> tuple[dict, dict]:
+    """(status per service, restart count per service) from one pass.
+
+    The restart count is only meaningful as a delta between polls, which is what
+    `health.RESTARTS` keeps: a service that cannot start spends its life
+    bouncing between `activating` and `failed`, so any single sample catches
+    whichever phase the poll happened to land in and none of them say "this
+    keeps dying".
+    """
+    statuses, restarts = {}, {}
+    for name in service_names(env):
+        if (is_searxng_service(name) or should_use_local_transcript_manager(name)
+                or should_use_local_tts_manager(name)):
+            statuses[name] = get_service_status(name)
+            continue
+        try:
+            state = ServiceManager.state(name)
+        except Exception:
+            statuses[name] = 'unknown'
+            continue
+        statuses[name] = status_from_unit_state(state)
+        restarts[name] = state.get('n_restarts', 0)
+    return statuses, restarts
+
+
+def all_service_statuses(env: dict | None = None) -> dict:
+    return service_unit_snapshot(env)[0]
 
 
 def sweep_pi_forge_leases() -> None:
@@ -3830,9 +3883,10 @@ health.PROBER.add_task(sweep_pi_forge_leases)
 def service_health_snapshot(env: dict | None = None) -> tuple[dict, dict]:
     """(unit statuses for the panel, health for every service it can judge)."""
     env = env or read_env()
-    statuses = all_service_statuses(env)
+    statuses, restarts = service_unit_snapshot(env)
+    flapping = health.RESTARTS.observe(restarts)
     health.PROBER.start(read_env, all_service_statuses)
-    entries = health.collect(env, statuses, health.PROBER.snapshot())
+    entries = health.collect(env, statuses, health.PROBER.snapshot(), flapping=flapping)
     panel = {s['name'] for s in patch_service_labels(env)}
     return {name: statuses[name] for name in panel}, entries
 

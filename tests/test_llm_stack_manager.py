@@ -889,11 +889,42 @@ class ServiceHealthTests(unittest.TestCase):
         """Fake `systemctl show`, keyed by unit, returning ActiveState etc."""
         def run(cmd, timeout=30):
             unit = cmd[2] if len(cmd) > 2 else ""
-            active_state, load_state = states.get(unit, ("inactive", "loaded"))
+            spec = states.get(unit, ("inactive", "loaded"))
+            active_state, load_state = spec[0], spec[1]
+            restarts = spec[2] if len(spec) > 2 else 0
             output = (f"LoadState={load_state}\nActiveState={active_state}\n"
-                      f"SubState=dead\nResult=success\nMainPID=0\n")
+                      f"SubState=dead\nResult=success\nMainPID=0\n"
+                      f"NRestarts={restarts}\n")
             return subprocess.CompletedProcess(cmd, 0, output, "")
         return run
+
+    def test_a_unit_mid_launch_is_its_own_state(self):
+        # A service that cannot start spends most of its life here, because
+        # Restart= bounces it out of `failed` within seconds.
+        with patch.object(manager.ServiceManager, "run_cmd",
+                          side_effect=self._systemctl(ocr=("activating", "loaded"))):
+            self.assertEqual(manager.get_service_status("ocr"), "starting")
+
+    def test_statuses_and_restart_counts_come_from_one_pass(self):
+        calls = []
+
+        def run(cmd, timeout=30):
+            calls.append(cmd[2])
+            return subprocess.CompletedProcess(
+                cmd, 0, "LoadState=loaded\nActiveState=activating\nSubState=start\n"
+                        "Result=exit-code\nMainPID=0\nNRestarts=32\n", "")
+
+        with (
+            patch.object(manager, "read_env", return_value={}),
+            patch.object(manager, "patch_service_labels", return_value=[{"name": "ocr"}]),
+            patch.object(manager.ServiceManager, "run_cmd", side_effect=run),
+        ):
+            statuses, restarts = manager.service_unit_snapshot()
+
+        self.assertEqual(statuses["ocr"], "starting")
+        self.assertEqual(restarts["ocr"], 32)
+        # One systemctl call per unit, not one per question asked about it.
+        self.assertEqual(len(calls), len(set(calls)))
 
     def test_a_crashed_unit_is_no_longer_indistinguishable_from_a_stopped_one(self):
         with patch.object(manager.ServiceManager, "run_cmd",
@@ -927,7 +958,7 @@ class ServiceHealthTests(unittest.TestCase):
         with (
             manager.app.test_client() as client,
             patch.object(manager, "read_env", return_value=env),
-            patch.object(manager, "all_service_statuses", return_value=statuses),
+            patch.object(manager, "service_unit_snapshot", return_value=(statuses, {})),
             patch.object(manager, "patch_service_labels",
                          return_value=[{"name": "glmocr-sdk"}, {"name": "ocr"}]),
             patch.object(manager, "get_gpu_info", return_value=[]),
@@ -941,6 +972,32 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertEqual(payload["services"], statuses)
         self.assertEqual(payload["health"]["glmocr-sdk"]["state"], "degraded")
         self.assertIn("ocr", payload["health"]["glmocr-sdk"]["reason"])
+
+    def test_a_flapping_service_is_reported_as_failed_through_the_api(self):
+        """Live case: ocr at 32 restarts rendered grey or green by turns."""
+        manager.health.RESTARTS.reset()
+        env = {}
+        with (
+            manager.app.test_client() as client,
+            patch.object(manager, "read_env", return_value=env),
+            patch.object(manager, "patch_service_labels", return_value=[{"name": "ocr"}]),
+            patch.object(manager, "get_gpu_info", return_value=[]),
+            patch.object(manager.health.PROBER, "start"),
+            patch.object(manager.health.PROBER, "snapshot", return_value={}),
+            patch.object(manager.health, "read_expectations", return_value={}),
+            patch.object(manager, "service_unit_snapshot",
+                         side_effect=[({"ocr": "starting"}, {"ocr": 30}),
+                                      ({"ocr": "active"}, {"ocr": 33})]),
+        ):
+            first = client.get("/api/status").get_json()
+            second = client.get("/api/status").get_json()
+
+        # Nothing can be concluded from one sample.
+        self.assertEqual(first["health"]["ocr"]["state"], "starting")
+        # By the second, the count has climbed and the phase no longer matters.
+        self.assertEqual(second["health"]["ocr"]["state"], "failed")
+        self.assertIn("3 times", second["health"]["ocr"]["reason"])
+        manager.health.RESTARTS.reset()
 
     def test_starting_and_stopping_a_service_records_what_was_meant(self):
         recorded = []
