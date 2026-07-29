@@ -96,7 +96,18 @@ cmd_status() {
     echo "Stack:   ${STACK_DIR}"
     echo "Manager: http://localhost:${port}"
     if command -v git >/dev/null 2>&1 && [[ -d "${STACK_DIR}/.git" ]]; then
-        echo "Version: $(git -C "${STACK_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        local git_cmd=(git -c "safe.directory=${STACK_DIR}" -C "${STACK_DIR}")
+        local version behind
+        version="$("${git_cmd[@]}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        # Against the cached remote ref only: `status` must not block on the
+        # network. The manager's background check is what keeps that ref fresh,
+        # so this agrees with the UI badge without paying for a fetch.
+        behind="$("${git_cmd[@]}" rev-list --count "HEAD..@{upstream}" 2>/dev/null || echo 0)"
+        if [[ "${behind}" -gt 0 ]]; then
+            echo "Version: ${version} (${behind} behind — run: sudo llm-stack-manager update)"
+        else
+            echo "Version: ${version}"
+        fi
     fi
     echo ""
     printf '%-22s %s\n' "SERVICE" "STATE"

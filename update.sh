@@ -18,6 +18,9 @@ MANAGER_ONLY=0
 # cache, which is far too expensive to do on every code update.
 CHEAP_RESTART_SERVICES=(llm-manager chat-proxy chat-proxy2 glmocr-sdk playwright-server)
 # Changes under these paths mean a model backend really is running stale code.
+# web/deploy.py holds the same list so the manager's drift badge and this
+# post-update report agree about what costs a model reload; tests/test_deploy.py
+# asserts the two have not drifted apart.
 BACKEND_SENSITIVE_PATHS=(
     "scripts/start-chat-backend"
     "scripts/start-embed"

@@ -5,7 +5,9 @@ import json
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from collections import Counter
 from unittest.mock import patch
@@ -22,6 +24,13 @@ def _load_app_module():
 
 
 manager = _load_app_module()
+# The sibling modules app.py imported on its way up, taken from sys.modules
+# rather than loaded again — a second copy would have its own globals, and
+# patching one of them would leave the application calling the other.
+core = sys.modules["core"]
+config_env = sys.modules["config_env"]
+config_fields = sys.modules["config_fields"]
+models = sys.modules["models"]
 
 
 class ConfigSectionTests(unittest.TestCase):
@@ -48,8 +57,8 @@ class ConfigSectionTests(unittest.TestCase):
         manager.app.jinja_loader.searchpath = [str(template_dir)]
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value={}),
-            patch.object(manager, "load_custom_models", return_value=[]),
+            patch.object(config_env, "read_env", return_value={}),
+            patch.object(models, "load_custom_models", return_value=[]),
         ):
             response = client.get("/")
         manager.app.jinja_loader.searchpath = original_searchpath
@@ -75,7 +84,7 @@ class ConfigSectionTests(unittest.TestCase):
             self.assertEqual(manager.RESTART_HINTS[f"CHAT2_{suffix}"], ["chat-backend2"])
 
     def test_primary_and_secondary_backend_normalize_from_legacy_keys(self):
-        env = manager.normalize_env_keys({
+        env = config_env.normalize_env_keys({
             "CHAT_DENSE_LABEL": "Backend Dense",
             "CHAT_DENSE_MODEL_PATH": "/models/primary.gguf",
             "CHAT_DENSE_CTX_SIZE": "32768",
@@ -125,7 +134,7 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertIn("none", fields["OCR_SPLIT_MODE"]["options"])
 
     def test_ocr_gpu_default_follows_chat_gpu_devices(self):
-        env = manager.normalize_env_keys({"CHAT_GPU_VISIBLE_DEVICES": "0,1"})
+        env = config_env.normalize_env_keys({"CHAT_GPU_VISIBLE_DEVICES": "0,1"})
         self.assertEqual(env["OCR_GPU_VISIBLE_DEVICES"], "0,1")
 
     def test_chat_template_fields_are_exposed(self):
@@ -141,7 +150,7 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertEqual(manager.RESTART_HINTS["GLMOCR_LAYOUT_DEVICE"], ["glmocr-sdk"])
 
     def test_glmocr_sdk_layout_gpu_is_never_comma_separated(self):
-        env = manager.normalize_env_keys({
+        env = config_env.normalize_env_keys({
             "OCR_GPU_VISIBLE_DEVICES": "0,1",
             "GLMOCR_LAYOUT_CUDA_VISIBLE_DEVICES": "0,1",
             "GLMOCR_LAYOUT_DEVICE": "cuda:0,1",
@@ -151,22 +160,22 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertEqual(env["GLMOCR_LAYOUT_DEVICE"], "cuda:0")
 
     def test_glmocr_sdk_layout_gpu_default_does_not_inherit_ocr_multi_gpu(self):
-        env = manager.normalize_env_keys({"OCR_GPU_VISIBLE_DEVICES": "0,1"})
+        env = config_env.normalize_env_keys({"OCR_GPU_VISIBLE_DEVICES": "0,1"})
         self.assertEqual(env["OCR_GPU_VISIBLE_DEVICES"], "0,1")
         self.assertEqual(env["GLMOCR_LAYOUT_CUDA_VISIBLE_DEVICES"], "")
 
     def test_gguf_mmproj_classifier_keeps_model_and_projector_separate(self):
-        self.assertFalse(manager.is_mmproj_gguf("Qwen3.5-27B-Q4_K_M.gguf", 16 * 1024**3))
-        self.assertTrue(manager.is_mmproj_gguf("mmproj-Qwen3.5-27B-f16.gguf", 800 * 1024**2))
-        self.assertTrue(manager.is_mmproj_gguf("Qwen3.5-27B.projector.gguf", 800 * 1024**2))
-        self.assertTrue(manager.is_mmproj_gguf("vision-clip.gguf", 800 * 1024**2))
+        self.assertFalse(models.is_mmproj_gguf("Qwen3.5-27B-Q4_K_M.gguf", 16 * 1024**3))
+        self.assertTrue(models.is_mmproj_gguf("mmproj-Qwen3.5-27B-f16.gguf", 800 * 1024**2))
+        self.assertTrue(models.is_mmproj_gguf("Qwen3.5-27B.projector.gguf", 800 * 1024**2))
+        self.assertTrue(models.is_mmproj_gguf("vision-clip.gguf", 800 * 1024**2))
 
     def test_update_env_values_does_not_write_unrelated_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_file = pathlib.Path(tmp) / "llm-stack.env"
             config_file.write_text("CHAT_TEMP=1.0\n")
-            with patch.object(manager, "CONFIG_FILE", config_file):
-                manager.update_env_values({"CHAT_TEMP": "0.6"})
+            with patch.object(core, "CONFIG_FILE", config_file):
+                config_env.update_env_values({"CHAT_TEMP": "0.6"})
 
             content = config_file.read_text()
 
@@ -207,7 +216,7 @@ class OcrExtractTests(unittest.TestCase):
         }
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value=env),
+            patch.object(config_env, "read_env", return_value=env),
             patch.object(manager.urlrequest, "urlopen", side_effect=fake_urlopen),
         ):
             resp = client.post("/api/ocr/extract", json={"image_base64": "abc", "mime_type": "image/png"})
@@ -248,7 +257,7 @@ class OcrExtractTests(unittest.TestCase):
         }
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value=env),
+            patch.object(config_env, "read_env", return_value=env),
             patch.object(manager.urlrequest, "urlopen", side_effect=fake_urlopen),
         ):
             resp = client.post(
@@ -291,7 +300,7 @@ class OcrExtractTests(unittest.TestCase):
 
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value={"GLMOCR_SDK_HOST": "0.0.0.0", "GLMOCR_SDK_PORT": "5002"}),
+            patch.object(config_env, "read_env", return_value={"GLMOCR_SDK_HOST": "0.0.0.0", "GLMOCR_SDK_PORT": "5002"}),
             patch.object(manager.urlrequest, "urlopen", side_effect=fake_urlopen),
         ):
             resp = client.post("/api/ocr/parse", json={"image_base64": "abc", "mime_type": "application/pdf"})
@@ -309,10 +318,10 @@ class ChatTemplateTests(unittest.TestCase):
                 "custom": {"name": "Custom Template", "description": "desc", "updated_at": 123}
             }))
             with (
-                patch.object(manager, "CHAT_TEMPLATES_DIR", template_dir),
-                patch.object(manager, "CHAT_TEMPLATES_META_FILE", template_dir / "templates.json"),
+                patch.object(core, "CHAT_TEMPLATES_DIR", template_dir),
+                patch.object(core, "CHAT_TEMPLATES_META_FILE", template_dir / "templates.json"),
             ):
-                templates = manager.list_chat_templates()
+                templates = models.list_chat_templates()
 
         self.assertEqual(templates[0]["id"], "")
         self.assertIn("custom", {item["id"] for item in templates})
@@ -334,8 +343,8 @@ class HuggingFaceRepoFileTests(unittest.TestCase):
         ]
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "parse_huggingface_repo_ref", return_value=repo_ref),
-            patch.object(manager, "list_huggingface_repo_files", return_value=files),
+            patch.object(models, "parse_huggingface_repo_ref", return_value=repo_ref),
+            patch.object(models, "list_huggingface_repo_files", return_value=files),
         ):
             resp = client.post("/api/huggingface/repo-files", json={"repo_url": "owner/repo"})
 
@@ -352,7 +361,7 @@ class CustomModelApiTests(unittest.TestCase):
             custom_models_file = pathlib.Path(tmp) / "custom-models.json"
             with (
                 manager.app.test_client() as client,
-                patch.object(manager, "CUSTOM_MODELS_FILE", custom_models_file),
+                patch.object(core, "CUSTOM_MODELS_FILE", custom_models_file),
             ):
                 resp = client.post(
                     "/api/custom-models",
@@ -385,8 +394,8 @@ class SavedConfigTests(unittest.TestCase):
 
             with (
                 manager.app.test_client() as client,
-                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
-                patch.object(manager, "read_env", return_value=env),
+                patch.object(core, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(config_env, "read_env", return_value=env),
                 patch.object(manager, "get_service_status", return_value="inactive"),
             ):
                 resp = client.post("/api/saved-configs", json={"name": "OneGpu", "config": form})
@@ -424,8 +433,8 @@ class SavedConfigTests(unittest.TestCase):
             }))
 
             with (
-                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
-                patch.object(manager, "CONFIG_FILE", config_file),
+                patch.object(core, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(core, "CONFIG_FILE", config_file),
             ):
                 result = manager.apply_saved_config("OneGpu", launch=False)
             content = config_file.read_text()
@@ -449,8 +458,8 @@ class SavedConfigTests(unittest.TestCase):
             }))
 
             with (
-                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
-                patch.object(manager, "CONFIG_FILE", config_file),
+                patch.object(core, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(core, "CONFIG_FILE", config_file),
             ):
                 result = manager.apply_saved_config("Context", launch=False)
             content = config_file.read_text()
@@ -470,8 +479,8 @@ class SavedConfigTests(unittest.TestCase):
             }))
 
             with (
-                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
-                patch.object(manager, "CONFIG_FILE", config_file),
+                patch.object(core, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(core, "CONFIG_FILE", config_file),
             ):
                 result = manager.apply_saved_config("Numeric", launch=False)
 
@@ -493,8 +502,8 @@ class SavedConfigTests(unittest.TestCase):
 
             with (
                 manager.app.test_client() as client,
-                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
-                patch.object(manager, "read_env", return_value=env),
+                patch.object(core, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(config_env, "read_env", return_value=env),
                 patch.object(manager, "get_service_status", side_effect=fake_status),
             ):
                 resp = client.post("/api/saved-configs", json={"name": "Both"})
@@ -528,17 +537,17 @@ class SavedConfigTests(unittest.TestCase):
             def fake_status(_name):
                 return "inactive"
 
-            class FakeServiceManager(manager.ServiceManager):
+            class FakeServiceManager(core.ServiceManager):
                 @classmethod
                 def start(cls, name, timeout=30):
                     started.append(name)
                     return manager.subprocess.CompletedProcess(["start", name], 0, "", "")
 
             with (
-                patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir),
-                patch.object(manager, "CONFIG_FILE", config_file),
+                patch.object(core, "SAVED_CONFIGS_DIR", saved_dir),
+                patch.object(core, "CONFIG_FILE", config_file),
                 patch.object(manager, "get_service_status", side_effect=fake_status),
-                patch.object(manager, "ServiceManager", FakeServiceManager),
+                patch.object(core, "ServiceManager", FakeServiceManager),
             ):
                 result = manager.apply_saved_config("Secondary", launch=True)
             content = config_file.read_text()
@@ -557,7 +566,7 @@ class SavedConfigTests(unittest.TestCase):
                 "CHAT_TOP_K": "20",
                 "_name": "Default",
             }))
-            with patch.object(manager, "SAVED_CONFIGS_DIR", saved_dir):
+            with patch.object(core, "SAVED_CONFIGS_DIR", saved_dir):
                 result = manager.update_saved_config_values("Default", {"CHAT_TEMP": "0.6"})
             data = json.loads(saved_path.read_text())
 
@@ -607,7 +616,7 @@ class MetricsFlagTests(unittest.TestCase):
             self.assertIn(f'"${{{prefix}_METRICS:-on}}" == "on" ]] && OPTS+=(--metrics)', text, script)
 
     def test_metrics_toggle_is_a_recognised_config_key(self):
-        filtered = manager.filter_config_updates({"CHAT_PRIMARY_METRICS": "off"}, env={})
+        filtered = config_env.filter_config_updates({"CHAT_PRIMARY_METRICS": "off"}, env={})
         self.assertEqual(filtered, {"CHAT_PRIMARY_METRICS": "off"})
 
 
@@ -719,9 +728,9 @@ class BudgetRouteTests(unittest.TestCase):
     def _client(self, env):
         return (
             manager.app.test_client(),
-            patch.object(manager, "read_env", return_value=env),
+            patch.object(config_env, "read_env", return_value=env),
             patch.object(manager, "get_gpu_info", return_value=self.GPUS),
-            patch.object(manager, "read_meminfo", return_value=self.MEMINFO),
+            patch.object(core, "read_meminfo", return_value=self.MEMINFO),
         )
 
     def test_budget_prices_the_configured_backend(self):
@@ -820,8 +829,8 @@ class ConfigFieldRenderingTests(unittest.TestCase):
         try:
             with (
                 manager.app.test_client() as client,
-                patch.object(manager, "read_env", return_value={}),
-                patch.object(manager, "load_custom_models", return_value=[]),
+                patch.object(config_env, "read_env", return_value={}),
+                patch.object(models, "load_custom_models", return_value=[]),
             ):
                 return client.get("/").get_data(as_text=True)
         finally:
@@ -858,24 +867,24 @@ class ContextAccountingTests(unittest.TestCase):
     def test_status_reports_per_slot_context_for_each_backend(self):
         env = {"CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2",
                "CHAT2_CTX_SIZE": "65536", "CHAT2_N_PARALLEL": "1"}
-        with patch.object(manager, "read_env", return_value=env):
+        with patch.object(config_env, "read_env", return_value=env):
             summary = manager.backend_context_summary()
         self.assertEqual(summary["chat-backend-dense"]["per_slot_context"], 131072)
         self.assertEqual(summary["chat-backend-dense"]["total_context"], 262144)
         self.assertEqual(summary["chat-backend2"]["per_slot_context"], 65536)
 
     def test_a_missing_parallel_setting_means_one_slot(self):
-        with patch.object(manager, "read_env", return_value={"EMBED_CTX_SIZE": "8192"}):
+        with patch.object(config_env, "read_env", return_value={"EMBED_CTX_SIZE": "8192"}):
             summary = manager.backend_context_summary()
         self.assertEqual(summary["embed"], {"total_context": 8192, "slots": 1,
                                             "per_slot_context": 8192})
 
     def test_unconfigured_backends_are_omitted_rather_than_reported_as_zero(self):
-        with patch.object(manager, "read_env", return_value={"CHAT_PRIMARY_CTX_SIZE": "0"}):
+        with patch.object(config_env, "read_env", return_value={"CHAT_PRIMARY_CTX_SIZE": "0"}):
             self.assertNotIn("chat-backend-dense", manager.backend_context_summary())
 
     def test_a_non_numeric_context_does_not_break_the_status_poll(self):
-        with patch.object(manager, "read_env", return_value={"OCR_CTX_SIZE": "lots"}):
+        with patch.object(config_env, "read_env", return_value={"OCR_CTX_SIZE": "lots"}):
             self.assertNotIn("ocr", manager.backend_context_summary())
 
 
@@ -901,7 +910,7 @@ class ServiceHealthTests(unittest.TestCase):
     def test_a_unit_mid_launch_is_its_own_state(self):
         # A service that cannot start spends most of its life here, because
         # Restart= bounces it out of `failed` within seconds.
-        with patch.object(manager.ServiceManager, "run_cmd",
+        with patch.object(core.ServiceManager, "run_cmd",
                           side_effect=self._systemctl(ocr=("activating", "loaded"))):
             self.assertEqual(manager.get_service_status("ocr"), "starting")
 
@@ -915,9 +924,9 @@ class ServiceHealthTests(unittest.TestCase):
                         "Result=exit-code\nMainPID=0\nNRestarts=32\n", "")
 
         with (
-            patch.object(manager, "read_env", return_value={}),
+            patch.object(config_env, "read_env", return_value={}),
             patch.object(manager, "patch_service_labels", return_value=[{"name": "ocr"}]),
-            patch.object(manager.ServiceManager, "run_cmd", side_effect=run),
+            patch.object(core.ServiceManager, "run_cmd", side_effect=run),
         ):
             statuses, restarts = manager.service_unit_snapshot()
 
@@ -927,13 +936,13 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertEqual(len(calls), len(set(calls)))
 
     def test_a_crashed_unit_is_no_longer_indistinguishable_from_a_stopped_one(self):
-        with patch.object(manager.ServiceManager, "run_cmd",
+        with patch.object(core.ServiceManager, "run_cmd",
                           side_effect=self._systemctl(embed=("failed", "loaded"))):
             self.assertEqual(manager.get_service_status("embed"), "failed")
             self.assertEqual(manager.get_service_status("rerank"), "inactive")
 
     def test_an_uninstalled_unit_is_unknown(self):
-        with patch.object(manager.ServiceManager, "run_cmd",
+        with patch.object(core.ServiceManager, "run_cmd",
                           side_effect=self._systemctl(ghost=("inactive", "not-found"))):
             self.assertEqual(manager.get_service_status("ghost"), "unknown")
 
@@ -946,8 +955,8 @@ class ServiceHealthTests(unittest.TestCase):
                 cmd, 0, "LoadState=loaded\nActiveState=active\nSubState=running\n"
                         "Result=success\nMainPID=4242\n", "")
 
-        with patch.object(manager.ServiceManager, "run_cmd", side_effect=run):
-            state = manager.ServiceManager.state("embed")
+        with patch.object(core.ServiceManager, "run_cmd", side_effect=run):
+            state = core.ServiceManager.state("embed")
         self.assertEqual(len(calls), 1)
         self.assertTrue(state["active"] and state["installed"])
         self.assertEqual(state["main_pid"], 4242)
@@ -957,7 +966,7 @@ class ServiceHealthTests(unittest.TestCase):
         statuses = {"glmocr-sdk": "active", "ocr": "inactive"}
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value=env),
+            patch.object(config_env, "read_env", return_value=env),
             patch.object(manager, "service_unit_snapshot", return_value=(statuses, {})),
             patch.object(manager, "patch_service_labels",
                          return_value=[{"name": "glmocr-sdk"}, {"name": "ocr"}]),
@@ -979,7 +988,7 @@ class ServiceHealthTests(unittest.TestCase):
         env = {}
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value=env),
+            patch.object(config_env, "read_env", return_value=env),
             patch.object(manager, "patch_service_labels", return_value=[{"name": "ocr"}]),
             patch.object(manager, "get_gpu_info", return_value=[]),
             patch.object(manager.health.PROBER, "start"),
@@ -1023,7 +1032,7 @@ class ServiceHealthTests(unittest.TestCase):
 
     def test_upstream_units_without_a_card_are_still_asked_about(self):
         with (
-            patch.object(manager, "read_env", return_value={}),
+            patch.object(config_env, "read_env", return_value={}),
             patch.object(manager, "patch_service_labels", return_value=[{"name": "chat-proxy"}]),
             patch.object(manager, "get_service_status", return_value="inactive"),
         ):
@@ -1042,7 +1051,7 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
                                 "select_by_id_slots": {"0": 56, "1": 6}}}
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value=env),
+            patch.object(config_env, "read_env", return_value=env),
             patch.object(manager, "get_service_status",
                          side_effect=lambda n: "active" if n == "chat-backend-dense" else "inactive"),
             patch.object(manager.telemetry, "probe_props",
@@ -1050,7 +1059,7 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
             patch.object(manager.telemetry, "probe_slots", return_value=[]),
             patch.object(manager.telemetry, "summarize", return_value=stats),
             patch.object(manager.telemetry.REGISTRY, "collector"),
-            patch.object(manager.ServiceManager, "get_pid", return_value=4242),
+            patch.object(core.ServiceManager, "get_pid", return_value=4242),
             patch.object(manager, "process_cmdline",
                          return_value="llama-server --ctx-size 262144 --parallel 2 "
                                       "--fit off --cache-idle-slots"),
@@ -1066,7 +1075,7 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
     def test_a_probe_is_refused_when_no_backend_is_running(self):
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value={}),
+            patch.object(config_env, "read_env", return_value={}),
             patch.object(manager, "get_service_status", return_value="inactive"),
             patch.object(manager.scheduling, "lease_directory", return_value=None),
         ):
@@ -1076,7 +1085,7 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
     def test_a_post_without_probe_sends_no_requests(self):
         with (
             manager.app.test_client() as client,
-            patch.object(manager, "read_env", return_value={}),
+            patch.object(config_env, "read_env", return_value={}),
             patch.object(manager, "get_service_status", return_value="inactive"),
             patch.object(manager.scheduling, "lease_directory", return_value=None),
             patch.object(manager.scheduling, "probe_slot_pinning") as probe,
@@ -1087,14 +1096,14 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
 
     def test_lease_reaping_is_off_unless_it_is_turned_on(self):
         with (
-            patch.object(manager, "read_env", return_value={"PI_FORGE_LEASE_REAP": "off"}),
+            patch.object(config_env, "read_env", return_value={"PI_FORGE_LEASE_REAP": "off"}),
             patch.object(manager.scheduling, "reap_leases") as reap,
         ):
             manager.sweep_pi_forge_leases()
         reap.assert_not_called()
 
         with (
-            patch.object(manager, "read_env", return_value={"PI_FORGE_LEASE_REAP": "on"}),
+            patch.object(config_env, "read_env", return_value={"PI_FORGE_LEASE_REAP": "on"}),
             patch.object(manager.scheduling, "reap_leases") as reap,
         ):
             manager.sweep_pi_forge_leases()
@@ -1125,10 +1134,10 @@ class ConfigPreflightTests(unittest.TestCase):
 
     def _patches(self, env):
         return (
-            patch.object(manager, "read_env", return_value=env),
+            patch.object(config_env, "read_env", return_value=env),
             patch.object(manager, "get_gpu_info", return_value=self.GPUS),
-            patch.object(manager, "read_meminfo", return_value=self.MEMINFO),
-            patch.object(manager, "CONFIG_FILE", self.config_file),
+            patch.object(core, "read_meminfo", return_value=self.MEMINFO),
+            patch.object(core, "CONFIG_FILE", self.config_file),
         )
 
     def _env(self, **overrides):
@@ -1228,8 +1237,8 @@ class EnvDeprecationTests(unittest.TestCase):
         self.saved_dir.mkdir()
 
     def _patches(self):
-        return (patch.object(manager, "CONFIG_FILE", self.config_file),
-                patch.object(manager, "SAVED_CONFIGS_DIR", self.saved_dir))
+        return (patch.object(core, "CONFIG_FILE", self.config_file),
+                patch.object(core, "SAVED_CONFIGS_DIR", self.saved_dir))
 
     def test_legacy_keys_still_on_disk_are_named_with_their_replacement(self):
         self.config_file.write_text(
@@ -1267,7 +1276,7 @@ class EnvDeprecationTests(unittest.TestCase):
         self.config_file.write_text("CHAT_DENSE_MODEL_PATH=/models/a.gguf\n")
         with manager.app.test_client() as client, self._patches()[0], self._patches()[1]:
             response = client.post("/api/config/deprecations/migrate")
-            resolved = manager.read_env()
+            resolved = config_env.read_env()
         self.assertTrue(response.get_json()["ok"])
         written = self.config_file.read_text()
         self.assertIn("CHAT_PRIMARY_MODEL_PATH=/models/a.gguf", written)
@@ -1277,9 +1286,403 @@ class EnvDeprecationTests(unittest.TestCase):
     def test_read_env_raw_shows_the_file_without_backfill(self):
         self.config_file.write_text("CHAT_DENSE_MODEL_PATH=/models/a.gguf\n")
         with self._patches()[0]:
-            self.assertEqual(manager.read_env_raw(),
+            self.assertEqual(config_env.read_env_raw(),
                              {"CHAT_DENSE_MODEL_PATH": "/models/a.gguf"})
-            self.assertEqual(manager.read_env()["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
+            self.assertEqual(config_env.read_env()["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
+
+
+class RouteInventoryTests(unittest.TestCase):
+    """Every URL the manager serves, pinned.
+
+    The manager's HTTP surface is its whole contract: the UI polls it, the CLI
+    reads `/api/backend/telemetry` through it, and pi-forge's scheduling
+    verification hangs off `/api/scheduling/verify`. That surface is currently
+    defined only by 83 `@app.route` decorators scattered across a 6,000-line
+    module, so a route lost while moving code between files is invisible until
+    a tab stops loading.
+
+    Endpoints are compared on their *suffix* rather than their full name, so
+    registering a route through a blueprint (`graphiti.api_graphiti_status`)
+    still matches the same entry. That is deliberate: this test has to survive
+    the move it exists to police, while still failing if a rule, a method or a
+    view function changes.
+    """
+
+    EXPECTED = {
+        ("/", ("GET",), "index"),
+        ("/api/active-chat-model", ("GET",), "api_active_chat_model"),
+        ("/api/app/update", ("POST",), "api_app_update"),
+        ("/api/backend/budget", ("GET",), "api_backend_budget"),
+        ("/api/backend/budget/recommend", ("GET",), "api_backend_budget_recommend"),
+        ("/api/backend/telemetry", ("GET",), "api_backend_telemetry"),
+        ("/api/chat-templates", ("GET",), "api_chat_templates_list"),
+        ("/api/chat-templates", ("POST",), "api_chat_templates_create"),
+        ("/api/chat-templates/<template_id>", ("DELETE",), "api_chat_templates_delete"),
+        ("/api/chat-templates/<template_id>", ("GET",), "api_chat_templates_get"),
+        ("/api/chat-templates/<template_id>", ("PUT",), "api_chat_templates_update"),
+        ("/api/config", ("GET",), "api_config_get"),
+        ("/api/config", ("POST",), "api_config_save"),
+        ("/api/config/deprecations", ("GET",), "api_config_deprecations"),
+        ("/api/config/deprecations/migrate", ("POST",), "api_config_deprecations_migrate"),
+        ("/api/config/preflight", ("POST",), "api_config_preflight"),
+        ("/api/custom-model-arg-presets/match", ("POST",), "api_custom_model_arg_preset_match"),
+        ("/api/custom-models", ("GET",), "api_custom_models_list"),
+        ("/api/custom-models", ("POST",), "api_custom_models_add"),
+        ("/api/custom-models/<model_id>", ("DELETE",), "api_custom_models_delete"),
+        ("/api/custom-models/<model_id>", ("PUT",), "api_custom_models_update"),
+        ("/api/deploy/check", ("POST",), "api_deploy_check"),
+        ("/api/deploy/status", ("GET",), "api_deploy_status"),
+        ("/api/gguf-files", ("GET",), "api_gguf_files"),
+        ("/api/graphiti/detail/entity/<entity_uuid>", ("GET",), "api_graphiti_entity_detail"),
+        ("/api/graphiti/detail/episode/<episode_uuid>", ("GET",), "api_graphiti_episode_detail"),
+        ("/api/graphiti/detail/relationship/<relationship_uuid>", ("GET",), "api_graphiti_relationship_detail"),
+        ("/api/graphiti/export", ("POST",), "api_graphiti_export"),
+        ("/api/graphiti/exports", ("GET",), "api_graphiti_exports_list"),
+        ("/api/graphiti/exports/<path:filename>", ("GET",), "api_graphiti_export_download"),
+        ("/api/graphiti/neighborhood/<entity_uuid>", ("GET",), "api_graphiti_neighborhood"),
+        ("/api/graphiti/recent/entities", ("GET",), "api_graphiti_recent_entities"),
+        ("/api/graphiti/recent/episodes", ("GET",), "api_graphiti_recent_episodes"),
+        ("/api/graphiti/recent/relationships", ("GET",), "api_graphiti_recent_relationships"),
+        ("/api/graphiti/search/entities", ("GET",), "api_graphiti_search_entities"),
+        ("/api/graphiti/search/group/<group_id>", ("GET",), "api_graphiti_group_history"),
+        ("/api/graphiti/search/memory", ("POST",), "api_graphiti_search_memory"),
+        ("/api/graphiti/stats", ("GET",), "api_graphiti_stats"),
+        ("/api/graphiti/status", ("GET",), "api_graphiti_status"),
+        ("/api/huggingface/downloads", ("GET",), "api_huggingface_downloads_list"),
+        ("/api/huggingface/downloads", ("POST",), "api_huggingface_download_create"),
+        ("/api/huggingface/downloads/<job_id>", ("GET",), "api_huggingface_download_status"),
+        ("/api/huggingface/repo-files", ("POST",), "api_huggingface_repo_files"),
+        ("/api/huggingface/transcription-downloads", ("POST",), "api_huggingface_transcription_download_create"),
+        ("/api/huggingface/transcription-repo-files", ("POST",), "api_huggingface_transcription_repo_files"),
+        ("/api/llamacpp/update", ("POST",), "api_llamacpp_update"),
+        ("/api/logs/<name>", ("GET",), "api_logs"),
+        ("/api/ocr/extract", ("POST",), "api_ocr_extract"),
+        ("/api/ocr/parse", ("POST",), "api_ocr_parse"),
+        ("/api/playwright/install", ("POST",), "api_playwright_install"),
+        ("/api/playwright/status", ("GET",), "api_playwright_status"),
+        ("/api/restore-active-stack", ("POST",), "api_default_mode"),
+        ("/api/saved-configs", ("GET",), "api_saved_configs_list"),
+        ("/api/saved-configs", ("POST",), "api_saved_configs_save"),
+        ("/api/saved-configs/<name>", ("DELETE",), "api_saved_configs_delete"),
+        ("/api/saved-configs/<name>", ("GET",), "api_saved_configs_load"),
+        ("/api/saved-configs/<name>/apply", ("POST",), "api_saved_configs_apply"),
+        ("/api/saved-configs/<name>/default", ("DELETE",), "api_saved_configs_clear_default"),
+        ("/api/saved-configs/<name>/default", ("POST",), "api_saved_configs_set_default"),
+        ("/api/saved-configs/<name>/patch", ("POST",), "api_saved_configs_patch"),
+        ("/api/scheduling/leases/reap", ("POST",), "api_scheduling_leases_reap"),
+        ("/api/scheduling/verify", ("GET",), "api_scheduling_verify"),
+        ("/api/scheduling/verify", ("POST",), "api_scheduling_verify_probe"),
+        ("/api/searxng/install", ("POST",), "api_searxng_install"),
+        ("/api/searxng/status", ("GET",), "api_searxng_status"),
+        ("/api/service/<name>/<action>", ("POST",), "api_service_action"),
+        ("/api/service/<name>/expect", ("POST",), "api_service_expect"),
+        ("/api/service/<name>/health", ("GET",), "api_service_health"),
+        ("/api/setup/jobs/<job_id>", ("GET",), "api_setup_job"),
+        ("/api/setup/jobs/<job_id>/retry", ("POST",), "api_setup_job_retry"),
+        ("/api/setup/models/inspect", ("POST",), "api_setup_model_inspect"),
+        ("/api/setup/placement", ("GET",), "api_setup_placement"),
+        ("/api/setup/preflight", ("GET",), "api_setup_preflight"),
+        ("/api/setup/repair", ("POST",), "api_setup_repair"),
+        ("/api/setup/run", ("POST",), "api_setup_run"),
+        ("/api/setup/selection", ("GET", "PUT"), "api_setup_selection"),
+        ("/api/setup/uninstall", ("POST",), "api_setup_uninstall"),
+        ("/api/setup/validation", ("GET",), "api_setup_validation"),
+        ("/api/status", ("GET",), "api_status"),
+        ("/api/switch/<variant>", ("POST",), "api_switch"),
+        ("/api/transcription-capabilities", ("GET",), "api_transcription_capabilities"),
+        ("/api/transcription-models/<engine_id>", ("GET",), "api_transcription_models"),
+        ("/api/tts/activate/<backend_id>", ("POST",), "api_tts_activate"),
+        ("/api/tts/overview", ("GET",), "api_tts_overview"),
+        ("/api/tts/test", ("POST",), "api_tts_test"),
+        ("/static/<path:filename>", ("GET",), "static"),
+    }
+
+    @staticmethod
+    def _inventory() -> set[tuple]:
+        inventory = set()
+        for rule in manager.app.url_map.iter_rules():
+            methods = tuple(sorted(m for m in rule.methods if m not in {"HEAD", "OPTIONS"}))
+            inventory.add((str(rule), methods, rule.endpoint.rsplit(".", 1)[-1]))
+        return inventory
+
+    def test_the_url_map_matches_the_pinned_inventory(self):
+        actual = self._inventory()
+        self.assertEqual(
+            sorted(self.EXPECTED - actual), [],
+            "routes disappeared from the url map",
+        )
+        self.assertEqual(
+            sorted(actual - self.EXPECTED), [],
+            "routes were added without being pinned here; add them to EXPECTED "
+            "so the next move cannot drop them silently",
+        )
+
+    def test_every_route_is_reachable_by_its_endpoint(self):
+        """A blueprint registered twice, or under a prefix, changes the rule
+        without changing the decorator. Resolving each rule back through the map
+        catches that."""
+        adapter = manager.app.url_map.bind("localhost")
+        for rule, methods, _endpoint in sorted(self.EXPECTED):
+            if "<" in rule:
+                continue
+            for method in methods:
+                self.assertTrue(adapter.test(rule, method=method),
+                                f"{method} {rule} does not resolve")
+
+
+class DeployRouteTests(unittest.TestCase):
+    """The endpoints the header badge reads.
+
+    `/api/deploy/status` is on the 5s poll path, so the one behaviour that has
+    to hold is that it never reaches the network itself — the fetch belongs to
+    the watcher's thread.
+    """
+
+    def test_status_serves_the_cache_without_fetching_on_the_request_thread(self):
+        """The badge is on the 5s poll path. Filling the cache is the watcher
+        thread's job; the request only ever reads it."""
+        with patch.object(manager.DEPLOY_WATCHER, "start"), \
+                patch.object(manager.DEPLOY_WATCHER, "check") as check, \
+                patch.object(manager.DEPLOY_WATCHER, "snapshot",
+                             return_value={"ok": True, "head_short": "abc1234", "behind": 0}), \
+                manager.app.test_client() as client:
+            payload = client.get("/api/deploy/status").get_json()
+        check.assert_not_called()
+        self.assertEqual(payload["head_short"], "abc1234")
+        self.assertEqual(payload["summary"]["state"], "current")
+        self.assertEqual(payload["remedy"], manager.deploy.REMEDY)
+
+    def test_the_first_check_happens_without_waiting_for_the_interval(self):
+        """Otherwise the badge would say nothing for the first 15 minutes after
+        a restart, which is exactly when a fresh deploy is being looked at."""
+        watcher = manager.deploy.DriftWatcher(core.STACK_DIR, interval=3600)
+        done = threading.Event()
+        with patch.object(watcher, "check", side_effect=lambda: done.set()):
+            watcher.start(lambda: {"LLM_MANAGER_DEPLOY_CHECK_INTERVAL": "3600"})
+            self.assertTrue(done.wait(timeout=5), "the watcher thread never ran a check")
+
+    def test_check_forces_a_refresh(self):
+        with patch.object(manager.DEPLOY_WATCHER, "check",
+                          return_value={"ok": True, "behind": 2, "upstream": "origin/main"}) as check, \
+                manager.app.test_client() as client:
+            payload = client.post("/api/deploy/check").get_json()
+        check.assert_called_once()
+        self.assertEqual(payload["summary"]["state"], "behind")
+        self.assertIn("2 commits behind", payload["summary"]["message"])
+
+    def test_status_carries_the_deployment_report(self):
+        """The badge is fed by the poll the UI already makes, not a new timer."""
+        with patch.object(config_env, "read_env", return_value={}), \
+                patch.object(manager, "service_health_snapshot", return_value=({}, {})), \
+                patch.object(manager, "get_gpu_info", return_value=[]), \
+                patch.object(manager, "backend_context_summary", return_value={}), \
+                patch.object(manager.DEPLOY_WATCHER, "snapshot",
+                             return_value={"ok": True, "behind": 0, "head_short": "abc1234"}), \
+                manager.app.test_client() as client:
+            payload = client.get("/api/status").get_json()
+        self.assertEqual(payload["deployment"]["head_short"], "abc1234")
+        self.assertEqual(payload["deployment"]["summary"]["state"], "current")
+
+    def test_the_watcher_points_at_the_tree_the_manager_runs_from(self):
+        self.assertEqual(pathlib.Path(manager.DEPLOY_WATCHER.stack_dir), core.STACK_DIR)
+
+
+class ModuleBoundaryTests(unittest.TestCase):
+    """How the split modules are allowed to reach each other.
+
+    A blueprint that does `from models import parse_huggingface_repo_ref` binds
+    that function once, at import time. Substituting `models.parse_huggingface_repo_ref`
+    afterwards then changes nothing the route can see — it is still holding the
+    original. That is not hypothetical: it is how this refactor first broke, and
+    the failure is quiet, because the route keeps working and only the test's
+    substitution goes missing.
+
+    So the rule is: behaviour is reached through the module, data is bound. The
+    tables in `config_fields` are read and never replaced, so binding them is
+    both safe and more readable than `config_fields.CONFIG_FIELDS` everywhere.
+    """
+
+    BEHAVIOUR_MODULES = {"core", "config_env", "models", "graphiti", "deploy",
+                         "health", "telemetry", "scheduling", "budget"}
+
+    @staticmethod
+    def _python_sources():
+        web = pathlib.Path(__file__).resolve().parents[1] / "web"
+        return [p for p in sorted(web.rglob("*.py")) if "__pycache__" not in str(p)]
+
+    def test_behaviour_modules_are_never_bound_into_another_module(self):
+        import ast
+        offenders = []
+        for path in self._python_sources():
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.ImportFrom) and node.module in self.BEHAVIOUR_MODULES:
+                    names = ", ".join(a.name for a in node.names)
+                    offenders.append(f"{path.name}:{node.lineno} from {node.module} import {names}")
+        self.assertEqual(
+            offenders, [],
+            "these bind names that tests substitute; import the module and call "
+            "`module.name()` instead",
+        )
+
+    def test_no_module_imports_the_application(self):
+        """`app.py` imports the others, so any import back would be a cycle — and
+        would load a second copy under a different name when tests load app.py
+        by path."""
+        import ast
+        offenders = []
+        for path in self._python_sources():
+            if path.name == "app.py":
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Import) and any(a.name == "app" for a in node.names):
+                    offenders.append(f"{path.name}:{node.lineno}")
+                if isinstance(node, ast.ImportFrom) and node.module == "app":
+                    offenders.append(f"{path.name}:{node.lineno}")
+        self.assertEqual(offenders, [], "modules must not import app.py")
+
+    def test_blueprints_carry_no_url_prefix(self):
+        """A prefix would silently rewrite every rule in the group."""
+        for name, blueprint in manager.app.blueprints.items():
+            with self.subTest(blueprint=name):
+                self.assertIn(blueprint.url_prefix, (None, ""),
+                              f"blueprint {name} would rewrite its rules")
+
+
+class ConfigNormalizationTests(unittest.TestCase):
+    """The read/write path every config surface funnels through.
+
+    Four functions sit between what the operator types and what reaches
+    `llm-stack.env`: `normalize_config_updates` rewrites legacy key names to
+    canonical ones on the way in, `allowed_config_keys` decides what may be
+    written at all, `filter_config_updates` applies both, and
+    `normalize_env_keys` backfills canonical keys from legacy twins on the way
+    out. Between them they are why a saved profile written under the old
+    `CHAT_DENSE_*` names still loads.
+
+    They had five assertions before this class existed, which is not enough to
+    move them into another module with any confidence.
+    """
+
+    def test_every_legacy_key_normalizes_to_its_canonical_name(self):
+        for legacy, canonical in manager.LEGACY_ENV_KEY_MAP.items():
+            with self.subTest(legacy=legacy):
+                self.assertEqual(
+                    config_env.normalize_config_updates({legacy: "value"}),
+                    {canonical: "value"},
+                )
+
+    def test_an_explicit_canonical_value_wins_over_its_legacy_alias(self):
+        """Both names in one payload is the saved-profile case: profiles written
+        before the rename carry both, and the canonical one is the current
+        truth."""
+        for canonical, aliases in manager.NEW_ENV_KEY_LEGACY_ALIASES.items():
+            for legacy in aliases:
+                with self.subTest(canonical=canonical, legacy=legacy):
+                    normalized = config_env.normalize_config_updates(
+                        {canonical: "canonical", legacy: "legacy"})
+                    self.assertEqual(normalized[canonical], "canonical")
+
+    def test_legacy_aliases_cover_every_mapped_key(self):
+        self.assertEqual(
+            sorted(manager.NEW_ENV_KEY_LEGACY_ALIASES),
+            sorted(set(manager.LEGACY_ENV_KEY_MAP.values())),
+        )
+        for canonical, aliases in manager.NEW_ENV_KEY_LEGACY_ALIASES.items():
+            for legacy in aliases:
+                self.assertEqual(manager.LEGACY_ENV_KEY_MAP[legacy], canonical)
+
+    def test_normalize_env_keys_backfills_every_legacy_key_it_maps(self):
+        for legacy, canonical in manager.LEGACY_ENV_KEY_MAP.items():
+            with self.subTest(legacy=legacy):
+                env = config_env.normalize_env_keys({legacy: "/models/x.gguf"})
+                # The two label keys are deliberately renamed away from their
+                # old model-shaped defaults; every other key passes through.
+                if legacy not in ("CHAT_DENSE_LABEL", "CHAT_MOE_LABEL"):
+                    self.assertEqual(env[canonical], "/models/x.gguf")
+                else:
+                    self.assertTrue(env[canonical])
+
+    def test_normalize_env_keys_does_not_overwrite_a_canonical_value(self):
+        env = config_env.normalize_env_keys({
+            "CHAT_DENSE_CTX_SIZE": "32768",
+            "CHAT_PRIMARY_CTX_SIZE": "131072",
+        })
+        self.assertEqual(env["CHAT_PRIMARY_CTX_SIZE"], "131072")
+
+    def test_every_code_mirror_reaches_its_chat_keys(self):
+        for code_key, chat_keys in manager.CODE_TO_CHAT_MIRRORS.items():
+            expected = chat_keys if isinstance(chat_keys, list) else [chat_keys]
+            with self.subTest(code_key=code_key):
+                mirrored = config_env.apply_code_chat_mirrors({code_key: "mirrored"})
+                for chat_key in expected:
+                    self.assertEqual(mirrored[chat_key], "mirrored")
+
+    def test_an_explicit_chat_value_is_never_overwritten_by_its_code_mirror(self):
+        """Regression this function's docstring describes: a full saved config
+        carries both, and a legacy CODE_* default must not clobber the saved
+        shared-backend value."""
+        for code_key, chat_keys in manager.CODE_TO_CHAT_MIRRORS.items():
+            expected = chat_keys if isinstance(chat_keys, list) else [chat_keys]
+            for chat_key in expected:
+                with self.subTest(code_key=code_key, chat_key=chat_key):
+                    mirrored = config_env.apply_code_chat_mirrors(
+                        {code_key: "from-code", chat_key: "explicit"})
+                    self.assertEqual(mirrored[chat_key], "explicit")
+
+    def test_context_size_mirrors_onto_all_three_chat_keys(self):
+        mirrored = config_env.apply_code_chat_mirrors({"CODE_CTX_SIZE": "131072"})
+        for key in ("CHAT_CTX_SIZE", "CHAT_DENSE_CTX_SIZE", "CHAT_MOE_CTX_SIZE"):
+            self.assertEqual(mirrored[key], "131072")
+
+    def test_unknown_keys_are_dropped(self):
+        filtered = config_env.filter_config_updates(
+            {"CHAT_PRIMARY_CTX_SIZE": "131072", "RM_RF_SLASH": "1"}, env={})
+        self.assertEqual(filtered, {"CHAT_PRIMARY_CTX_SIZE": "131072"})
+
+    def test_keys_already_in_the_env_file_survive_even_without_a_ui_field(self):
+        """Saved configs predate some UI controls; dropping their values on
+        apply would silently reconfigure the stack."""
+        filtered = config_env.filter_config_updates(
+            {"SOME_UNLISTED_KEY": "kept"}, env={"SOME_UNLISTED_KEY": "old"})
+        self.assertEqual(filtered, {"SOME_UNLISTED_KEY": "kept"})
+        self.assertEqual(config_env.filter_config_updates({"SOME_UNLISTED_KEY": "kept"}, env={}), {})
+
+    def test_allowed_keys_span_every_source_it_claims(self):
+        allowed = config_env.allowed_config_keys(env={"ADHOC_KEY": ""})
+        self.assertIn("CHAT_PRIMARY_CTX_SIZE", allowed)          # CONFIG_FIELDS
+        self.assertIn("CHAT_DENSE_CTX_SIZE", allowed)            # legacy names
+        self.assertIn("ADHOC_KEY", allowed)                      # current env
+        self.assertTrue(set(manager.RESTART_HINTS) <= allowed)
+
+    def test_values_are_coerced_to_strings_and_none_becomes_empty(self):
+        filtered = config_env.filter_config_updates({
+            "CHAT_PRIMARY_CTX_SIZE": 131072,
+            "CHAT_PRIMARY_FLASH_ATTN": True,
+            "CHAT_PRIMARY_FIT_TARGET": None,
+        }, env={})
+        self.assertEqual(filtered["CHAT_PRIMARY_CTX_SIZE"], "131072")
+        self.assertEqual(filtered["CHAT_PRIMARY_FLASH_ATTN"], "True")
+        self.assertEqual(filtered["CHAT_PRIMARY_FIT_TARGET"], "")
+
+    def test_structured_values_are_rejected_rather_than_stringified(self):
+        filtered = config_env.filter_config_updates(
+            {"CHAT_PRIMARY_CTX_SIZE": {"nested": 1}, "CHAT_PRIMARY_MODEL_PATH": ["a"]}, env={})
+        self.assertEqual(filtered, {})
+
+    def test_a_non_dict_payload_is_not_an_error(self):
+        for payload in (None, [], "CHAT_PRIMARY_CTX_SIZE=1", 7):
+            self.assertEqual(config_env.filter_config_updates(payload, env={}), {})
+
+    def test_config_form_snapshot_round_trips_a_saved_profile(self):
+        values = {
+            "CHAT_DENSE_MODEL_PATH": "/models/a.gguf",
+            "CHAT_PRIMARY_CTX_SIZE": "131072",
+            "CHAT_PRIMARY_N_PARALLEL": "2",
+        }
+        snapshot = config_env.config_form_snapshot(values, env={})
+        self.assertEqual(snapshot["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
+        self.assertEqual(snapshot["CHAT_PRIMARY_CTX_SIZE"], "131072")
+        self.assertEqual(config_env.config_form_snapshot(snapshot, env={}), snapshot)
 
 
 if __name__ == "__main__":
