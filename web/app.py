@@ -43,6 +43,8 @@ import setup_engine
 # path (as the tests do) resolves sibling modules the same way systemd does.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import budget
+import health
+import scheduling
 import telemetry
 
 class ServiceManager:
@@ -53,20 +55,65 @@ class ServiceManager:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
     @classmethod
-    def is_active(cls, name: str) -> bool:
+    def state(cls, name: str) -> dict:
+        """Load and activation state in one call.
+
+        `is-active` collapses a crashed unit into "not active", which is how a
+        unit that died and a unit somebody stopped came to look identical. One
+        `systemctl show` answers both questions, and costs one subprocess where
+        `is_active` plus `is_installed` cost two — the status poll runs this for
+        every service every five seconds.
+        """
         if cls.IS_MAC:
-            r = cls.run_cmd(["launchctl", "list", f"com.llmstack.{name}"], timeout=5)
-            if r.returncode != 0:
-                return False
-            try:
-                import json
-                data = json.loads(r.stdout.strip())
-                return int(data.get("PID", 0)) > 0
-            except Exception:
-                return False
-        else:
-            r = cls.run_cmd(["systemctl", "is-active", name], timeout=5)
-            return r.stdout.strip() == "active"
+            label = f"com.llmstack.{name}"
+            r = cls.run_cmd(["launchctl", "list", label], timeout=5)
+            plist = Path(f"/Library/LaunchDaemons/{label}.plist")
+            pid = 0
+            if r.returncode == 0:
+                try:
+                    pid = int(json.loads(r.stdout.strip()).get("PID", 0))
+                except Exception:
+                    pid = 0
+            return {
+                "installed": plist.exists(),
+                "active": pid > 0,
+                "failed": False,
+                "active_state": "active" if pid > 0 else "inactive",
+                "sub_state": "",
+                "result": "",
+                "main_pid": pid,
+            }
+
+        r = cls.run_cmd(
+            ["systemctl", "show", name,
+             "--property=LoadState,ActiveState,SubState,Result,MainPID"],
+            timeout=5)
+        fields = {}
+        for line in (r.stdout or "").splitlines():
+            key, _, value = line.partition("=")
+            fields[key.strip()] = value.strip()
+        active_state = fields.get("ActiveState", "")
+        try:
+            main_pid = int(fields.get("MainPID", "0") or "0")
+        except ValueError:
+            main_pid = 0
+        return {
+            "installed": r.returncode == 0 and fields.get("LoadState", "") not in ("", "not-found"),
+            "active": active_state == "active",
+            # systemd's own definition. `Result` is reported alongside for the
+            # detail view but is deliberately not part of this test: it survives
+            # a later `stop`, so a unit that crashed once and was then stopped
+            # on purpose would otherwise read as failed forever.
+            "failed": active_state == "failed",
+            "active_state": active_state,
+            "sub_state": fields.get("SubState", ""),
+            "result": fields.get("Result", ""),
+            "main_pid": main_pid,
+        }
+
+    @classmethod
+    def is_active(cls, name: str) -> bool:
+        return cls.state(name)["active"]
 
     @classmethod
     def start(cls, name: str, timeout=30) -> subprocess.CompletedProcess:
@@ -130,13 +177,7 @@ class ServiceManager:
 
     @classmethod
     def is_installed(cls, name: str) -> bool:
-        if cls.IS_MAC:
-            from pathlib import Path
-            plist = Path(f"/Library/LaunchDaemons/com.llmstack.{name}.plist")
-            return plist.exists()
-        else:
-            r = cls.run_cmd(["systemctl", "show", name, "--property=LoadState", "--value"], timeout=5)
-            return r.returncode == 0 and r.stdout.strip() != "not-found"
+        return cls.state(name)["installed"]
 
 app = Flask(__name__)
 SETUP_RUNNER = setup_engine.SetupRunner()
@@ -823,6 +864,11 @@ CONFIG_FIELDS = [
     {"section": "Ports",       "key": "CHAT_BACKEND_PORT",          "label": "Backend Port",         "type": "number"},
     {"section": "Ports",       "key": "CHAT_BACKEND_HOST",          "label": "Backend Host",         "type": "text"},
     {"section": "Ports",       "key": "LISTEN_HOST",                "label": "Listen Host",          "type": "select", "options": ["0.0.0.0", "127.0.0.1"]},
+    # pi-forge integration. Slot scheduling is coordinated through lease files
+    # in pi-forge's own agent directory; the manager reads them to verify the
+    # contract, and only writes there when explicitly allowed to.
+    {"section": "Primary Backend", "key": "PI_FORGE_AGENT_DIR",     "label": "pi-forge Agent Directory", "type": "text",   "hint": "Holds inference-leases/. Blank uses the stack owner's ~/.pi-forge/agent"},
+    {"section": "Primary Backend", "key": "PI_FORGE_LEASE_REAP",    "label": "Reap Orphaned Leases",     "type": "select", "options": ["off", "on"], "hint": "Periodically delete leases whose writing process is gone; the panel's Reap button does this on request either way"},
     # TTS Gateway
     {"section": "TTS Gateway", "key": "TTS_PUBLIC_URL",             "label": "Public TTS URL",       "type": "text",   "hint": "Stable URL clients should use"},
     {"section": "TTS Gateway", "key": "TTS_GATEWAY_HOST",           "label": "Gateway Listen Host",  "type": "text"},
@@ -1892,14 +1938,30 @@ def get_service_status(name: str) -> str:
             return output.strip() or 'unknown'
         return 'failed'
     try:
-        if ServiceManager.is_active(name):
+        state = ServiceManager.state(name)
+        if state['active']:
             return 'active'
-        elif ServiceManager.is_installed(name):
-            return 'inactive'
-        else:
-            return 'unknown'
+        # A crashed unit used to be indistinguishable from a stopped one, since
+        # `is-active` reports neither as active. Callers that compare against
+        # 'active' are unaffected; the services panel now has something to say.
+        if state['failed']:
+            return 'failed'
+        return 'inactive' if state['installed'] else 'unknown'
     except Exception:
         return 'unknown'
+
+
+def record_service_expectation(name: str, action: str, ok: bool, source: str = 'operator') -> None:
+    """Remember that a service was deliberately started or stopped.
+
+    Only a successful action counts. A stop that failed leaves the service
+    running, so recording it as expected-off would mislabel a card that is
+    working; a start that failed generally lands the unit in `failed`, which
+    already says more than an expectation would.
+    """
+    if not ok:
+        return
+    health.record_expectation(name, 'off' if action == 'stop' else 'on', source=source)
 
 
 def active_chat_model_snapshot(env: dict | None = None) -> dict:
@@ -2005,6 +2067,14 @@ def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str
     return r.returncode == 0, (r.stdout + r.stderr).strip(), ["chat-backend", "chat-proxy"]
 
 
+def process_cmdline(pid: int) -> str:
+    """How a process was actually launched, which is not always how it is configured."""
+    try:
+        return Path(f"/proc/{int(pid)}/cmdline").read_text(errors="ignore").replace("\x00", " ").strip()
+    except Exception:
+        return ""
+
+
 def service_main_pids() -> dict[int, str]:
     mapping = {}
     for svc in SERVICES:
@@ -2023,11 +2093,7 @@ def service_main_pids() -> dict[int, str]:
 def label_gpu_process(pid: int, process_name: str, service_pids: dict[int, str]) -> str:
     if pid in service_pids:
         return service_pids[pid]
-    try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_text(errors="ignore").replace("\x00", " ").strip()
-    except Exception:
-        cmdline = ""
-    haystack = f"{process_name} {cmdline}"
+    haystack = f"{process_name} {process_cmdline(pid)}"
     for svc in SERVICES:
         name = svc.get("name", "")
         if name and (name in haystack or f"start-{name}.sh" in haystack):
@@ -3732,11 +3798,51 @@ def index():
                            models_dir=str(MODELS_DIR))
 
 
+def all_service_statuses(env: dict | None = None) -> dict:
+    """Unit state for every service the panel shows, plus every upstream.
+
+    Units that only appear as somebody's upstream are asked about too: the panel
+    shows one card for the primary backend, but three mutually exclusive units
+    can serve it, and a proxy whose backend is one of the other two is not
+    degraded.
+    """
+    env = env or read_env()
+    panel = {s['name'] for s in patch_service_labels(env)}
+    return {name: get_service_status(name) for name in panel | health.dependency_units()}
+
+
+def sweep_pi_forge_leases() -> None:
+    """Opt-in orphan reaping, riding the health prober's cadence.
+
+    Off by default: `~/.pi-forge/agent/inference-leases` belongs to pi-forge, and
+    the manager should not delete another program's files unless asked. Asking
+    is either this flag or the button, and both use the same conservative rule.
+    """
+    env = read_env()
+    if str(env.get('PI_FORGE_LEASE_REAP', 'off')).strip().lower() != 'on':
+        return
+    scheduling.reap_leases(scheduling.lease_directory(env))
+
+
+health.PROBER.add_task(sweep_pi_forge_leases)
+
+
+def service_health_snapshot(env: dict | None = None) -> tuple[dict, dict]:
+    """(unit statuses for the panel, health for every service it can judge)."""
+    env = env or read_env()
+    statuses = all_service_statuses(env)
+    health.PROBER.start(read_env, all_service_statuses)
+    entries = health.collect(env, statuses, health.PROBER.snapshot())
+    panel = {s['name'] for s in patch_service_labels(env)}
+    return {name: statuses[name] for name in panel}, entries
+
+
 @app.route('/api/status')
 def api_status():
-    statuses = {s['name']: get_service_status(s['name']) for s in patch_service_labels()}
-    return jsonify(services=statuses, gpus=get_gpu_info(),
-                   contexts=backend_context_summary())
+    env = read_env()
+    statuses, service_health = service_health_snapshot(env)
+    return jsonify(services=statuses, health=service_health, gpus=get_gpu_info(),
+                   contexts=backend_context_summary(env))
 
 
 @app.route('/api/backend/telemetry')
@@ -3830,6 +3936,73 @@ def api_backend_budget_recommend():
         slots=slots,
         base_settings=base,
     ) | {"model_path": model_path, "backend": backend})
+
+
+def scheduling_verification(window_seconds: int | None = None) -> dict:
+    """Assemble everything `scheduling.verify` needs from the running stack."""
+    env = read_env()
+    window = telemetry.clamp_window(window_seconds, telemetry.DEFAULT_WINDOW_SECONDS)
+    unit = next((name for name in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend')
+                 if get_service_status(name) == 'active'), None)
+    props = slots = stats = None
+    cmdline = ''
+    if unit:
+        target = next((t for t in telemetry.resolve_targets(env, get_service_status)
+                       if t['name'] == 'chat-primary'), None)
+        if target:
+            props = telemetry.probe_props(target['base_url'])
+            slots = telemetry.probe_slots(target['base_url'])
+        cmdline = process_cmdline(ServiceManager.get_pid(unit))
+        collector = telemetry.REGISTRY.collector(unit, window)
+        stats = telemetry.summarize(collector.snapshot(), window)
+    return scheduling.verify(
+        env, unit=unit, unit_active=bool(unit), cmdline=cmdline,
+        props=props, slots=slots, stats=stats, window_seconds=window)
+
+
+@app.route('/api/scheduling/verify')
+def api_scheduling_verify():
+    """Whether the running backend can honour the pi-forge slot contract.
+
+    Passive: it reads `/props`, `/slots`, the backend's own command line and the
+    journal telemetry already tails. Sending nothing matters here — a probe
+    pinned to a slot displaces the prefix that slot is holding, which is the
+    eviction the rest of this work removed. The active check is the POST below,
+    and it is opt-in.
+    """
+    return jsonify(scheduling_verification(request.args.get('window')))
+
+
+@app.route('/api/scheduling/verify', methods=['POST'])
+def api_scheduling_verify_probe():
+    """The passive report, plus an optional live `id_slot` probe.
+
+    `{"probe": true}` sends one minimal request per slot and reads back from the
+    journal which slot served it. It costs both slots their cached prefixes.
+    """
+    body = request.get_json(silent=True) or {}
+    result = scheduling_verification(body.get('window'))
+    if not body.get('probe'):
+        return jsonify(result)
+    if not result['unit_active']:
+        return jsonify(result | {"probe": {"error": "no primary backend is running"}}), 409
+    window = telemetry.clamp_window(body.get('window'), telemetry.DEFAULT_WINDOW_SECONDS)
+    collector = telemetry.REGISTRY.collector(result['unit'], window)
+    return jsonify(result | {"probe": scheduling.probe_slot_pinning(read_env(), collector)})
+
+
+@app.route('/api/scheduling/leases/reap', methods=['POST'])
+def api_scheduling_leases_reap():
+    """Delete leases whose writer is gone and whose claim is long expired.
+
+    The directory belongs to pi-forge, so this never runs unasked unless
+    `PI_FORGE_LEASE_REAP` is turned on, and it never touches a lease that is
+    fresh or whose process is still alive.
+    """
+    body = request.get_json(silent=True) or {}
+    env = read_env()
+    return jsonify(scheduling.reap_leases(scheduling.lease_directory(env),
+                                          dry_run=bool(body.get('dry_run'))))
 
 
 @app.route('/api/setup/preflight')
@@ -4054,6 +4227,38 @@ def api_setup_uninstall():
     return jsonify(ok=False, error='Unknown uninstall scope'), 400
 
 
+@app.route('/api/service/<name>/health')
+def api_service_health(name):
+    """Everything behind one card's colour: probe, upstreams, expectation."""
+    env = read_env()
+    statuses = all_service_statuses(env)
+    if name not in statuses:
+        return jsonify(ok=False, error='Unknown service'), 400
+    entries = health.collect(env, statuses, health.PROBER.snapshot())
+    endpoint = health.endpoint_for(name, env)
+    return jsonify(ok=True, name=name, health=entries.get(name),
+                   endpoint=f"{endpoint[0]}:{endpoint[1]}" if endpoint else None,
+                   unit=ServiceManager.state(name))
+
+
+@app.route('/api/service/<name>/expect', methods=['POST'])
+def api_service_expect(name):
+    """Say whether a service is meant to be running.
+
+    Nothing else on the box carries this: `systemctl is-enabled` reads
+    `disabled` for units that are running right now, and the `*_ENABLED` env
+    flags read `on` for services that are deliberately stopped.
+    """
+    if name not in {s['name'] for s in patch_service_labels()}:
+        return jsonify(ok=False, error='Unknown service'), 400
+    expected = ((request.get_json(silent=True) or {}).get('expected') or '').strip().lower()
+    try:
+        health.record_expectation(name, expected, source='operator')
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    return jsonify(ok=True, name=name, expected=expected)
+
+
 @app.route('/api/service/<name>/<action>', methods=['POST'])
 def api_service_action(name, action):
     if action not in ('start', 'stop', 'restart'):
@@ -4062,15 +4267,19 @@ def api_service_action(name, action):
         return jsonify(ok=False, error='Unknown service'), 400
     if is_searxng_service(name):
         ok, output = run_searxng_manager(action)
+        record_service_expectation(name, action, ok)
         return jsonify(ok=ok, output=output)
     if should_use_local_transcript_manager(name):
         ok, output = run_transcript_manager(action)
+        record_service_expectation(name, action, ok)
         return jsonify(ok=ok, output=output)
     if should_use_local_tts_manager(name):
         ok, output = run_tts_manager(name, action)
+        record_service_expectation(name, action, ok)
         return jsonify(ok=ok, output=output)
     try:
         rc, output = ServiceManager.action(action, name, timeout=30)
+        record_service_expectation(name, action, rc == 0)
         return jsonify(ok=(rc == 0), output=output)
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
@@ -4251,13 +4460,8 @@ def playwright_config(env: dict | None = None) -> dict:
     }
 
 
-def tcp_port_open(host: str, port: str | int, timeout: float = 1.5) -> tuple[bool, str]:
-    try:
-        target_host = "127.0.0.1" if host in {"0.0.0.0", "::", ""} else host
-        with socket.create_connection((target_host, int(port)), timeout=timeout):
-            return True, ""
-    except Exception as exc:
-        return False, str(exc)
+# The readiness probes need the same listener check, so it lives with them.
+tcp_port_open = health.tcp_port_open
 
 
 def playwright_browser_cache_candidates(cfg: dict) -> list[Path]:
@@ -5280,6 +5484,10 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
                     continue
                 is_active = get_service_status(name) == 'active'
                 should_be_active = name in active_services
+                # The profile is a statement about which services belong up, so
+                # it is also the expectation the services panel judges against.
+                health.record_expectation(name, 'on' if should_be_active else 'off',
+                                          source='config-apply')
                 if should_be_active and not is_active:
                     ServiceManager.start(name)
                     launched.append(name)

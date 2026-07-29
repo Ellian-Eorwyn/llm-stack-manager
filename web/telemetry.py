@@ -294,6 +294,7 @@ def summarize(events: list[dict], window_seconds: int, now: float | None = None)
     release_tokens: list[float] = []
     delays: list[float] = []
     select_methods: dict[str, int] = {}
+    select_by_id_slots: dict[str, int] = {}
     overflows: list[dict] = []
     launches = 0
     last_generation_ts = None
@@ -310,6 +311,12 @@ def summarize(events: list[dict], window_seconds: int, now: float | None = None)
 
         if kind == "slot_select":
             select_methods[event["method"]] = select_methods.get(event["method"], 0) + 1
+            if event["method"] == "id":
+                # Which slot, not just how many: the pi-forge contract is that
+                # interactive work lands on slot 0 and background work on slot 1,
+                # and a total cannot tell those two apart.
+                slot = str(event["slot"])
+                select_by_id_slots[slot] = select_by_id_slots.get(slot, 0) + 1
             if ts is not None:
                 pending_select[event["slot"]] = ts
         elif kind == "slot_launch":
@@ -375,6 +382,7 @@ def summarize(events: list[dict], window_seconds: int, now: float | None = None)
             "over_2s_pct": round(100 * over_2s / len(delays), 1) if delays else None,
             # `by_id` proves the pi-forge id_slot contract is reaching the backend.
             "select_methods": select_methods,
+            "select_by_id_slots": select_by_id_slots,
         },
         "context": {
             "released_tokens": _distribution(release_tokens),

@@ -403,6 +403,66 @@ class ResponseWritingTests(unittest.TestCase):
                          b"Content-Length: 2\r\n\r\n{}")
 
 
+class SlotSchedulingPassthroughTests(unittest.TestCase):
+    """`id_slot` has to survive the proxy, and nothing said so.
+
+    pi-forge pins interactive turns to slot 0 and background work to slot 1 by
+    putting `id_slot` in the request body. The proxy never mentions the field —
+    it works only because every mutation edits the parsed payload in place and
+    unknown keys are re-serialised untouched. That is a property, not a
+    decision, and a future rewrite that rebuilt the payload from known fields
+    would break cooperative scheduling silently: requests would still succeed,
+    just on whichever slot llama.cpp picked.
+    """
+
+    SCHEDULING_FIELDS = {"id_slot": 1, "cache_prompt": True}
+
+    def _round_trip(self, payload: dict) -> dict:
+        raw = json.dumps(payload).encode("utf-8")
+        parsed = proxy._safe_json_loads(raw)
+        proxy._inject_thinking(parsed, True, True)
+        proxy._strip_tool_fields(parsed)
+        proxy._inject_overrides(parsed, proxy.CODE_OVERRIDES)
+        proxy._inject_max_tokens(parsed, "chat", 4096)
+        return json.loads(proxy._body_from_json(parsed, raw))
+
+    def test_the_scheduling_fields_reach_the_backend_unchanged(self):
+        sent = self._round_trip({
+            "model": "code",
+            "messages": [{"role": "user", "content": "hi"}],
+            **self.SCHEDULING_FIELDS,
+        })
+        self.assertEqual(sent["id_slot"], 1)
+        self.assertIs(sent["cache_prompt"], True)
+
+    def test_slot_zero_is_not_dropped_as_falsy(self):
+        # The interactive slot is 0, so any `if payload.get("id_slot")` guard
+        # anywhere in this path would silently unpin every interactive turn.
+        sent = self._round_trip({
+            "model": "chat",
+            "messages": [{"role": "user", "content": "hi"}],
+            "id_slot": 0,
+        })
+        self.assertIn("id_slot", sent)
+        self.assertEqual(sent["id_slot"], 0)
+
+    def test_tool_stripping_does_not_take_the_slot_with_it(self):
+        sent = self._round_trip({
+            "model": "code",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "noop"}}],
+            **self.SCHEDULING_FIELDS,
+        })
+        self.assertNotIn("tools", sent)
+        self.assertEqual(sent["id_slot"], 1)
+
+    def test_memory_injection_leaves_the_slot_alone(self):
+        payload = {"model": "chat", "messages": [{"role": "user", "content": "hi"}],
+                   **self.SCHEDULING_FIELDS}
+        proxy._inject_memory(payload, "chat", "remember this")
+        self.assertEqual(payload["id_slot"], 1)
+
+
 class ListenerTests(unittest.TestCase):
     def test_the_accept_queue_is_deeper_than_the_default_five(self):
         """Measured: 300 rapid connections to :8008 with a backlog of 5 gave a

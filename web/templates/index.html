@@ -341,16 +341,27 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 .svc-card:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0,0,0,0.25); border-color: rgba(255,255,255,0.12); }
 .svc-card[data-status="active"]::before   { background: var(--success); }
 .svc-card[data-status="failed"]::before   { background: var(--danger);  }
-.svc-card[data-status="inactive"]::before { background: var(--muted);   }
+/* Running but not serving: its own colour, because green would be a lie and
+   red would say the process is gone when it is not. */
+.svc-card[data-status="degraded"]::before { background: var(--warning); }
+/* Off on purpose is grey; off when it was expected up is amber. */
+.svc-card[data-status="stopped"]::before  { background: var(--muted);   }
+.svc-card[data-status="inactive"]::before { background: var(--warning); }
 .card-top  { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; }
 .card-name { font-weight: 600; font-size: 14px; }
 .status-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 2px 8px; border-radius: 20px; }
 .status-pill.active   { background: rgba(16,185,129,.15); color: var(--success); }
-.status-pill.inactive { background: rgba(71,85,105,.15);  color: var(--muted);   }
+.status-pill.inactive { background: rgba(245,158,11,.15); color: var(--warning); }
+.status-pill.stopped  { background: rgba(71,85,105,.15);  color: var(--muted);   }
+.status-pill.degraded { background: rgba(245,158,11,.15); color: var(--warning); }
 .status-pill.failed   { background: rgba(239,68,68,.15);  color: var(--danger);  }
 .status-pill.unknown  { background: rgba(245,158,11,.15); color: var(--warning); }
 .card-desc  { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
 .card-port  { font-size: 11px; font-family: var(--mono); color: var(--muted); margin-bottom: 10px; }
+/* Why a card is not green. Empty, and taking no space, when it is. */
+.card-health { font-size: 11px; color: var(--warning); margin: -6px 0 10px; }
+.card-health:empty { display: none; }
+.card-health.muted { color: var(--muted); }
 .card-acts  { display: flex; gap: 6px; flex-wrap: wrap; }
 
 /* -- Config panel -- */
@@ -504,6 +515,19 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 .cache-aware-status ul { margin: 6px 0 0 18px; }
 .cache-aware-status .cache-aware-note { margin-top: 6px; color: #fde68a; }
 .cache-aware-snippet-label { color: var(--muted); font-size: 11px; margin-top: 10px; }
+.sched-verify { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.sched-verify h5 { margin: 0 0 4px; font-size: 13px; }
+.sched-verify-lead { color: var(--dim); font-size: 12px; margin: 0 0 10px; }
+.sched-verify-body { font-size: 12px; }
+.sched-row { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+.sched-row:last-child { border-bottom: 0; }
+.sched-row .k { color: var(--muted); min-width: 150px; }
+.sched-row .v { font-family: var(--mono); }
+.sched-verdict { border-radius: 8px; border: 1px solid var(--border); padding: 8px 12px; margin-bottom: 10px; }
+.sched-verdict.ok { border-color: rgba(16,185,129,.45); color: #a7f3d0; }
+.sched-verdict.warn { border-color: rgba(245,158,11,.45); color: #fde68a; }
+.sched-verdict.bad { border-color: rgba(239,68,68,.45); color: #fecaca; }
+.sched-verify-body ul { margin: 6px 0 0 18px; }
 
 /* Pre-flight: what the memory budget model makes of a configuration. */
 .preflight { margin: 14px 0 0; display: grid; gap: 6px; }
@@ -1075,6 +1099,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
         <div class="card-desc">{{ svc.desc }}</div>
         <div class="card-port">:{{ svc.ports }}</div>
+        <div class="card-health" id="health-{{ svc.name }}"></div>
         <div class="card-ctx" id="ctx-{{ svc.name }}"></div>
         <div class="card-acts">
           <button class="btn btn-success btn-sm" onclick="svcAction('{{ svc.name }}','start',this)">Start</button>
@@ -1567,6 +1592,20 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
         <div id="cache-aware-status-{{ backend_prefix }}" class="cache-aware-status" aria-live="polite">Load configuration to check compatibility.</div>
         <div class="cache-aware-snippet-label">Merge the copied JSON into <code>~/.pi-forge/agent/settings.json</code>. LLM Stack Manager does not modify that file.</div>
+
+        {% if backend_prefix == 'CHAT_PRIMARY' %}
+        <div class="sched-verify" id="sched-verify">
+          <h5>Contract Verification</h5>
+          <p class="sched-verify-lead">What the running backend was launched with, and whether pi-forge's slot pinning is actually reaching it. Read from <code>/props</code>, the backend's own command line and the journal — no requests are sent.</p>
+          <div class="sched-verify-body" id="sched-verify-body">Not checked yet.</div>
+          <div class="cache-aware-actions">
+            <button class="btn btn-ghost btn-sm" type="button" onclick="refreshSchedulingVerify(this)">Re-check</button>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="reapPiForgeLeases(this)">Reap Orphaned Leases</button>
+            <button class="btn btn-danger btn-sm" type="button" onclick="runSchedulingProbe(this)" title="Sends one request to each slot. Both slots lose their cached prefix.">Send Slot Probe</button>
+          </div>
+          <div class="cache-aware-snippet-label">The slot probe displaces whatever prompt prefix each slot is holding, so the next pi-forge turn reprocesses its context. The report above needs no traffic.</div>
+        </div>
+        {% endif %}
       </div>
 
       <div class="cfg-panel-grid">
@@ -2193,7 +2232,7 @@ async function poll() {
   if (document.hidden) return;
   try {
     const d = await fetchJSON('/api/status');
-    applyStatuses(d.services);
+    applyStatuses(d.services, d.health);
     applyGpus(d.gpus);
     applyServiceContexts(d.contexts);
   } catch {}
@@ -2346,14 +2385,28 @@ async function pollTelemetry() {
   applyTelemetry(payload);
 }
 
-function applyStatuses(statuses) {
+// The unit status says whether the process is running. The health entry says
+// whether it is working — its readiness probe answered, and the services it
+// depends on are up. Prefer the second where there is one; a card whose probe
+// has not run yet still renders from the first rather than going blank.
+function applyStatuses(statuses, health) {
   for (const [name, status] of Object.entries(statuses)) {
     const card = document.getElementById('card-' + name);
     const pill = document.getElementById('pill-' + name);
+    const note = document.getElementById('health-' + name);
     if (!card) continue;
-    card.dataset.status = status;
-    pill.className = 'status-pill ' + status;
-    pill.textContent = status;
+    const entry = (health || {})[name];
+    const state = entry?.state || status;
+    card.dataset.status = state;
+    if (pill) {
+      pill.className = 'status-pill ' + state;
+      pill.textContent = state;
+    }
+    if (note) {
+      // A stopped service is not a fault, so its reason reads muted.
+      note.className = 'card-health' + (state === 'stopped' ? ' muted' : '');
+      note.textContent = state === 'active' ? '' : (entry?.reason || '');
+    }
   }
 }
 
@@ -4641,6 +4694,8 @@ function refreshAllCacheAwareScheduling() {
   for (const prefix of Object.keys(CACHE_AWARE_BACKENDS)) {
     loadCacheAwareRecommendation(prefix).then(() => refreshCacheAwareScheduling(prefix));
   }
+  // Checks the running backend rather than the form, so it trails too.
+  refreshSchedulingVerify();
 }
 
 function initCacheAwareScheduling() {
@@ -4726,6 +4781,113 @@ function showPreflight(section, preflight) {
   }
   panel.innerHTML = parts.join('');
   panel.style.display = parts.length ? 'grid' : 'none';
+}
+
+// -- pi-forge scheduling contract --
+
+function schedRow(key, value) {
+  return `<div class="sched-row"><span class="k">${escapeHtml(key)}</span><span class="v">${escapeHtml(String(value))}</span></div>`;
+}
+
+function renderSchedulingVerify(result) {
+  const body = document.getElementById('sched-verify-body');
+  if (!body) return;
+  if (!result || result.error) {
+    body.innerHTML = `<div class="sched-verdict bad">${escapeHtml(result?.error || 'Verification failed.')}</div>`;
+    return;
+  }
+
+  const parts = [];
+  const evidence = result.evidence || {};
+  const leases = result.leases || {};
+  const counts = leases.counts || {};
+
+  if (!result.unit_active) {
+    parts.push('<div class="sched-verdict warn"><strong>No primary backend is running.</strong> Only the saved configuration could be checked.</div>');
+  } else if (result.ok && evidence.observed) {
+    parts.push('<div class="sched-verdict ok"><strong>Contract holds, and pi-forge is using it.</strong> Both slots have been pinned by id.</div>');
+  } else if (result.ok) {
+    parts.push('<div class="sched-verdict ok"><strong>Contract holds.</strong> No pinned request has been seen in this window, which an idle session explains.</div>');
+  } else {
+    parts.push('<div class="sched-verdict bad"><strong>The backend cannot honour the scheduling contract.</strong></div>');
+  }
+
+  if (result.issues?.length) {
+    parts.push(`<ul>${result.issues.map(i => `<li>${escapeHtml(i)}</li>`).join('')}</ul>`);
+  }
+  // Drift is its own class of problem: the configuration is fine, the running
+  // process is fine, and they are not the same configuration.
+  for (const note of result.drift || []) {
+    parts.push(`<div class="sched-verdict warn">${escapeHtml(note)}</div>`);
+  }
+
+  const runtime = result.runtime || {};
+  const configured = result.configured || {};
+  parts.push(schedRow('Backend unit', result.unit || 'none'));
+  parts.push(schedRow('Slots', `${runtime.total_slots ?? configured.slots ?? '—'} (running) / ${configured.slots ?? '—'} (configured)`));
+  parts.push(schedRow('Context per slot', (runtime.n_ctx_per_slot ?? configured.per_slot_context ?? 0).toLocaleString('en-US')));
+  const byId = evidence.select_by_id_slots || {};
+  parts.push(schedRow(`Pinned to slot ${evidence.interactive_slot ?? 0} (interactive)`, `${byId[String(evidence.interactive_slot ?? 0)] || 0} selections`));
+  parts.push(schedRow(`Pinned to slot ${evidence.background_slot ?? 1} (background)`, `${byId[String(evidence.background_slot ?? 1)] || 0} selections`));
+  const methods = evidence.select_methods || {};
+  parts.push(schedRow('Other slot selections', `${(methods.lcp || 0)} by prefix, ${(methods.lru || 0)} by LRU`));
+
+  const holders = (leases.entries || []).filter(e => e.classification === 'fresh');
+  parts.push(schedRow('Active leases', holders.length
+    ? holders.map(e => `${e.kind} pid ${e.pid} → slot ${e.slot}`).join(', ')
+    : 'none'));
+  parts.push(schedRow('Orphaned leases', `${leases.reapable || 0} reapable of ${(counts.fresh || 0) + (counts.stale || 0) + (counts.orphan || 0) + (counts.malformed || 0)}`));
+  parts.push(schedRow('Lease directory', leases.directory || 'not found'));
+
+  body.innerHTML = parts.join('');
+}
+
+async function refreshSchedulingVerify(btn) {
+  const body = document.getElementById('sched-verify-body');
+  if (!body) return;
+  if (btn) btn.disabled = true;
+  try {
+    renderSchedulingVerify(await fetchJSON('/api/scheduling/verify'));
+  } catch (error) {
+    renderSchedulingVerify({ error: String(error) });
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runSchedulingProbe(btn) {
+  if (!confirm('Send one request to each slot?\n\nThis proves the backend honours id_slot, but both slots lose the prompt prefix they are holding, so the next pi-forge turn reprocesses its context.')) return;
+  if (btn) btn.disabled = true;
+  try {
+    const result = await fetchJSON('/api/scheduling/verify', 'POST', { probe: true });
+    renderSchedulingVerify(result);
+    const probe = result.probe || {};
+    toast(probe.honoured
+      ? 'The backend served each request from the slot it was pinned to.'
+      : `Probe did not confirm pinning: ${probe.error || 'no by-id slot selection appeared in the journal'}`,
+      probe.honoured ? 'ok' : 'err');
+  } catch (error) {
+    toast(`Slot probe failed: ${error}`, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function reapPiForgeLeases(btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const result = await fetchJSON('/api/scheduling/leases/reap', 'POST', { dry_run: false });
+    const removed = (result.removed || []).length;
+    toast(removed
+      ? `Removed ${removed} orphaned lease${removed === 1 ? '' : 's'}.`
+      : 'No orphaned leases — every lease is fresh or its process is still alive.',
+      'ok');
+    await refreshSchedulingVerify();
+  } catch (error) {
+    toast(`Could not reap leases: ${error}`, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function copyPiForgeSchedulingSnippet(btn) {

@@ -131,6 +131,28 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(scheduling["over_1s"], 1)
         self.assertEqual(scheduling["select_methods"], {"lcp": 1, "id": 1})
 
+    def test_by_id_selections_are_counted_per_slot(self):
+        """Which slot was pinned, not just how many were.
+
+        pi-forge pins interactive turns to slot 0 and background work to slot 1.
+        A single `id` total cannot tell a stack where both halves are working
+        from one where every pinned request is landing on the same slot.
+        """
+        events = self._events([
+            (100.0, "slot_select", {"slot": 0, "method": "id"}),
+            (101.0, "slot_select", {"slot": 0, "method": "id"}),
+            (102.0, "slot_select", {"slot": 1, "method": "id"}),
+            (103.0, "slot_select", {"slot": 1, "method": "lru"}),
+        ])
+        scheduling = telemetry.summarize(events, 3600, now=200.0)["scheduling"]
+        self.assertEqual(scheduling["select_by_id_slots"], {"0": 2, "1": 1})
+        self.assertEqual(scheduling["select_methods"], {"id": 3, "lru": 1})
+
+    def test_no_by_id_selections_leaves_the_map_empty(self):
+        events = self._events([(100.0, "slot_select", {"slot": 0, "method": "lcp"})])
+        scheduling = telemetry.summarize(events, 3600, now=200.0)["scheduling"]
+        self.assertEqual(scheduling["select_by_id_slots"], {})
+
     def test_launch_without_a_preceding_select_yields_no_delay(self):
         events = self._events([(100.0, "slot_launch", {"slot": 0, "task": 1})])
         stats = telemetry.summarize(events, 3600, now=200.0)

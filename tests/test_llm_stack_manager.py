@@ -4,6 +4,7 @@ import importlib.util
 import json
 import pathlib
 import re
+import subprocess
 import tempfile
 import unittest
 from collections import Counter
@@ -876,6 +877,171 @@ class ContextAccountingTests(unittest.TestCase):
     def test_a_non_numeric_context_does_not_break_the_status_poll(self):
         with patch.object(manager, "read_env", return_value={"OCR_CTX_SIZE": "lots"}):
             self.assertNotIn("ocr", manager.backend_context_summary())
+
+
+class ServiceHealthTests(unittest.TestCase):
+    """"Active" answered whether a process is running. It was being read as
+    whether the service works, and those came apart on this box: the OCR SDK
+    runs happily with its OCR backend dead."""
+
+    @staticmethod
+    def _systemctl(**states):
+        """Fake `systemctl show`, keyed by unit, returning ActiveState etc."""
+        def run(cmd, timeout=30):
+            unit = cmd[2] if len(cmd) > 2 else ""
+            active_state, load_state = states.get(unit, ("inactive", "loaded"))
+            output = (f"LoadState={load_state}\nActiveState={active_state}\n"
+                      f"SubState=dead\nResult=success\nMainPID=0\n")
+            return subprocess.CompletedProcess(cmd, 0, output, "")
+        return run
+
+    def test_a_crashed_unit_is_no_longer_indistinguishable_from_a_stopped_one(self):
+        with patch.object(manager.ServiceManager, "run_cmd",
+                          side_effect=self._systemctl(embed=("failed", "loaded"))):
+            self.assertEqual(manager.get_service_status("embed"), "failed")
+            self.assertEqual(manager.get_service_status("rerank"), "inactive")
+
+    def test_an_uninstalled_unit_is_unknown(self):
+        with patch.object(manager.ServiceManager, "run_cmd",
+                          side_effect=self._systemctl(ghost=("inactive", "not-found"))):
+            self.assertEqual(manager.get_service_status("ghost"), "unknown")
+
+    def test_unit_state_reads_load_and_activation_in_one_call(self):
+        calls = []
+
+        def run(cmd, timeout=30):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                        "Result=success\nMainPID=4242\n", "")
+
+        with patch.object(manager.ServiceManager, "run_cmd", side_effect=run):
+            state = manager.ServiceManager.state("embed")
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(state["active"] and state["installed"])
+        self.assertEqual(state["main_pid"], 4242)
+
+    def test_status_carries_health_without_changing_the_services_map(self):
+        env = {"CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2"}
+        statuses = {"glmocr-sdk": "active", "ocr": "inactive"}
+        with (
+            manager.app.test_client() as client,
+            patch.object(manager, "read_env", return_value=env),
+            patch.object(manager, "all_service_statuses", return_value=statuses),
+            patch.object(manager, "patch_service_labels",
+                         return_value=[{"name": "glmocr-sdk"}, {"name": "ocr"}]),
+            patch.object(manager, "get_gpu_info", return_value=[]),
+            patch.object(manager.health.PROBER, "start"),
+            patch.object(manager.health.PROBER, "snapshot", return_value={}),
+            patch.object(manager.health, "read_expectations", return_value={}),
+        ):
+            payload = client.get("/api/status").get_json()
+
+        # The panel's contract with this map has not changed: name to string.
+        self.assertEqual(payload["services"], statuses)
+        self.assertEqual(payload["health"]["glmocr-sdk"]["state"], "degraded")
+        self.assertIn("ocr", payload["health"]["glmocr-sdk"]["reason"])
+
+    def test_starting_and_stopping_a_service_records_what_was_meant(self):
+        recorded = []
+        with patch.object(manager.health, "record_expectation",
+                          side_effect=lambda *a, **k: recorded.append((a, k))):
+            manager.record_service_expectation("ocr", "stop", True)
+            manager.record_service_expectation("ocr", "start", True)
+            manager.record_service_expectation("ocr", "restart", True)
+            # A stop that failed leaves the service running, so it says nothing.
+            manager.record_service_expectation("ocr", "stop", False)
+        self.assertEqual([args[1] for args, _ in recorded], ["off", "on", "on"])
+
+    def test_the_expect_route_is_not_swallowed_by_the_action_route(self):
+        with (
+            manager.app.test_client() as client,
+            patch.object(manager, "patch_service_labels", return_value=[{"name": "ocr"}]),
+            patch.object(manager.health, "record_expectation") as record,
+        ):
+            response = client.post("/api/service/ocr/expect", json={"expected": "off"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ok"])
+        record.assert_called_once()
+
+    def test_upstream_units_without_a_card_are_still_asked_about(self):
+        with (
+            patch.object(manager, "read_env", return_value={}),
+            patch.object(manager, "patch_service_labels", return_value=[{"name": "chat-proxy"}]),
+            patch.object(manager, "get_service_status", return_value="inactive"),
+        ):
+            statuses = manager.all_service_statuses()
+        self.assertIn("chat-backend-moe", statuses)
+        self.assertIn("chat-proxy", statuses)
+
+
+class SchedulingVerifyRouteTests(unittest.TestCase):
+    """The pi-forge slot contract worked, and nothing could show that it did."""
+
+    def test_verification_reads_the_stack_and_sends_nothing(self):
+        env = {"CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2",
+               "CHAT_PRIMARY_CACHE_IDLE_SLOTS": "on", "CHAT_PRIMARY_FIT": "off"}
+        stats = {"scheduling": {"select_methods": {"id": 62},
+                                "select_by_id_slots": {"0": 56, "1": 6}}}
+        with (
+            manager.app.test_client() as client,
+            patch.object(manager, "read_env", return_value=env),
+            patch.object(manager, "get_service_status",
+                         side_effect=lambda n: "active" if n == "chat-backend-dense" else "inactive"),
+            patch.object(manager.telemetry, "probe_props",
+                         return_value={"total_slots": 2, "n_ctx_per_slot": 131072}),
+            patch.object(manager.telemetry, "probe_slots", return_value=[]),
+            patch.object(manager.telemetry, "summarize", return_value=stats),
+            patch.object(manager.telemetry.REGISTRY, "collector"),
+            patch.object(manager.ServiceManager, "get_pid", return_value=4242),
+            patch.object(manager, "process_cmdline",
+                         return_value="llama-server --ctx-size 262144 --parallel 2 "
+                                      "--fit off --cache-idle-slots"),
+            patch.object(manager.scheduling, "lease_directory", return_value=None),
+        ):
+            payload = client.get("/api/scheduling/verify").get_json()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["unit"], "chat-backend-dense")
+        self.assertTrue(payload["evidence"]["observed"])
+        self.assertEqual(payload["runtime"]["n_ctx_per_slot"], 131072)
+
+    def test_a_probe_is_refused_when_no_backend_is_running(self):
+        with (
+            manager.app.test_client() as client,
+            patch.object(manager, "read_env", return_value={}),
+            patch.object(manager, "get_service_status", return_value="inactive"),
+            patch.object(manager.scheduling, "lease_directory", return_value=None),
+        ):
+            response = client.post("/api/scheduling/verify", json={"probe": True})
+        self.assertEqual(response.status_code, 409)
+
+    def test_a_post_without_probe_sends_no_requests(self):
+        with (
+            manager.app.test_client() as client,
+            patch.object(manager, "read_env", return_value={}),
+            patch.object(manager, "get_service_status", return_value="inactive"),
+            patch.object(manager.scheduling, "lease_directory", return_value=None),
+            patch.object(manager.scheduling, "probe_slot_pinning") as probe,
+        ):
+            response = client.post("/api/scheduling/verify", json={})
+        self.assertEqual(response.status_code, 200)
+        probe.assert_not_called()
+
+    def test_lease_reaping_is_off_unless_it_is_turned_on(self):
+        with (
+            patch.object(manager, "read_env", return_value={"PI_FORGE_LEASE_REAP": "off"}),
+            patch.object(manager.scheduling, "reap_leases") as reap,
+        ):
+            manager.sweep_pi_forge_leases()
+        reap.assert_not_called()
+
+        with (
+            patch.object(manager, "read_env", return_value={"PI_FORGE_LEASE_REAP": "on"}),
+            patch.object(manager.scheduling, "reap_leases") as reap,
+        ):
+            manager.sweep_pi_forge_leases()
+        reap.assert_called_once()
 
 
 class ConfigPreflightTests(unittest.TestCase):
