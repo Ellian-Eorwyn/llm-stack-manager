@@ -41,3 +41,6 @@ __pycache__/
 # Generated local config/state
 /config/default-saved-config
 /config/glmocr-sdk.json
+# Which services this box is meant to be running. Recorded by the manager as
+# they are started and stopped, so it is per-install state, not configuration.
+/config/service-expectations.json
