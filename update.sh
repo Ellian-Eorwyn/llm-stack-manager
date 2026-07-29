@@ -24,6 +24,11 @@ BACKEND_SENSITIVE_PATHS=(
     "scripts/start-rerank"
     "scripts/start-task"
     "scripts/start-ocr"
+    # Sourced by every launcher, and it decides which flags reach llama-server.
+    "scripts/lib/"
+    # The launchers consult the budget model at startup to skip flags the
+    # loaded model cannot act on, so a change here changes the next launch.
+    "web/budget.py"
 )
 
 usage() {

@@ -11,6 +11,7 @@ set -euo pipefail
 # Load configuration
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
+source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
 LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
 export LD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
 export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
@@ -30,7 +31,7 @@ echo "[task] Device override:  ${TASK_DEVICE:-auto}"
 echo "[task] Placement:        split=${TASK_SPLIT_MODE} kv-offload=${TASK_KV_OFFLOAD:-on} op-offload=${TASK_OP_OFFLOAD:-on} mmproj-offload=${TASK_MMPROJ_OFFLOAD:-on}"
 echo "[task] CPU threads:      ${TASK_THREADS:--1} (batch=${TASK_THREADS_BATCH:--1})"
 echo "[task] KV cache:         K=${TASK_CACHE_TYPE_K} V=${TASK_CACHE_TYPE_V}"
-echo "[task] Prompt cache:     ram=${TASK_CACHE_RAM:-8192} MiB ctx-checkpoints=${TASK_CTX_CHECKPOINTS:-32}"
+echo "[task] Prompt cache:     ram=${TASK_CACHE_RAM:-8192} MiB ctx-checkpoints=${TASK_CTX_CHECKPOINTS:-8}"
 echo "[task] SWA full cache:   ${TASK_SWA_FULL:-off}"
 echo "[task] Jinja:            ${TASK_JINJA:-off}"
 echo "[task] Thinking:         ${TASK_THINKING:-off}"
@@ -49,10 +50,10 @@ OPTS=()
 [[ "${TASK_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${TASK_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${TASK_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
-[[ "${TASK_SWA_FULL:-off}" == "on" ]] && OPTS+=(--swa-full)
+add_swa_full_opt "[task]" "${TASK_SWA_FULL:-off}" "${TASK_MODEL_PATH:-}"
 [[ -n "${TASK_MMPROJ_PATH:-}" && -f "${TASK_MMPROJ_PATH}" ]] && OPTS+=(--mmproj "${TASK_MMPROJ_PATH}")
 [[ -n "${TASK_FIT_TARGET:-}" ]] && OPTS+=(--fit-target "${TASK_FIT_TARGET}")
-[[ -n "${TASK_FIT_CTX:-}" && "${TASK_FIT_CTX}" != "0" ]] && OPTS+=(--fit-ctx "${TASK_FIT_CTX}")
+add_fit_ctx_opt "[task]" "${TASK_FIT:-on}" "${TASK_FIT_CTX:-}"
 [[ "${TASK_CACHE_IDLE_SLOTS:-on}" == "on" ]] && OPTS+=(--cache-idle-slots) || OPTS+=(--no-cache-idle-slots)
 [[ -n "${TASK_CACHE_REUSE:-}" && "${TASK_CACHE_REUSE}" != "0" ]] && OPTS+=(--cache-reuse "${TASK_CACHE_REUSE}")
 
@@ -212,6 +213,22 @@ elif [[ "${SPEC_METHOD}" != "off" ]]; then
     fi
 fi
 
+preflight_report "[task]" task \
+    "${TASK_MODEL_PATH}" "${TASK_MMPROJ_PATH:-}" \
+    ctx_size="${TASK_CTX_SIZE}" \
+    parallel="${TASK_N_PARALLEL}" \
+    ubatch="${TASK_UBATCH_SIZE}" \
+    cache_type_k="${TASK_CACHE_TYPE_K}" \
+    cache_type_v="${TASK_CACHE_TYPE_V}" \
+    ctx_checkpoints="${TASK_CTX_CHECKPOINTS:-0}" \
+    cache_ram="${TASK_CACHE_RAM:-0}" \
+    tensor_split="${TASK_TENSOR_SPLIT}" \
+    devices="$(awk -F, '{print NF}' <<< "${CUDA_VISIBLE_DEVICES:-0}")" \
+    swa_full="${TASK_SWA_FULL:-off}" \
+    fit="${TASK_FIT:-on}" \
+    fit_ctx="${TASK_FIT_CTX:-}" \
+    spec_method="${TASK_SPEC_METHOD:-off}"
+
 exec "${LLAMA_SERVER_BIN}" \
     --model "${TASK_MODEL_PATH}" \
     --alias "${TASK_MODEL_NAME:-task}" \
@@ -230,7 +247,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --cache-type-k "${TASK_CACHE_TYPE_K}" \
     --cache-type-v "${TASK_CACHE_TYPE_V}" \
     --cache-ram "${TASK_CACHE_RAM:-8192}" \
-    --ctx-checkpoints "${TASK_CTX_CHECKPOINTS:-32}" \
+    --ctx-checkpoints "${TASK_CTX_CHECKPOINTS:-8}" \
     --flash-attn "${TASK_FLASH_ATTN}" \
     --temp "${TASK_TEMP}" \
     --top-p "${TASK_TOP_P}" \

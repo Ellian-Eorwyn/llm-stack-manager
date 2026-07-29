@@ -676,9 +676,114 @@ class UpdateCliTests(unittest.TestCase):
         self.assertIn("changed_backend_files", self.update)
         self.assertIn("still running the previous code", self.update)
 
+    def test_shared_launcher_code_counts_as_backend_sensitive(self):
+        """Launchers source scripts/lib and consult the budget model at startup,
+        so a change to either means a running backend is on stale code."""
+        paths = re.search(r"BACKEND_SENSITIVE_PATHS=\(([^)]*)\)", self.update)
+        self.assertIsNotNone(paths)
+        self.assertIn("scripts/lib/", paths.group(1))
+        self.assertIn("web/budget.py", paths.group(1))
+
     def test_install_links_the_cli_onto_path(self):
         self.assertIn('ln -sfn "${STACK_DIR}/scripts/llm-stack-manager" /usr/local/bin/llm-stack-manager',
                       self.install)
+
+
+class BudgetRouteTests(unittest.TestCase):
+    """The endpoint Agent D's recommended-preset work reads from.
+
+    GGUF geometry has to be read server-side — the browser cannot open a 22 GB
+    model — so this is the only place a configuration can be priced.
+    """
+
+    GPUS = [{"index": 0, "mem_total": 24576, "mem_used": 1000},
+            {"index": 1, "mem_total": 24576, "mem_used": 1000}]
+    MEMINFO = {"MemTotal": 32787000, "MemAvailable": 20275000,
+               "SwapTotal": 8388604, "SwapFree": 8388604}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        # Reuse the GGUF writer and fixture from the budget tests rather than
+        # keeping a second copy of the model metadata in sync.
+        spec = importlib.util.spec_from_file_location(
+            "llm_stack_manager_budget_tests",
+            pathlib.Path(__file__).resolve().parent / "test_budget.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.model = module.write_gguf(
+            pathlib.Path(self._tmp.name) / "model.gguf", module.QWEN36_27B)
+
+    def _client(self, env):
+        return (
+            manager.app.test_client(),
+            patch.object(manager, "read_env", return_value=env),
+            patch.object(manager, "get_gpu_info", return_value=self.GPUS),
+            patch.object(manager, "read_meminfo", return_value=self.MEMINFO),
+        )
+
+    def test_budget_prices_the_configured_backend(self):
+        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model),
+               "CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2",
+               "CHAT_PRIMARY_CTX_CHECKPOINTS": "8", "CHAT_PRIMARY_CACHE_RAM": "8192"}
+        client, *patches = self._client(env)
+        with client, patches[0], patches[1], patches[2]:
+            response = client.get("/api/backend/budget")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIsNone(payload["error"])
+        self.assertEqual(payload["prediction"]["per_slot_context"], 131072)
+        self.assertEqual(payload["geometry"]["recurrent_layers"], 48)
+
+    def test_query_parameters_price_an_unsaved_edit(self):
+        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model),
+               "CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2"}
+        client, *patches = self._client(env)
+        with client, patches[0], patches[1], patches[2]:
+            response = client.get("/api/backend/budget?ctx_size=65536")
+        self.assertEqual(response.get_json()["prediction"]["per_slot_context"], 32768)
+
+    def test_unknown_query_parameters_are_ignored(self):
+        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model), "CHAT_PRIMARY_CTX_SIZE": "131072"}
+        client, *patches = self._client(env)
+        with client, patches[0], patches[1], patches[2]:
+            response = client.get("/api/backend/budget?model_alias=evil&ctx_size=131072")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["prediction"]["total_context"], 131072)
+
+    def test_unknown_backend_is_rejected(self):
+        client, *patches = self._client({})
+        with client, patches[0], patches[1], patches[2]:
+            response = client.get("/api/backend/budget?backend=nope")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("chat-primary", response.get_json()["backends"])
+
+    def test_missing_model_reports_without_failing_the_request(self):
+        client, *patches = self._client({"CHAT_PRIMARY_MODEL_PATH": "/nope.gguf"})
+        with client, patches[0], patches[1], patches[2]:
+            response = client.get("/api/backend/budget")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("model not found", response.get_json()["error"])
+
+    def test_recommendation_is_derived_from_detected_hardware(self):
+        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model)}
+        client, *patches = self._client(env)
+        with client, patches[0], patches[1], patches[2]:
+            response = client.get("/api/backend/budget/recommend?slots=2")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["parallel"], 2)
+        self.assertEqual(payload["per_slot_context"], payload["ctx_size"] // 2)
+        # The constant this replaces was 32 on every host and every model.
+        self.assertLessEqual(payload["ctx_checkpoints"], 32)
+        self.assertGreaterEqual(payload["ctx_checkpoints"], 2)
+
+    def test_recommendation_rejects_an_unreadable_model(self):
+        client, *patches = self._client({"CHAT_PRIMARY_MODEL_PATH": "/nope.gguf"})
+        with client, patches[0], patches[1], patches[2]:
+            response = client.get("/api/backend/budget/recommend")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("could not read model metadata", response.get_json()["error"])
 
 
 if __name__ == "__main__":

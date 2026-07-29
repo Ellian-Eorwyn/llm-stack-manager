@@ -671,11 +671,80 @@ def backend_snapshot(target: dict, window_seconds: int, registry: TelemetryRegis
     return snapshot
 
 
-def host_memory(meminfo: dict[str, int]) -> dict:
+# Sustained paging above this rate is real pressure. Below it, a few pages
+# drifting in as something touches a cold page is not.
+SWAP_ACTIVE_PAGES_PER_SECOND = 256
+_PAGE_MIB = 4 / 1024
+
+
+class SwapMonitor:
+    """Turns /proc/vmstat's cumulative page counters into a current rate.
+
+    Swap *usage* is a poor pressure signal: pages written during one bad
+    configuration stay resident long after it is fixed, because nothing brings
+    them back until something reads them. This box sat at 83% swap with 19 GB
+    of RAM free and no paging at all. Rate is the signal; usage is history.
+    """
+
+    def __init__(self):
+        self._last: tuple[float, int, int] | None = None
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _read_counters() -> tuple[int, int] | None:
+        try:
+            with open("/proc/vmstat", "r", encoding="utf-8") as handle:
+                counters = {}
+                for line in handle:
+                    key, _, value = line.partition(" ")
+                    if key in ("pswpin", "pswpout"):
+                        counters[key] = int(value.strip())
+                if len(counters) == 2:
+                    return counters["pswpin"], counters["pswpout"]
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def sample(self, now: float | None = None) -> dict:
+        """Paging rate since the previous call. The first call has no rate."""
+        now = time.time() if now is None else now
+        counters = self._read_counters()
+        if counters is None:
+            return {"available": False, "in_pages_per_second": None,
+                    "out_pages_per_second": None, "active": None}
+
+        pages_in, pages_out = counters
+        with self._lock:
+            previous, self._last = self._last, (now, pages_in, pages_out)
+
+        if previous is None or now <= previous[0]:
+            # No baseline yet: report the counters without claiming a rate.
+            return {"available": True, "in_pages_per_second": None,
+                    "out_pages_per_second": None, "active": None}
+
+        elapsed = now - previous[0]
+        rate_in = max(0, pages_in - previous[1]) / elapsed
+        rate_out = max(0, pages_out - previous[2]) / elapsed
+        return {
+            "available": True,
+            "in_pages_per_second": round(rate_in, 1),
+            "out_pages_per_second": round(rate_out, 1),
+            "in_mib_per_second": round(rate_in * _PAGE_MIB, 2),
+            "out_mib_per_second": round(rate_out * _PAGE_MIB, 2),
+            "active": max(rate_in, rate_out) >= SWAP_ACTIVE_PAGES_PER_SECOND,
+        }
+
+
+SWAP_MONITOR = SwapMonitor()
+
+
+def host_memory(meminfo: dict[str, int], swap_activity: dict | None = None) -> dict:
     """Host RAM and swap in MiB, from an already-parsed /proc/meminfo.
 
     Swap is the reason this exists: the manager has never shown it, and heavy
-    prompt-cache RAM budgets push this box deep into it.
+    prompt-cache RAM budgets push this box deep into it. `swap_activity` adds
+    whether it is *currently* paging, which is the part that distinguishes a
+    problem from its residue.
     """
     def mib(key: str) -> int:
         return round(meminfo.get(key, 0) / 1024)
@@ -690,9 +759,11 @@ def host_memory(meminfo: dict[str, int]) -> dict:
         "mem_available_mib": available,
         "mem_used_mib": max(0, total - available),
         "mem_used_pct": round(100 * (total - available) / total) if total else None,
+        "mem_available_pct": round(100 * available / total) if total else None,
         "swap_total_mib": swap_total,
         "swap_used_mib": swap_used,
         "swap_used_pct": round(100 * swap_used / swap_total) if swap_total else None,
+        "swap_activity": swap_activity or {"available": False, "active": None},
     }
 
 
@@ -708,11 +779,38 @@ def warnings_for(backends: list[dict], host: dict, gpus: list[dict]) -> list[dic
                 "text": f"GPU {gpu.get('index')} has only {free} MiB free — a backend restart may fail to allocate.",
             })
 
+    # Swap: rate first, usage second. A box can sit at 80% swap with plenty of
+    # free RAM and no paging, which is residue from an earlier configuration
+    # rather than a live problem — warning about it teaches operators to ignore
+    # the warning, which is worse than not having one.
     if host.get("swap_used_pct") is not None and host["swap_used_pct"] >= 50:
+        activity = host.get("swap_activity") or {}
+        if activity.get("active"):
+            alerts.append({
+                "level": "warn",
+                "text": f"Host is actively swapping: {activity.get('out_mib_per_second', 0)} MiB/s out, "
+                        f"{activity.get('in_mib_per_second', 0)} MiB/s in, with "
+                        f"{host['swap_used_pct']}% of swap used ({host['swap_used_mib']} MiB). "
+                        f"Reduce prompt-cache RAM or context checkpoints.",
+            })
+        elif activity.get("active") is False:
+            alerts.append({
+                "level": "info",
+                "text": f"Swap is {host['swap_used_pct']}% used ({host['swap_used_mib']} MiB) but idle — "
+                        f"pages left behind by an earlier configuration, not current pressure.",
+            })
+        else:
+            alerts.append({
+                "level": "warn",
+                "text": f"Host swap is {host['swap_used_pct']}% used ({host['swap_used_mib']} MiB) — "
+                        f"check prompt-cache RAM and context checkpoint budgets.",
+            })
+
+    if host.get("mem_available_pct") is not None and host["mem_available_pct"] <= 10:
         alerts.append({
             "level": "warn",
-            "text": f"Host swap is {host['swap_used_pct']}% used ({host['swap_used_mib']} MiB) — "
-                    f"check prompt-cache RAM and context checkpoint budgets.",
+            "text": f"Only {host['mem_available_mib']} MiB of host RAM is available "
+                    f"({host['mem_available_pct']}%) — the next allocation is likely to swap.",
         })
 
     for backend in backends:
@@ -762,7 +860,7 @@ def collect(env: dict, service_status, gpus: list[dict], meminfo: dict[str, int]
     window = clamp_window(window_seconds)
     targets = resolve_targets(env, service_status)
     backends = [backend_snapshot(target, window, registry) for target in targets]
-    host = host_memory(meminfo)
+    host = host_memory(meminfo, SWAP_MONITOR.sample())
     return {
         "generated_at": time.time(),
         "window_seconds": window,

@@ -15,6 +15,7 @@ set -euo pipefail
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
+source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
 LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
 export LD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
 export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
@@ -69,9 +70,9 @@ OPTS=()
 [[ "${CHAT2_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT2_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT2_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
-[[ "${CHAT2_SWA_FULL:-off}" == "on" ]] && OPTS+=(--swa-full)
+add_swa_full_opt "[chat-backend2]" "${CHAT2_SWA_FULL:-off}" "${CHAT2_MODEL_PATH:-}"
 [[ -n "${CHAT2_FIT_TARGET:-}" ]] && OPTS+=(--fit-target "${CHAT2_FIT_TARGET}")
-[[ -n "${CHAT2_FIT_CTX:-}" && "${CHAT2_FIT_CTX}" != "0" ]] && OPTS+=(--fit-ctx "${CHAT2_FIT_CTX}")
+add_fit_ctx_opt "[chat-backend2]" "${CHAT2_FIT:-on}" "${CHAT2_FIT_CTX:-}"
 [[ "${CHAT2_CACHE_IDLE_SLOTS:-on}" == "on" ]] && OPTS+=(--cache-idle-slots) || OPTS+=(--no-cache-idle-slots)
 [[ -n "${CHAT2_CACHE_REUSE:-}" && "${CHAT2_CACHE_REUSE}" != "0" ]] && OPTS+=(--cache-reuse "${CHAT2_CACHE_REUSE}")
 
@@ -226,6 +227,22 @@ fi
 # Only add --mmproj if the path is non-empty and the file exists
 [[ -n "${CHAT2_MMPROJ_PATH:-}" && -f "${CHAT2_MMPROJ_PATH}" ]] && OPTS+=(--mmproj "${CHAT2_MMPROJ_PATH}")
 
+preflight_report "[chat-backend2]" chat-secondary \
+    "${CHAT2_MODEL_PATH}" "${CHAT2_MMPROJ_PATH:-}" \
+    ctx_size="${CHAT2_CTX_SIZE}" \
+    parallel="${CHAT2_N_PARALLEL}" \
+    ubatch="${CHAT2_UBATCH_SIZE}" \
+    cache_type_k="${CHAT2_CACHE_TYPE_K}" \
+    cache_type_v="${CHAT2_CACHE_TYPE_V}" \
+    ctx_checkpoints="${CHAT2_CTX_CHECKPOINTS:-0}" \
+    cache_ram="${CHAT2_CACHE_RAM:-0}" \
+    tensor_split="${CHAT2_TENSOR_SPLIT}" \
+    devices="$(awk -F, '{print NF}' <<< "${CUDA_VISIBLE_DEVICES:-0}")" \
+    swa_full="${CHAT2_SWA_FULL:-off}" \
+    fit="${CHAT2_FIT:-on}" \
+    fit_ctx="${CHAT2_FIT_CTX:-}" \
+    spec_method="${CHAT2_SPEC_METHOD:-off}"
+
 exec "${LLAMA_SERVER_BIN}" \
     --model "${CHAT2_MODEL_PATH}" \
     --alias "${CHAT2_MODEL_NAME:-chat-custom}" \
@@ -244,7 +261,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --cache-type-k "${CHAT2_CACHE_TYPE_K}" \
     --cache-type-v "${CHAT2_CACHE_TYPE_V}" \
     --cache-ram "${CHAT2_CACHE_RAM:-8192}" \
-    --ctx-checkpoints "${CHAT2_CTX_CHECKPOINTS:-32}" \
+    --ctx-checkpoints "${CHAT2_CTX_CHECKPOINTS:-8}" \
     --flash-attn "${CHAT2_FLASH_ATTN}" \
     --temp "${CHAT2_TEMP}" \
     --top-p "${CHAT2_TOP_P}" \

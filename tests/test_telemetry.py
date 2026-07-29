@@ -272,6 +272,53 @@ class HostMemoryTests(unittest.TestCase):
         self.assertIsNone(host["swap_used_pct"])
 
 
+class SwapMonitorTest(unittest.TestCase):
+    """Usage is history; only the rate says whether swapping is happening now."""
+
+    def _monitor(self, *samples):
+        """A monitor that reads the given (pswpin, pswpout) pairs in turn."""
+        monitor = telemetry.SwapMonitor()
+        queue = list(samples)
+        monitor._read_counters = lambda: queue.pop(0) if queue else None  # noqa: SLF001
+        return monitor
+
+    def test_first_sample_claims_no_rate(self):
+        monitor = self._monitor((1000, 2000))
+        sample = monitor.sample(now=100.0)
+        self.assertTrue(sample["available"])
+        self.assertIsNone(sample["active"])
+
+    def test_idle_swap_reports_inactive(self):
+        monitor = self._monitor((1000, 2000), (1036, 2000))
+        monitor.sample(now=100.0)
+        sample = monitor.sample(now=105.0)
+        self.assertFalse(sample["active"])
+        self.assertAlmostEqual(sample["in_pages_per_second"], 7.2, places=1)
+        self.assertEqual(sample["out_pages_per_second"], 0.0)
+
+    def test_sustained_paging_reports_active(self):
+        monitor = self._monitor((1000, 2000), (1000, 202000))
+        monitor.sample(now=100.0)
+        sample = monitor.sample(now=105.0)
+        self.assertTrue(sample["active"])
+        self.assertEqual(sample["out_pages_per_second"], 40000.0)
+
+    def test_counter_reset_does_not_report_negative_rates(self):
+        """A reboot or counter wrap must not read as paging in reverse."""
+        monitor = self._monitor((5000, 9000), (10, 20))
+        monitor.sample(now=100.0)
+        sample = monitor.sample(now=105.0)
+        self.assertEqual(sample["in_pages_per_second"], 0.0)
+        self.assertEqual(sample["out_pages_per_second"], 0.0)
+
+    def test_unreadable_vmstat_degrades(self):
+        monitor = telemetry.SwapMonitor()
+        monitor._read_counters = lambda: None  # noqa: SLF001
+        sample = monitor.sample(now=100.0)
+        self.assertFalse(sample["available"])
+        self.assertIsNone(sample["active"])
+
+
 class WarningTests(unittest.TestCase):
     @staticmethod
     def _backend(**stats):
@@ -298,12 +345,39 @@ class WarningTests(unittest.TestCase):
         texts = [w["text"] for w in telemetry.warnings_for([backend], {}, [])]
         self.assertTrue(any("select-to-launch" in t for t in texts), texts)
 
-    def test_low_vram_and_swap_pressure_are_flagged(self):
+    def test_low_vram_and_unknown_swap_state_are_flagged(self):
+        """With no paging rate yet, heavy swap use still warns."""
         gpus = [{"index": 0, "mem_total": 24576, "mem_used": 24127}]
         warnings = telemetry.warnings_for([], {"swap_used_pct": 86, "swap_used_mib": 7080}, gpus)
         texts = [w["text"] for w in warnings]
         self.assertTrue(any("449 MiB free" in t for t in texts), texts)
         self.assertTrue(any("swap is 86%" in t for t in texts), texts)
+
+    def test_active_swapping_warns(self):
+        host = {"swap_used_pct": 86, "swap_used_mib": 7080,
+                "swap_activity": {"active": True, "in_mib_per_second": 12.0,
+                                  "out_mib_per_second": 30.5}}
+        warnings = telemetry.warnings_for([], host, [])
+        self.assertEqual([w["level"] for w in warnings], ["warn"])
+        self.assertIn("actively swapping", warnings[0]["text"])
+
+    def test_idle_swap_is_informational(self):
+        """Cold pages from an earlier configuration are history, not pressure.
+
+        This box sat at 83% swap with 19 GB of RAM free and nothing paging;
+        warning about that trains operators to ignore the warning.
+        """
+        host = {"swap_used_pct": 83, "swap_used_mib": 6828,
+                "swap_activity": {"active": False, "in_mib_per_second": 0.0,
+                                  "out_mib_per_second": 0.0}}
+        warnings = telemetry.warnings_for([], host, [])
+        self.assertEqual([w["level"] for w in warnings], ["info"])
+        self.assertIn("idle", warnings[0]["text"])
+
+    def test_exhausted_host_ram_warns_regardless_of_swap(self):
+        warnings = telemetry.warnings_for([], {"mem_available_mib": 900, "mem_available_pct": 3}, [])
+        self.assertEqual([w["level"] for w in warnings], ["warn"])
+        self.assertIn("900 MiB of host RAM is available", warnings[0]["text"])
 
     def test_missing_metrics_is_informational_only(self):
         backend = self._backend()

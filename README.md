@@ -59,6 +59,12 @@ When UFW is active, setup opens only the selected service ports and only to the 
 - Backend telemetry (`web/telemetry.py`, `/api/backend/telemetry`): per-slot context, throughput,
   speculative-decode acceptance, prompt-cache eviction and slot-scheduling latency, collected from
   `/props`, `/slots`, `/metrics` and the service journal.
+- Memory budget model (`web/budget.py`, `/api/backend/budget`): reads a model's own GGUF geometry
+  and predicts VRAM and prompt-cache RAM before the backend is launched, so a configuration that
+  cannot fit says so instead of thrashing. `/api/backend/budget/recommend` derives a context,
+  checkpoint count and cache size from detected VRAM and host RAM. Run it directly with
+  `python3 web/budget.py --backend chat-primary [--validate]`; the launchers log the same report
+  on startup and refuse to pass flags the model cannot act on.
 - llama.cpp shared chat backend launchers.
 - `llm-chat-proxy.py` exposing think, chat, and code ports from one backend.
 - Embedding, reranker, and task model launchers.

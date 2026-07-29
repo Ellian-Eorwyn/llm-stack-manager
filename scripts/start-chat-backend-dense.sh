@@ -11,18 +11,25 @@ set -euo pipefail
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
+source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
 
+# Settings resolve new key -> legacy key -> default. Required settings use `:-`
+# so an empty value still lands on a working default. Optional ones — the paths
+# and tuning knobs where "unset" is a legitimate choice — use `-` instead, so
+# clearing the new key means cleared rather than silently inheriting whatever
+# the legacy key still holds. That distinction is why --fit-ctx kept being
+# passed alongside --fit off long after it had been cleared in the UI.
 CHAT_DENSE_LABEL="${CHAT_PRIMARY_LABEL:-${CHAT_DENSE_LABEL:-Primary Backend}}"
 CHAT_DENSE_MODEL_NAME="${CHAT_PRIMARY_MODEL_NAME:-${CHAT_DENSE_MODEL_NAME:-chat-dense}}"
 CHAT_DENSE_MODEL_PATH="${CHAT_PRIMARY_MODEL_PATH:-${CHAT_DENSE_MODEL_PATH:-${CHAT_MODEL_PATH:-}}}"
-CHAT_DENSE_MMPROJ_PATH="${CHAT_PRIMARY_MMPROJ_PATH:-${CHAT_DENSE_MMPROJ_PATH:-${CHAT_MMPROJ_PATH:-}}}"
+CHAT_DENSE_MMPROJ_PATH="${CHAT_PRIMARY_MMPROJ_PATH-${CHAT_DENSE_MMPROJ_PATH-${CHAT_MMPROJ_PATH-}}}"
 CHAT_DENSE_CTX_SIZE="${CHAT_PRIMARY_CTX_SIZE:-${CHAT_DENSE_CTX_SIZE:-${CHAT_CTX_SIZE:-32768}}}"
 CHAT_N_PARALLEL="${CHAT_PRIMARY_N_PARALLEL:-${CHAT_N_PARALLEL:-1}}"
 CHAT_THREADS="${CHAT_PRIMARY_THREADS:-${CHAT_THREADS:--1}}"
 CHAT_THREADS_BATCH="${CHAT_PRIMARY_THREADS_BATCH:-${CHAT_THREADS_BATCH:--1}}"
 CHAT_N_GPU_LAYERS="${CHAT_PRIMARY_N_GPU_LAYERS:-${CHAT_N_GPU_LAYERS:--1}}"
 CHAT_MAIN_GPU="${CHAT_PRIMARY_MAIN_GPU:-${CHAT_MAIN_GPU:-0}}"
-CHAT_DEVICE="${CHAT_PRIMARY_DEVICE:-${CHAT_DEVICE:-}}"
+CHAT_DEVICE="${CHAT_PRIMARY_DEVICE-${CHAT_DEVICE-}}"
 CHAT_TENSOR_SPLIT="${CHAT_PRIMARY_TENSOR_SPLIT:-${CHAT_TENSOR_SPLIT:-1}}"
 CHAT_SPLIT_MODE="${CHAT_PRIMARY_SPLIT_MODE:-${CHAT_SPLIT_MODE:-layer}}"
 CHAT_KV_OFFLOAD="${CHAT_PRIMARY_KV_OFFLOAD:-${CHAT_KV_OFFLOAD:-on}}"
@@ -32,7 +39,7 @@ CHAT_FLASH_ATTN="${CHAT_PRIMARY_FLASH_ATTN:-${CHAT_FLASH_ATTN:-auto}}"
 CHAT_CACHE_TYPE_K="${CHAT_PRIMARY_CACHE_TYPE_K:-${CHAT_CACHE_TYPE_K:-q8_0}}"
 CHAT_CACHE_TYPE_V="${CHAT_PRIMARY_CACHE_TYPE_V:-${CHAT_CACHE_TYPE_V:-q8_0}}"
 CHAT_CACHE_RAM="${CHAT_PRIMARY_CACHE_RAM:-${CHAT_CACHE_RAM:-8192}}"
-CHAT_CTX_CHECKPOINTS="${CHAT_PRIMARY_CTX_CHECKPOINTS:-${CHAT_CTX_CHECKPOINTS:-32}}"
+CHAT_CTX_CHECKPOINTS="${CHAT_PRIMARY_CTX_CHECKPOINTS:-${CHAT_CTX_CHECKPOINTS:-8}}"
 CHAT_SWA_FULL="${CHAT_PRIMARY_SWA_FULL:-${CHAT_SWA_FULL:-off}}"
 CHAT_BATCH_SIZE="${CHAT_PRIMARY_BATCH_SIZE:-${CHAT_BATCH_SIZE:-2048}}"
 CHAT_UBATCH_SIZE="${CHAT_PRIMARY_UBATCH_SIZE:-${CHAT_UBATCH_SIZE:-512}}"
@@ -40,13 +47,13 @@ CHAT_NO_MMAP="${CHAT_PRIMARY_NO_MMAP:-${CHAT_NO_MMAP:-false}}"
 CHAT_MLOCK="${CHAT_PRIMARY_MLOCK:-${CHAT_MLOCK:-false}}"
 CHAT_GPU_VISIBLE_DEVICES="${CHAT_PRIMARY_GPU_VISIBLE_DEVICES:-${CHAT_GPU_VISIBLE_DEVICES:-0}}"
 CHAT_JINJA="${CHAT_PRIMARY_JINJA:-${CHAT_JINJA:-off}}"
-CHAT_TEMPLATE_ID="${CHAT_PRIMARY_TEMPLATE_ID:-${CHAT_TEMPLATE_ID:-}}"
+CHAT_TEMPLATE_ID="${CHAT_PRIMARY_TEMPLATE_ID-${CHAT_TEMPLATE_ID-}}"
 CHAT_FIT="${CHAT_PRIMARY_FIT:-${CHAT_FIT:-on}}"
-CHAT_FIT_TARGET="${CHAT_PRIMARY_FIT_TARGET:-${CHAT_FIT_TARGET:-}}"
-CHAT_FIT_CTX="${CHAT_PRIMARY_FIT_CTX:-${CHAT_FIT_CTX:-}}"
+CHAT_FIT_TARGET="${CHAT_PRIMARY_FIT_TARGET-${CHAT_FIT_TARGET-}}"
+CHAT_FIT_CTX="${CHAT_PRIMARY_FIT_CTX-${CHAT_FIT_CTX-}}"
 CHAT_CACHE_IDLE_SLOTS="${CHAT_PRIMARY_CACHE_IDLE_SLOTS:-${CHAT_CACHE_IDLE_SLOTS:-on}}"
 CHAT_METRICS="${CHAT_PRIMARY_METRICS:-${CHAT_METRICS:-on}}"
-CHAT_CACHE_REUSE="${CHAT_PRIMARY_CACHE_REUSE:-${CHAT_CACHE_REUSE:-0}}"
+CHAT_CACHE_REUSE="${CHAT_PRIMARY_CACHE_REUSE:-${CHAT_CACHE_REUSE:-256}}"
 CHAT_TEMP="${CHAT_PRIMARY_TEMP:-${CHAT_TEMP:-1.0}}"
 CHAT_TOP_P="${CHAT_PRIMARY_TOP_P:-${CHAT_TOP_P:-0.95}}"
 CHAT_TOP_K="${CHAT_PRIMARY_TOP_K:-${CHAT_TOP_K:-20}}"
@@ -56,9 +63,9 @@ CHAT_CUSTOM_ARGS_JSON="${CHAT_PRIMARY_CUSTOM_ARGS_JSON:-${CHAT_CUSTOM_ARGS_JSON:
 CHAT_PRESERVE_THINKING="${CHAT_PRIMARY_PRESERVE_THINKING:-${CHAT_PRESERVE_THINKING:-on}}"
 CHAT_SPEC_METHOD="${CHAT_PRIMARY_SPEC_METHOD:-${CHAT_SPEC_METHOD:-off}}"
 CHAT_SPEC_NGRAM_MOD="${CHAT_PRIMARY_SPEC_NGRAM_MOD:-${CHAT_SPEC_NGRAM_MOD:-off}}"
-CHAT_SPEC_DRAFT_MODEL_PATH="${CHAT_PRIMARY_SPEC_DRAFT_MODEL_PATH:-${CHAT_SPEC_DRAFT_MODEL_PATH:-}}"
+CHAT_SPEC_DRAFT_MODEL_PATH="${CHAT_PRIMARY_SPEC_DRAFT_MODEL_PATH-${CHAT_SPEC_DRAFT_MODEL_PATH-}}"
 CHAT_SPEC_DRAFT_N_GPU_LAYERS="${CHAT_PRIMARY_SPEC_DRAFT_N_GPU_LAYERS:-${CHAT_SPEC_DRAFT_N_GPU_LAYERS:-auto}}"
-CHAT_SPEC_DRAFT_DEVICES="${CHAT_PRIMARY_SPEC_DRAFT_DEVICES:-${CHAT_SPEC_DRAFT_DEVICES:-}}"
+CHAT_SPEC_DRAFT_DEVICES="${CHAT_PRIMARY_SPEC_DRAFT_DEVICES-${CHAT_SPEC_DRAFT_DEVICES-}}"
 CHAT_SPEC_DRAFT_TYPE_K="${CHAT_PRIMARY_SPEC_DRAFT_TYPE_K:-${CHAT_SPEC_DRAFT_TYPE_K:-f16}}"
 CHAT_SPEC_DRAFT_TYPE_V="${CHAT_PRIMARY_SPEC_DRAFT_TYPE_V:-${CHAT_SPEC_DRAFT_TYPE_V:-f16}}"
 CHAT_SPEC_DRAFT_N_MAX="${CHAT_PRIMARY_SPEC_DRAFT_N_MAX:-${CHAT_SPEC_DRAFT_N_MAX:-6}}"
@@ -89,7 +96,7 @@ echo "[chat-backend-dense] Device override:  ${CHAT_DEVICE:-auto}"
 echo "[chat-backend-dense] Placement:        split=${CHAT_SPLIT_MODE} kv-offload=${CHAT_KV_OFFLOAD:-on} op-offload=${CHAT_OP_OFFLOAD:-on} mmproj-offload=${CHAT_MMPROJ_OFFLOAD:-on}"
 echo "[chat-backend-dense] CPU threads:      ${CHAT_THREADS:--1} (batch=${CHAT_THREADS_BATCH:--1})"
 echo "[chat-backend-dense] KV cache:         K=${CHAT_CACHE_TYPE_K} V=${CHAT_CACHE_TYPE_V}"
-echo "[chat-backend-dense] Prompt cache:     ram=${CHAT_CACHE_RAM:-8192} MiB ctx-checkpoints=${CHAT_CTX_CHECKPOINTS:-32}"
+echo "[chat-backend-dense] Prompt cache:     ram=${CHAT_CACHE_RAM:-8192} MiB ctx-checkpoints=${CHAT_CTX_CHECKPOINTS:-8}"
 echo "[chat-backend-dense] Metrics:          ${CHAT_METRICS:-on}"
 echo "[chat-backend-dense] SWA full cache:   ${CHAT_SWA_FULL:-off}"
 echo "[chat-backend-dense] Reasoning format: ${CHAT_REASONING_FORMAT:-deepseek}"
@@ -106,9 +113,9 @@ OPTS=()
 [[ "${CHAT_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
-[[ "${CHAT_SWA_FULL:-off}" == "on" ]] && OPTS+=(--swa-full)
+add_swa_full_opt "[chat-backend-dense]" "${CHAT_SWA_FULL:-off}" "${CHAT_DENSE_MODEL_PATH}"
 [[ -n "${CHAT_FIT_TARGET:-}" ]] && OPTS+=(--fit-target "${CHAT_FIT_TARGET}")
-[[ -n "${CHAT_FIT_CTX:-}" && "${CHAT_FIT_CTX}" != "0" ]] && OPTS+=(--fit-ctx "${CHAT_FIT_CTX}")
+add_fit_ctx_opt "[chat-backend-dense]" "${CHAT_FIT:-on}" "${CHAT_FIT_CTX:-}"
 [[ "${CHAT_CACHE_IDLE_SLOTS:-on}" == "on" ]] && OPTS+=(--cache-idle-slots) || OPTS+=(--no-cache-idle-slots)
 [[ -n "${CHAT_CACHE_REUSE:-}" && "${CHAT_CACHE_REUSE}" != "0" ]] && OPTS+=(--cache-reuse "${CHAT_CACHE_REUSE}")
 
@@ -261,6 +268,22 @@ elif [[ "${SPEC_METHOD}" != "off" ]]; then
 fi
 [[ -n "${CHAT_DENSE_MMPROJ_PATH:-}" && -f "${CHAT_DENSE_MMPROJ_PATH}" ]] && OPTS+=(--mmproj "${CHAT_DENSE_MMPROJ_PATH}")
 
+preflight_report "[chat-backend-dense]" chat-primary \
+    "${CHAT_DENSE_MODEL_PATH}" "${CHAT_DENSE_MMPROJ_PATH:-}" \
+    ctx_size="${CHAT_DENSE_CTX_SIZE}" \
+    parallel="${CHAT_N_PARALLEL}" \
+    ubatch="${CHAT_UBATCH_SIZE}" \
+    cache_type_k="${CHAT_CACHE_TYPE_K}" \
+    cache_type_v="${CHAT_CACHE_TYPE_V}" \
+    ctx_checkpoints="${CHAT_CTX_CHECKPOINTS:-0}" \
+    cache_ram="${CHAT_CACHE_RAM:-0}" \
+    tensor_split="${CHAT_TENSOR_SPLIT}" \
+    devices="$(awk -F, '{print NF}' <<< "${CUDA_VISIBLE_DEVICES:-0}")" \
+    swa_full="${CHAT_SWA_FULL:-off}" \
+    fit="${CHAT_FIT:-on}" \
+    fit_ctx="${CHAT_FIT_CTX:-}" \
+    spec_method="${CHAT_SPEC_METHOD:-off}"
+
 exec "${LLAMA_SERVER_BIN}" \
     --model "${CHAT_DENSE_MODEL_PATH}" \
     --alias "${CHAT_DENSE_MODEL_NAME:-chat-dense}" \
@@ -279,7 +302,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --cache-type-k "${CHAT_CACHE_TYPE_K}" \
     --cache-type-v "${CHAT_CACHE_TYPE_V}" \
     --cache-ram "${CHAT_CACHE_RAM:-8192}" \
-    --ctx-checkpoints "${CHAT_CTX_CHECKPOINTS:-32}" \
+    --ctx-checkpoints "${CHAT_CTX_CHECKPOINTS:-8}" \
     --flash-attn "${CHAT_FLASH_ATTN}" \
     --temp "${CHAT_TEMP}" \
     --top-p "${CHAT_TOP_P}" \

@@ -42,6 +42,7 @@ import setup_engine
 # Explicit rather than relying on the script directory, so importing app.py by
 # path (as the tests do) resolves sibling modules the same way systemd does.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import budget
 import telemetry
 
 class ServiceManager:
@@ -1341,16 +1342,16 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CHAT_THREADS", "-1")
     normalized.setdefault("CHAT_THREADS_BATCH", "-1")
     normalized.setdefault("CHAT_CACHE_RAM", "8192")
-    normalized.setdefault("CHAT_CTX_CHECKPOINTS", "32")
+    normalized.setdefault("CHAT_CTX_CHECKPOINTS", "8")
     normalized.setdefault("CHAT_CACHE_IDLE_SLOTS", "on")
-    normalized.setdefault("CHAT_CACHE_REUSE", "0")
+    normalized.setdefault("CHAT_CACHE_REUSE", "256")
     normalized.setdefault("CHAT_SWA_FULL", "off")
     normalized.setdefault("CHAT_FIT_TARGET", "")
     normalized.setdefault("CHAT_FIT_CTX", "4096")
     normalized.setdefault("CHAT2_CACHE_RAM", "8192")
-    normalized.setdefault("CHAT2_CTX_CHECKPOINTS", "32")
+    normalized.setdefault("CHAT2_CTX_CHECKPOINTS", "8")
     normalized.setdefault("CHAT2_CACHE_IDLE_SLOTS", "on")
-    normalized.setdefault("CHAT2_CACHE_REUSE", "0")
+    normalized.setdefault("CHAT2_CACHE_REUSE", "256")
     normalized.setdefault("CHAT2_SWA_FULL", "off")
     normalized.setdefault("CHAT2_LABEL", "Secondary Backend")
     normalized.setdefault("CHAT2_FIT_TARGET", "")
@@ -3610,6 +3611,70 @@ def api_backend_telemetry():
         read_meminfo(),
         window_seconds=window,
     ))
+
+
+@app.route('/api/backend/budget')
+def api_backend_budget():
+    """Predicted memory footprint of a backend's configuration.
+
+    Answers the question the config form has never been able to: will this fit,
+    and if not, what is the term that does not. Query parameters override
+    individual settings, so the form can price a change before it is saved —
+    `?ctx_size=131072&ctx_checkpoints=4` prices that edit against the model
+    currently configured.
+
+    Reading GGUF geometry means touching the model file, so this cannot move to
+    the browser; it is the single source of truth for anything that needs to
+    recommend or validate a backend configuration.
+    """
+    backend = request.args.get('backend', 'chat-primary')
+    if backend not in budget.BACKEND_PREFIXES:
+        return jsonify(error=f"unknown backend {backend!r}",
+                       backends=sorted(budget.BACKEND_PREFIXES)), 400
+
+    overrides = {key: value for key, value in request.args.items()
+                 if key in budget.OVERRIDABLE_SETTINGS and value != ''}
+    return jsonify(budget.budget_for(
+        read_env(),
+        backend,
+        get_gpu_info(),
+        telemetry.host_memory(read_meminfo()),
+        overrides=overrides,
+    ))
+
+
+@app.route('/api/backend/budget/recommend')
+def api_backend_budget_recommend():
+    """A backend configuration derived from this host, not from constants.
+
+    The recommended preset used to be hardcoded, and the values it recommended
+    were the ones measured to thrash this box. This computes them instead, from
+    detected VRAM, host RAM and the selected model's own geometry.
+    """
+    backend = request.args.get('backend', 'chat-primary')
+    if backend not in budget.BACKEND_PREFIXES:
+        return jsonify(error=f"unknown backend {backend!r}",
+                       backends=sorted(budget.BACKEND_PREFIXES)), 400
+
+    env = read_env()
+    model_path = request.args.get('model_path') or env.get(
+        f"{budget.BACKEND_PREFIXES[backend]}_MODEL_PATH", '')
+    try:
+        slots = max(1, int(request.args.get('slots') or 2))
+    except ValueError:
+        slots = 2
+
+    try:
+        geometry = budget.model_geometry(budget.read_gguf_metadata(model_path))
+    except (budget.GGUFError, OSError, TypeError) as exc:
+        return jsonify(error=f"could not read model metadata: {exc}", model_path=model_path), 400
+
+    return jsonify(budget.recommend(
+        geometry,
+        get_gpu_info(),
+        telemetry.host_memory(read_meminfo()),
+        slots=slots,
+    ) | {"model_path": model_path, "backend": backend})
 
 
 @app.route('/api/setup/preflight')

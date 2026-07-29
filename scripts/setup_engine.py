@@ -14,6 +14,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -317,10 +318,52 @@ def validate_gguf(path: Path, *, minimum_size: int = 32) -> dict[str, Any]:
     return result
 
 
-def estimate_model_mib(model: dict[str, Any]) -> int:
+# Context the placement planner assumes when nothing has been configured yet.
+# Small enough to be a reasonable starting point on any card; the real figure
+# comes from /api/backend/budget once the backend has settings to price.
+PLACEMENT_ASSUMED_CTX = 32768
+
+
+def _budget_module():
+    """The budget model, if it is importable. Setup must work without it."""
+    try:
+        sys.path.insert(0, str(ROOT / "web"))
+        import budget
+        return budget
+    except Exception:
+        return None
+
+
+def estimate_model_mib(model: dict[str, Any], ctx_size: int = PLACEMENT_ASSUMED_CTX,
+                       parallel: int = 1) -> int:
+    """VRAM a model is expected to need, in MiB.
+
+    `file_size x 1.10 + 1 GiB` was the old answer, and it is wrong in the
+    direction that matters: KV cache scales with context and layer geometry,
+    not with file size, so a long-context configuration of a small model can
+    need several times what this predicted. Read the real geometry when the
+    file is there to read, and keep the old heuristic for when it is not.
+    """
     size = int(model.get("size") or 0)
-    context_mib = int(model.get("context_mib") or 1024)
-    return int((size / 1024**2) * 1.10) + context_mib
+    fallback = int((size / 1024**2) * 1.10) + int(model.get("context_mib") or 1024)
+
+    path = model.get("path")
+    budget = _budget_module()
+    if not path or budget is None:
+        return fallback
+    try:
+        geometry = budget.model_geometry(budget.read_gguf_metadata(path))
+        prediction = budget.predict(geometry, {
+            "ctx_size": int(model.get("ctx_size") or ctx_size),
+            "parallel": int(model.get("parallel") or parallel),
+            "cache_type_k": model.get("cache_type_k") or "q8_0",
+            "cache_type_v": model.get("cache_type_v") or "q8_0",
+            "devices": 1,
+            "weights_mib": size / 1024**2 if size else None,
+        })
+        return int(prediction["vram"]["upper_mib"])
+    except Exception:
+        return fallback
 
 
 def plan_gpu_placement(gpus: list[dict[str, Any]], models: dict[str, dict[str, Any]], allow_override: bool = False) -> dict[str, Any]:
