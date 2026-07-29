@@ -1519,6 +1519,14 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
       </div>
 
+      {# Sections below lay their fields out by hand, listing the keys each
+         panel holds. A key in none of those lists used to render nowhere: it
+         was declared in CONFIG_FIELDS, saved and restarted like any other
+         setting, and simply invisible. Twenty-eight fields were in that state,
+         including every backend's --metrics toggle. Each curated branch now
+         declares `curated`, and whatever is left over renders below rather than
+         disappearing. #}
+      {% set curated = fields | map(attribute='key') | list %}
       {% if section == 'Primary Backend' or section == 'Secondary Backend' %}
       {% set backend_prefix = 'CHAT_PRIMARY' if section == 'Primary Backend' else 'CHAT2' %}
       {% set identity_keys = [backend_prefix ~ '_LABEL', backend_prefix ~ '_MODEL_NAME', backend_prefix ~ '_MODEL_PATH', backend_prefix ~ '_MMPROJ_PATH', backend_prefix ~ '_CTX_SIZE'] %}
@@ -1527,6 +1535,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set behavior_keys = [backend_prefix ~ '_TEMP', backend_prefix ~ '_TOP_P', backend_prefix ~ '_TOP_K', backend_prefix ~ '_MIN_P', backend_prefix ~ '_REASONING_FORMAT'] %}
       {% set spec_keys = [backend_prefix ~ '_SPEC_METHOD', backend_prefix ~ '_SPEC_NGRAM_MOD', backend_prefix ~ '_SPEC_DRAFT_MODEL_PATH', backend_prefix ~ '_SPEC_DRAFT_N_GPU_LAYERS', backend_prefix ~ '_SPEC_DRAFT_DEVICES', backend_prefix ~ '_SPEC_DRAFT_TYPE_K', backend_prefix ~ '_SPEC_DRAFT_TYPE_V', backend_prefix ~ '_SPEC_DRAFT_N_MAX', backend_prefix ~ '_SPEC_DRAFT_N_MIN', backend_prefix ~ '_SPEC_DRAFT_P_MIN', backend_prefix ~ '_SPEC_DRAFT_P_SPLIT', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MATCH', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MIN', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MAX', backend_prefix ~ '_SPEC_NGRAM_SIZE_N', backend_prefix ~ '_SPEC_NGRAM_SIZE_M', backend_prefix ~ '_SPEC_NGRAM_MIN_HITS'] %}
       {% set custom_args_key = backend_prefix ~ '_CUSTOM_ARGS_JSON' %}
+      {% set curated = identity_keys + shared_keys + gpu_keys + behavior_keys + spec_keys + [backend_prefix ~ '_CUSTOM_ARGS_JSON'] %}
 
       <div class="cfg-panel" style="margin-bottom:20px;">
         <h4>Model Identity And Files</h4>
@@ -1615,6 +1624,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_CACHE_RAM', 'TASK_CTX_CHECKPOINTS', 'TASK_CACHE_IDLE_SLOTS', 'TASK_CACHE_REUSE', 'TASK_SWA_FULL', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
       {% set task_sampling_keys = ['TASK_TEMP', 'TASK_TOP_P', 'TASK_TOP_K', 'TASK_MIN_P', 'TASK_PRESENCE_PENALTY', 'TASK_REPEAT_PENALTY'] %}
       {% set task_spec_keys = ['TASK_SPEC_METHOD', 'TASK_SPEC_NGRAM_MOD', 'TASK_SPEC_DRAFT_MODEL_PATH', 'TASK_SPEC_DRAFT_N_GPU_LAYERS', 'TASK_SPEC_DRAFT_DEVICES', 'TASK_SPEC_DRAFT_TYPE_K', 'TASK_SPEC_DRAFT_TYPE_V', 'TASK_SPEC_DRAFT_N_MAX', 'TASK_SPEC_DRAFT_N_MIN', 'TASK_SPEC_DRAFT_P_MIN', 'TASK_SPEC_DRAFT_P_SPLIT', 'TASK_SPEC_NGRAM_MOD_N_MATCH', 'TASK_SPEC_NGRAM_MOD_N_MIN', 'TASK_SPEC_NGRAM_MOD_N_MAX', 'TASK_SPEC_NGRAM_SIZE_N', 'TASK_SPEC_NGRAM_SIZE_M', 'TASK_SPEC_NGRAM_MIN_HITS'] %}
+      {% set curated = task_identity_keys + task_runtime_keys + task_gpu_keys + task_sampling_keys + task_spec_keys + ['TASK_CUSTOM_ARGS_JSON'] %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Model Identity And Files</h4>
@@ -1690,6 +1700,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set ocr_gpu_keys = ['OCR_GPU_VISIBLE_DEVICES', 'OCR_DEVICE', 'OCR_N_GPU_LAYERS', 'OCR_MAIN_GPU', 'OCR_TENSOR_SPLIT', 'OCR_SPLIT_MODE', 'OCR_KV_OFFLOAD', 'OCR_OP_OFFLOAD', 'OCR_MMPROJ_OFFLOAD', 'OCR_CACHE_TYPE_K', 'OCR_CACHE_TYPE_V', 'OCR_NO_MMAP', 'OCR_MLOCK'] %}
       {% set ocr_sampling_keys = ['OCR_TEMP', 'OCR_TOP_P', 'OCR_TOP_K', 'OCR_MIN_P'] %}
       {% set ocr_custom_keys = ['OCR_CUSTOM_ARGS_JSON', 'OCR_HOST', 'OCR_PORT', 'OCR_LOG_PREFIX'] %}
+      {% set curated = ocr_identity_keys + ocr_runtime_keys + ocr_gpu_keys + ocr_sampling_keys + ocr_custom_keys %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Model Identity And Files</h4>
@@ -1745,6 +1756,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set thinking_identity_keys = ['THINK_MODEL_NAME'] %}
       {% set thinking_behavior_keys = ['PROXY_STREAM_PASSTHROUGH', 'THINK_PRESERVE_THINKING', 'THINK_JINJA', 'THINK_REASONING_FORMAT'] %}
       {% set thinking_sampling_keys = ['THINK_TEMP', 'THINK_TOP_P', 'THINK_TOP_K', 'THINK_MIN_P', 'THINK_PRESENCE_PENALTY', 'THINK_REPEAT_PENALTY'] %}
+      {% set curated = thinking_identity_keys + thinking_behavior_keys + thinking_sampling_keys %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Endpoint Identity</h4>
@@ -1780,6 +1792,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set instruct_identity_keys = ['NOTHINK_MODEL_NAME'] %}
       {% set instruct_behavior_keys = ['NOTHINK_PRESERVE_THINKING', 'NOTHINK_JINJA', 'NOTHINK_REASONING_FORMAT'] %}
       {% set instruct_sampling_keys = ['NOTHINK_TEMP', 'NOTHINK_TOP_P', 'NOTHINK_TOP_K', 'NOTHINK_MIN_P', 'NOTHINK_PRESENCE_PENALTY', 'NOTHINK_REPEAT_PENALTY'] %}
+      {% set curated = instruct_identity_keys + instruct_behavior_keys + instruct_sampling_keys %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Endpoint Identity</h4>
@@ -1815,6 +1828,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set code_identity_keys = ['CODE_MODEL_NAME'] %}
       {% set code_behavior_keys = ['CODE_THINKING', 'CODE_PRESERVE_THINKING', 'CODE_JINJA', 'CODE_REASONING_FORMAT'] %}
       {% set code_sampling_keys = ['CODE_TEMP', 'CODE_TOP_P', 'CODE_TOP_K', 'CODE_MIN_P', 'CODE_PRESENCE_PENALTY', 'CODE_REPEAT_PENALTY'] %}
+      {% set curated = code_identity_keys + code_behavior_keys + code_sampling_keys %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Endpoint Identity</h4>
@@ -1998,6 +2012,19 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         {% for f in fields %}
         {{ render_config_field(f, section) }}
         {% endfor %}
+      </div>
+      {% endif %}
+
+      {% set leftovers = fields | rejectattr('key', 'in', curated) | list %}
+      {% if leftovers %}
+      <div class="cfg-panel" style="margin-top:20px;">
+        <h4>Additional Settings</h4>
+        <p>Settings for this section that the panels above do not cover.</p>
+        <div class="cfg-mini-grid">
+          {% for f in leftovers %}
+          {{ render_config_field(f, section) }}
+          {% endfor %}
+        </div>
       </div>
       {% endif %}
 

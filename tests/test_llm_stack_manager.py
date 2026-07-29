@@ -6,6 +6,7 @@ import pathlib
 import re
 import tempfile
 import unittest
+from collections import Counter
 from unittest.mock import patch
 
 
@@ -803,6 +804,49 @@ class BudgetRouteTests(unittest.TestCase):
         self.assertEqual(payload["fit_ctx"], "")
         # No sliding-window attention in this model, so --swa-full is inert.
         self.assertEqual(payload["swa_full"], "off")
+
+
+class ConfigFieldRenderingTests(unittest.TestCase):
+    """Curated section layouts list the keys each panel holds, so a key in none
+    of those lists rendered nowhere — declared, saveable, and invisible. Twenty
+    eight fields were in that state, including every backend's --metrics
+    toggle."""
+
+    def _render(self):
+        template_dir = pathlib.Path(__file__).resolve().parents[1] / "web" / "templates"
+        original = list(manager.app.jinja_loader.searchpath)
+        manager.app.jinja_loader.searchpath = [str(template_dir)]
+        try:
+            with (
+                manager.app.test_client() as client,
+                patch.object(manager, "read_env", return_value={}),
+                patch.object(manager, "load_custom_models", return_value=[]),
+            ):
+                return client.get("/").get_data(as_text=True)
+        finally:
+            manager.app.jinja_loader.searchpath = original
+
+    def test_every_declared_field_reaches_the_page(self):
+        html = self._render()
+        missing = [f"{f['section']}/{f['key']}" for f in manager.CONFIG_FIELDS
+                   if f.get("section") in manager.CORE_CONFIG_SECTIONS
+                   and f"cfg-{f['key']}" not in html]
+        self.assertEqual(missing, [], f"{len(missing)} config fields render nowhere")
+
+    def test_no_field_is_rendered_twice(self):
+        """The catch-all must not duplicate what a curated panel already drew."""
+        counts = Counter(re.findall(r'id="cfg-([A-Z0-9_]+)"', self._render()))
+        self.assertEqual({key: n for key, n in counts.items() if n > 1}, {})
+
+    def test_the_metrics_toggles_are_reachable(self):
+        """Named directly: the backend telemetry work added --metrics keys that
+        no panel listed, so the flag it exists to set could not be set."""
+        html = self._render()
+        for key in ("CHAT_PRIMARY_METRICS", "CHAT2_METRICS", "TASK_METRICS", "OCR_METRICS"):
+            self.assertIn(f"cfg-{key}", html, key)
+
+    def test_the_upstream_capture_toggle_is_reachable(self):
+        self.assertIn("cfg-UPSTREAM_400_CAPTURE_ENABLED", self._render())
 
 
 class ContextAccountingTests(unittest.TestCase):
