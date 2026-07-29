@@ -555,6 +555,7 @@ CONFIG_FIELDS = [
     # Thinking Endpoint (proxied request-time overrides)
     {"section": "Thinking Endpoint", "key": "THINK_MODEL_NAME",          "label": "Thinking Model Name",   "type": "text",   "hint": "Advertised on /v1/models for the thinking endpoint"},
     {"section": "Thinking Endpoint", "key": "PROXY_STREAM_PASSTHROUGH",  "label": "Raw Stream Passthrough", "type": "select", "options": ["off", "on"], "hint": "When on, SSE responses bypass proxy JSON rewriting after request shaping"},
+    {"section": "Thinking Endpoint", "key": "UPSTREAM_400_CAPTURE_ENABLED", "label": "Capture Upstream 400s", "type": "select", "options": ["off", "on"], "hint": "Diagnostic only: writes the request payload behind an upstream 400 — a whole conversation — to logs/upstream-400 at mode 0600, rotated"},
     {"section": "Thinking Endpoint", "key": "THINK_PRESERVE_THINKING",   "label": "Preserve Thinking",     "type": "select", "options": ["on", "off"], "hint": "Injects chat_template_kwargs.preserve_thinking into thinking requests"},
     {"section": "Thinking Endpoint", "key": "THINK_REASONING_STREAM_MODE", "label": "Reasoning Stream", "type": "select", "options": ["content", "hidden", "mirror"], "hint": "content makes thinking tokens visible immediately for clients that ignore reasoning_content"},
     {"section": "Thinking Endpoint", "key": "THINK_JINJA",               "label": "Expose Tool Calling",   "type": "select", "options": ["on", "off"], "hint": "When off, strips tools/tool_choice from thinking requests"},
@@ -1012,6 +1013,7 @@ RESTART_HINTS = {
     "CHAT_BACKEND_HOST":         ["chat-proxy"],
     "CHAT_BACKEND_PORT":         ["chat-proxy"],
     "PROXY_STREAM_PASSTHROUGH":  ["chat-proxy"],
+    "UPSTREAM_400_CAPTURE_ENABLED": ["chat-proxy"],
     "CHAT2_CACHE_RAM":           ["chat-backend2"],
     "CHAT2_CTX_CHECKPOINTS":     ["chat-backend2"],
     "CHAT2_SWA_FULL":            ["chat-backend2"],
@@ -1434,6 +1436,7 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("NOTHINK_MODEL_NAME", "chat")
     normalized.setdefault("CODE_MODEL_NAME", "code")
     normalized.setdefault("PROXY_STREAM_PASSTHROUGH", "off")
+    normalized.setdefault("UPSTREAM_400_CAPTURE_ENABLED", "off")
     normalized.setdefault("THINK_TEMP", normalized.get("CHAT_TEMP", "0.7"))
     normalized.setdefault("THINK_MAX_TOKENS", "0")
     normalized.setdefault("THINK_TOP_P", normalized.get("CHAT_TOP_P", "0.95"))

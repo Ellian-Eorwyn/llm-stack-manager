@@ -139,34 +139,6 @@ class ResponseHelpersTests(unittest.TestCase):
         self.assertEqual(filtered["Authorization"], "Bearer test")
         self.assertEqual(filtered["Content-Type"], "application/json")
 
-    def test_capture_upstream_400_writes_snapshot(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            capture_path = pathlib.Path(tmpdir) / "payload.json"
-            original_path = proxy.UPSTREAM_400_CAPTURE_PATH
-            try:
-                proxy.UPSTREAM_400_CAPTURE_PATH = str(capture_path)
-                proxy._capture_upstream_400(
-                    path="/v1/chat/completions",
-                    kind="chat",
-                    port_label="code",
-                    public_model_name="code",
-                    upstream_host="127.0.0.1",
-                    upstream_port=8010,
-                    payload={"model": "code", "messages": [{"role": "user", "content": "hello"}]},
-                    response_body=b'{"error":"bad request"}',
-                )
-            finally:
-                proxy.UPSTREAM_400_CAPTURE_PATH = original_path
-
-            snapshot = json.loads(capture_path.read_text(encoding="utf-8"))
-            self.assertEqual(snapshot["path"], "/v1/chat/completions")
-            self.assertEqual(snapshot["kind"], "chat")
-            self.assertEqual(snapshot["port_label"], "code")
-            self.assertEqual(snapshot["public_model_name"], "code")
-            self.assertEqual(snapshot["upstream"], "127.0.0.1:8010")
-            self.assertEqual(snapshot["payload"]["model"], "code")
-            self.assertEqual(snapshot["response_body_text"], '{"error":"bad request"}')
-
     def test_extract_assistant_text_from_responses_payload(self):
         raw = json.dumps(
             {
@@ -293,6 +265,149 @@ class AggregateProxyTests(unittest.TestCase):
         self.assertEqual(proxy._profile_for_model(proxy.NOTHINK_MODEL_NAME)["port_label"], "chat")
         self.assertEqual(proxy._profile_for_model(proxy.CODE_MODEL_NAME)["port_label"], "code")
         self.assertIsNone(proxy._profile_for_model("unknown"))
+
+
+class UpstreamCaptureTests(unittest.TestCase):
+    """The capture writes a whole conversation to disk. It used to do that by
+    default, to a fixed world-readable path under /tmp."""
+
+    SNAPSHOT = dict(
+        path="/v1/chat/completions",
+        kind="chat",
+        port_label="code",
+        public_model_name="code",
+        upstream_host="127.0.0.1",
+        upstream_port=8010,
+        payload={"model": "code", "messages": [{"role": "user", "content": "hello"}]},
+        response_body=b'{"error":"bad request"}',
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = pathlib.Path(self._tmp.name) / "upstream-400"
+
+        saved = {name: getattr(proxy, name) for name in (
+            "UPSTREAM_400_CAPTURE_ENABLED", "UPSTREAM_400_CAPTURE_DIR",
+            "UPSTREAM_400_CAPTURE_KEEP", "UPSTREAM_400_CAPTURE_MAX_BYTES")}
+        self.addCleanup(lambda: [setattr(proxy, k, v) for k, v in saved.items()])
+        proxy.UPSTREAM_400_CAPTURE_ENABLED = True
+        proxy.UPSTREAM_400_CAPTURE_DIR = str(self.dir)
+
+    def _captures(self):
+        return sorted(self.dir.glob("upstream-400-*.json")) if self.dir.is_dir() else []
+
+    def test_capture_is_off_unless_asked_for(self):
+        proxy.UPSTREAM_400_CAPTURE_ENABLED = False
+        proxy._capture_upstream_400(**self.SNAPSHOT)
+        self.assertFalse(self.dir.exists())
+
+    def test_capture_writes_a_snapshot_when_enabled(self):
+        proxy._capture_upstream_400(**self.SNAPSHOT)
+        files = self._captures()
+        self.assertEqual(len(files), 1)
+        snapshot = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(snapshot["path"], "/v1/chat/completions")
+        self.assertEqual(snapshot["kind"], "chat")
+        self.assertEqual(snapshot["port_label"], "code")
+        self.assertEqual(snapshot["public_model_name"], "code")
+        self.assertEqual(snapshot["upstream"], "127.0.0.1:8010")
+        self.assertEqual(snapshot["payload"]["model"], "code")
+        self.assertEqual(snapshot["response_body_text"], '{"error":"bad request"}')
+
+    def test_the_conversation_is_never_world_readable(self):
+        proxy._capture_upstream_400(**self.SNAPSHOT)
+        self.assertEqual(self._captures()[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.dir.stat().st_mode & 0o777, 0o700)
+
+    def test_captures_rotate_rather_than_accumulate(self):
+        proxy.UPSTREAM_400_CAPTURE_KEEP = 2
+        for index in range(5):
+            proxy._capture_upstream_400(**dict(self.SNAPSHOT, path=f"/v1/{index}"))
+        files = self._captures()
+        self.assertEqual(len(files), 2)
+        # The newest survive, so the most recent failure is the one on disk.
+        kept = {json.loads(f.read_text(encoding="utf-8"))["path"] for f in files}
+        self.assertEqual(kept, {"/v1/3", "/v1/4"})
+
+    def test_an_oversized_payload_is_capped_not_written_whole(self):
+        proxy.UPSTREAM_400_CAPTURE_MAX_BYTES = 4096
+        huge = dict(self.SNAPSHOT, payload={"model": "code", "messages": [
+            {"role": "user", "content": "x" * 50000}]})
+        proxy._capture_upstream_400(**huge)
+        files = self._captures()
+        self.assertLessEqual(files[0].stat().st_size, 4096)
+        snapshot = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertIn("__truncated__", snapshot["payload"])
+        # Capped, but it still names the request that failed.
+        self.assertEqual(snapshot["path"], "/v1/chat/completions")
+
+    def test_no_directory_means_no_capture_rather_than_a_crash(self):
+        proxy.UPSTREAM_400_CAPTURE_DIR = ""
+        proxy._capture_upstream_400(**self.SNAPSHOT)
+        self.assertFalse(self.dir.exists())
+
+
+class ResponseWritingTests(unittest.TestCase):
+    """A client that has hung up is the normal end of a cancelled generation.
+    Only the body write was protected, so the 503 path's header write raised
+    BrokenPipeError into the handler thread and filled the journal."""
+
+    class DeadSocket:
+        """Every write fails, as a socket to a departed client does."""
+
+        def write(self, _data):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    class Handler:
+        def __init__(self, wfile):
+            self.wfile = wfile
+            self.sent = []
+
+        def send_response(self, status):
+            self.sent.append(("status", status))
+            self.wfile.write(b"HTTP/1.0 %d\r\n" % status)
+
+        def send_header(self, key, value):
+            self.sent.append(("header", key, value))
+            self.wfile.write(f"{key}: {value}\r\n".encode())
+
+        def end_headers(self):
+            self.wfile.write(b"\r\n")
+
+    def test_a_broken_pipe_in_the_headers_does_not_raise(self):
+        handler = self.Handler(self.DeadSocket())
+        proxy._send_response_safely(
+            handler, 503, [("Content-Type", "application/json")], b"{}")
+        # It got as far as trying, then gave up quietly.
+        self.assertEqual(handler.sent, [("status", 503)])
+
+    def test_a_live_client_receives_the_whole_response(self):
+        written = []
+
+        class LiveSocket:
+            def write(self, data):
+                written.append(data)
+
+            def flush(self):
+                pass
+
+        handler = self.Handler(LiveSocket())
+        proxy._send_response_safely(handler, 200, [
+            ("Content-Type", "application/json"), ("Content-Length", "2")], b"{}")
+        self.assertEqual(b"".join(written),
+                         b"HTTP/1.0 200\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: 2\r\n\r\n{}")
+
+
+class ListenerTests(unittest.TestCase):
+    def test_the_accept_queue_is_deeper_than_the_default_five(self):
+        """Measured: 300 rapid connections to :8008 with a backlog of 5 gave a
+        p90 connect of 1022ms — a dropped SYN and a full retransmit timer."""
+        self.assertGreaterEqual(proxy.ProxyHTTPServer.request_queue_size, 128)
 
 
 if __name__ == "__main__":

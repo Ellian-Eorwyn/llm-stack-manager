@@ -64,9 +64,23 @@ BACKEND_READ_TIMEOUT_SEC = _parse_timeout_env(
     "off",
     allow_disable=True,
 )
-UPSTREAM_400_CAPTURE_PATH = os.environ.get(
-    "UPSTREAM_400_CAPTURE_PATH",
-    "/tmp/openclaw-llamacpp-last-payload.json",
+# Diagnostic capture of the payload behind an upstream 400. This writes a whole
+# conversation to disk, so it is off unless asked for: it ran by default to a
+# fixed world-readable path under /tmp, where it accumulated a real conversation
+# at mode 0644 under a stale project name. On by request, 0600, inside the stack
+# directory, rotated, and capped.
+UPSTREAM_400_CAPTURE_ENABLED = os.environ.get(
+    "UPSTREAM_400_CAPTURE_ENABLED", "off"
+).strip().lower() in {"1", "on", "true", "yes"}
+STACK_DIR = os.environ.get("STACK_DIR", "").strip()
+UPSTREAM_400_CAPTURE_DIR = os.environ.get("UPSTREAM_400_CAPTURE_DIR", "").strip() or (
+    os.path.join(STACK_DIR, "logs", "upstream-400") if STACK_DIR else ""
+)
+# How many captures to keep, and how large a single one may be. A 400 is worth
+# one payload, not a growing archive of them.
+UPSTREAM_400_CAPTURE_KEEP = max(1, int(os.environ.get("UPSTREAM_400_CAPTURE_KEEP", "5")))
+UPSTREAM_400_CAPTURE_MAX_BYTES = max(
+    4096, int(os.environ.get("UPSTREAM_400_CAPTURE_MAX_BYTES", str(256 * 1024)))
 )
 
 THINK_MODEL_NAME = os.environ.get("THINK_MODEL_NAME", "think")
@@ -170,6 +184,32 @@ def _write_response_safely(handler: BaseHTTPRequestHandler, body: bytes):
         return
 
 
+def _send_response_safely(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    headers: list[tuple[str, str]],
+    body: bytes,
+):
+    """Emit a complete response, tolerating a client that has already gone.
+
+    A disconnected client is the normal end of a cancelled generation, not an
+    error, and `send_response`/`send_header`/`end_headers` all write to the
+    socket — so protecting only the body write leaves the header write to raise
+    into the handler thread. That is exactly what filled the journal with
+    BrokenPipeError tracebacks from the 503 path: the one response that is most
+    likely to be written to a client that has stopped waiting was the one that
+    did not go through the safe writer.
+    """
+    try:
+        handler.send_response(status)
+        for key, value in headers:
+            handler.send_header(key, value)
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        return
+
+
 def _filtered_upstream_headers(headers: Any) -> dict[str, str]:
     filtered: dict[str, str] = {}
     for key, value in headers.items():
@@ -249,7 +289,11 @@ def _capture_upstream_400(
     payload: dict[str, Any] | None,
     response_body: bytes,
 ):
-    if payload is None:
+    if payload is None or not UPSTREAM_400_CAPTURE_ENABLED:
+        return
+    if not UPSTREAM_400_CAPTURE_DIR:
+        _log("upstream 400 capture is enabled but no capture directory is set; "
+             "set STACK_DIR or UPSTREAM_400_CAPTURE_DIR")
         return
     try:
         response_text = response_body.decode("utf-8", errors="replace")
@@ -265,15 +309,50 @@ def _capture_upstream_400(
         "payload": payload,
         "response_body_text": response_text[:16000],
     }
-    tmp_path = f"{UPSTREAM_400_CAPTURE_PATH}.tmp"
+
+    # Timestamped, so a second 400 does not overwrite the first one's evidence.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%f")
+    target = os.path.join(UPSTREAM_400_CAPTURE_DIR, f"upstream-400-{stamp}.json")
+    tmp_path = f"{target}.tmp"
     try:
-        with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump(snapshot, fh, ensure_ascii=True, indent=2)
-            fh.write("\n")
-        os.replace(tmp_path, UPSTREAM_400_CAPTURE_PATH)
-        _log(f"captured upstream 400 payload -> {UPSTREAM_400_CAPTURE_PATH}")
+        os.makedirs(UPSTREAM_400_CAPTURE_DIR, mode=0o700, exist_ok=True)
+        encoded = json.dumps(snapshot, ensure_ascii=True, indent=2).encode("utf-8") + b"\n"
+        if len(encoded) > UPSTREAM_400_CAPTURE_MAX_BYTES:
+            # Truncate rather than skip: a capped record of a huge conversation
+            # still names the request that failed.
+            snapshot["payload"] = {"__truncated__": (
+                f"payload omitted; the capture exceeded "
+                f"{UPSTREAM_400_CAPTURE_MAX_BYTES} bytes")}
+            encoded = json.dumps(snapshot, ensure_ascii=True, indent=2).encode("utf-8") + b"\n"
+
+        # Created 0600 before anything is written to it, so the conversation is
+        # never briefly readable by everyone on the box.
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, encoded)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, target)
+        _prune_upstream_400_captures()
+        _log(f"captured upstream 400 payload -> {target}")
     except OSError as exc:
         _log(f"failed to capture upstream 400 payload: {exc}")
+
+
+def _prune_upstream_400_captures():
+    """Keep the newest UPSTREAM_400_CAPTURE_KEEP captures and drop the rest."""
+    try:
+        names = sorted(
+            name for name in os.listdir(UPSTREAM_400_CAPTURE_DIR)
+            if name.startswith("upstream-400-") and name.endswith(".json")
+        )
+    except OSError:
+        return
+    for name in names[:-UPSTREAM_400_CAPTURE_KEEP]:
+        try:
+            os.unlink(os.path.join(UPSTREAM_400_CAPTURE_DIR, name))
+        except OSError:
+            pass
 
 
 def _messages_as_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1170,6 +1249,19 @@ def _profile_for_model(model_name: str) -> dict[str, Any] | None:
 class ProxyHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
+    # socketserver's default listen backlog is 5, and this process runs four
+    # listeners with thread-per-request concurrency, shared between pi-forge,
+    # open-webui, Hermes and the OCR SDK. Five is only ever enough while the
+    # accept loop keeps up; once the handler threads are busy the queue is what
+    # holds arriving connections, and it overflows almost immediately. Linux
+    # then drops the SYN rather than refusing it, so the client waits out a full
+    # one-second retransmit timer for what is otherwise a 0.034ms loopback
+    # connect. Measured against a listener that is not accepting: of 64
+    # concurrent connections, a backlog of 5 stalled or dropped 58, and a
+    # backlog of 128 lost none. On the live :8008 the same overflow showed up as
+    # a p50 connect of 0.035ms against a p90 of 1022ms.
+    request_queue_size = 128
+
     def get_request(self):  # noqa: ANN001
         request, client_address = super().get_request()
         try:
@@ -1222,11 +1314,10 @@ def make_handler(
                     "data": [_model_obj(self._model_name)],
                 }
             ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            _send_response_safely(self, 200, [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(body))),
+            ], body)
 
         def _serve_model(self):
             requested_id = _requested_model_id_from_path(self.path)
@@ -1234,11 +1325,10 @@ def make_handler(
                 self._gateway_error(404, "model_not_found", f"Model '{requested_id}' was not found")
                 return
             body = json.dumps(_model_obj(self._model_name)).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            _send_response_safely(self, 200, [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(body))),
+            ], body)
 
         def _read_body(self) -> bytes:
             n = int(self.headers.get("Content-Length", 0))
@@ -1316,6 +1406,16 @@ def make_handler(
 
             headers = _filtered_upstream_headers(self.headers)
             headers["Content-Length"] = str(len(body))
+            # Deliberately not keep-alive, and measured rather than assumed.
+            # Connecting to the backend over loopback costs 0.034ms at p50 and
+            # 0.036ms at p90 over 300 samples, against a measured TTFT of
+            # ~268ms: pooling upstream connections would recover about 0.01% of
+            # a request. Buying that would mean replacing this EOF-terminated
+            # read loop with full HTTP/1.1 framing — Content-Length and chunked
+            # decoding, plus SSE that legitimately streams until close — in the
+            # one code path every persona shares. The saving does not pay for
+            # the risk. The connection cost that did matter was the listen
+            # backlog; see ProxyHTTPServer.request_queue_size.
             headers["Connection"] = "close"
             headers["Host"] = f"{upstream_host}:{upstream_port}"
 
@@ -1444,14 +1544,12 @@ def make_handler(
                         elif is_generation_request:
                             rewritten_body = _rewrite_json_response_model(rewritten_body, self._model_name)
 
-                        self.send_response(status_code or 200)
-                        for key, value in resp_headers.items():
-                            if key in {"content-length", "connection", "transfer-encoding"}:
-                                continue
-                            self.send_header(key, value)
-                        self.send_header("Content-Length", str(len(rewritten_body)))
-                        self.end_headers()
-                        _write_response_safely(self, rewritten_body)
+                        forwarded = [
+                            (key, value) for key, value in resp_headers.items()
+                            if key not in {"content-length", "connection", "transfer-encoding"}
+                        ]
+                        forwarded.append(("Content-Length", str(len(rewritten_body))))
+                        _send_response_safely(self, status_code or 200, forwarded, rewritten_body)
 
                     if is_generation_request:
                         if response_streaming:
@@ -1480,11 +1578,10 @@ def make_handler(
 
         def _gateway_error(self, status_code: int, err_type: str, message: str):
             msg = json.dumps({"error": {"message": message, "type": err_type}}).encode("utf-8")
-            self.send_response(status_code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(msg)))
-            self.end_headers()
-            _write_response_safely(self, msg)
+            _send_response_safely(self, status_code, [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(msg))),
+            ], msg)
 
         def _backend_unavailable(self, host: str, port: int, detail: str = ""):
             msg = json.dumps(
@@ -1498,10 +1595,10 @@ def make_handler(
                     }
                 }
             ).encode("utf-8")
-            self.send_response(503)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(msg)))
-            self.end_headers()
+            _send_response_safely(self, 503, [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(msg))),
+            ], msg)
             _write_response_safely(self, msg)
 
         def log_message(self, fmt, *args):  # noqa: ANN001
@@ -1561,11 +1658,10 @@ def make_aggregate_handler():
 
         def _serve_models(self):
             body = json.dumps(_aggregate_models_payload()).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            _send_response_safely(self, 200, [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(body))),
+            ], body)
 
         def _serve_model(self):
             requested_id = _requested_model_id_from_path(self.path)
@@ -1573,11 +1669,10 @@ def make_aggregate_handler():
                 self._gateway_error(404, "model_not_found", f"Model '{requested_id}' was not found")
                 return
             body = json.dumps(_aggregate_model_payload(requested_id)).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            _send_response_safely(self, 200, [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(body))),
+            ], body)
 
     return AggregateProxyHandler
 
