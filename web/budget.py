@@ -543,6 +543,16 @@ def evaluate(geometry: dict, settings: dict, prediction: dict,
                     "Clear one of the two.",
         })
 
+    cache_reuse = str(settings.get("cache_reuse") or "0").strip()
+    if cache_reuse not in ("", "0") and settings.get("mmproj_path"):
+        issues.append({
+            "level": "warn", "code": "cache_reuse_with_multimodal",
+            "text": f"Cache Reuse Chunk is {cache_reuse}, but this backend loads a multimodal "
+                    "projector and llama-server disables --cache-reuse for multimodal models "
+                    "('cache_reuse is not supported by multimodal'). Partial prefix reuse is off; "
+                    "whole-prefix slot reuse still applies.",
+        })
+
     # Context accounting, the mistake the per-slot division invites.
     train_ctx = geometry.get("train_context_length") or 0
     if train_ctx and prediction["total_context"] > train_ctx:

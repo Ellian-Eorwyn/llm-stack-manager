@@ -337,6 +337,20 @@ class EvaluateTest(unittest.TestCase):
     def test_fit_ctx_of_zero_is_not_flagged(self):
         self.assertNotIn("fit_ctx_without_fit", self.codes(fit="off", fit_ctx="0"))
 
+    def test_cache_reuse_is_flagged_on_a_multimodal_backend(self):
+        """llama-server logs 'cache_reuse is not supported by multimodal' and
+        carries on, so the setting reads as applied when it is inert."""
+        self.assertIn("cache_reuse_with_multimodal",
+                      self.codes(cache_reuse="256", mmproj_path="/models/x.mmproj.gguf"))
+
+    def test_cache_reuse_is_fine_without_a_projector(self):
+        self.assertNotIn("cache_reuse_with_multimodal",
+                         self.codes(cache_reuse="256", mmproj_path=""))
+
+    def test_cache_reuse_of_zero_is_not_flagged(self):
+        self.assertNotIn("cache_reuse_with_multimodal",
+                         self.codes(cache_reuse="0", mmproj_path="/models/x.mmproj.gguf"))
+
     def test_vram_overcommit_is_an_error_not_a_warning(self):
         settings = dict(self.settings, ctx_size=1048576)
         prediction = budget.predict(self.qwen, settings)
