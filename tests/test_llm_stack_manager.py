@@ -785,6 +785,235 @@ class BudgetRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("could not read model metadata", response.get_json()["error"])
 
+    def test_recommendation_stays_within_the_trained_context(self):
+        """A recommendation that trips the pre-flight is not a recommendation:
+        `evaluate` warns above the trained context, so `recommend` stops there."""
+        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model)}
+        client, *patches = self._client(env)
+        with client, patches[0], patches[1], patches[2]:
+            payload = client.get("/api/backend/budget/recommend?slots=2").get_json()
+        self.assertLessEqual(payload["ctx_size"], payload["train_context_length"])
+
+    def test_recommendation_clears_the_flags_it_disables(self):
+        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model)}
+        client, *patches = self._client(env)
+        with client, patches[0], patches[1], patches[2]:
+            payload = client.get("/api/backend/budget/recommend").get_json()
+        self.assertEqual(payload["fit"], "off")
+        self.assertEqual(payload["fit_ctx"], "")
+        # No sliding-window attention in this model, so --swa-full is inert.
+        self.assertEqual(payload["swa_full"], "off")
+
+
+class ContextAccountingTests(unittest.TestCase):
+    """--ctx-size is a total that llama.cpp divides by --parallel. Reporting only
+    the total is how a backend the UI called 262144 rejected a 155751-token
+    request."""
+
+    def test_status_reports_per_slot_context_for_each_backend(self):
+        env = {"CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2",
+               "CHAT2_CTX_SIZE": "65536", "CHAT2_N_PARALLEL": "1"}
+        with patch.object(manager, "read_env", return_value=env):
+            summary = manager.backend_context_summary()
+        self.assertEqual(summary["chat-backend-dense"]["per_slot_context"], 131072)
+        self.assertEqual(summary["chat-backend-dense"]["total_context"], 262144)
+        self.assertEqual(summary["chat-backend2"]["per_slot_context"], 65536)
+
+    def test_a_missing_parallel_setting_means_one_slot(self):
+        with patch.object(manager, "read_env", return_value={"EMBED_CTX_SIZE": "8192"}):
+            summary = manager.backend_context_summary()
+        self.assertEqual(summary["embed"], {"total_context": 8192, "slots": 1,
+                                            "per_slot_context": 8192})
+
+    def test_unconfigured_backends_are_omitted_rather_than_reported_as_zero(self):
+        with patch.object(manager, "read_env", return_value={"CHAT_PRIMARY_CTX_SIZE": "0"}):
+            self.assertNotIn("chat-backend-dense", manager.backend_context_summary())
+
+    def test_a_non_numeric_context_does_not_break_the_status_poll(self):
+        with patch.object(manager, "read_env", return_value={"OCR_CTX_SIZE": "lots"}):
+            self.assertNotIn("ocr", manager.backend_context_summary())
+
+
+class ConfigPreflightTests(unittest.TestCase):
+    """The config form has always accepted anything, and the cost of that
+    arrived later — on restart, or as an eviction storm."""
+
+    GPUS = [{"index": 0, "mem_total": 24576, "mem_used": 1000},
+            {"index": 1, "mem_total": 24576, "mem_used": 1000}]
+    MEMINFO = {"MemTotal": 32787000, "MemAvailable": 20275000,
+               "SwapTotal": 8388604, "SwapFree": 8388604}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        spec = importlib.util.spec_from_file_location(
+            "llm_stack_manager_budget_tests",
+            pathlib.Path(__file__).resolve().parent / "test_budget.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.model = module.write_gguf(
+            pathlib.Path(self._tmp.name) / "model.gguf", module.QWEN36_27B)
+        self.config_file = pathlib.Path(self._tmp.name) / "llm-stack.env"
+        self.config_file.write_text("CHAT_PRIMARY_CTX_SIZE=131072\n")
+
+    def _patches(self, env):
+        return (
+            patch.object(manager, "read_env", return_value=env),
+            patch.object(manager, "get_gpu_info", return_value=self.GPUS),
+            patch.object(manager, "read_meminfo", return_value=self.MEMINFO),
+            patch.object(manager, "CONFIG_FILE", self.config_file),
+        )
+
+    def _env(self, **overrides):
+        return {"CHAT_PRIMARY_MODEL_PATH": str(self.model),
+                "CHAT_PRIMARY_CTX_SIZE": "131072",
+                "CHAT_PRIMARY_N_PARALLEL": "2", **overrides}
+
+    def test_untouched_backends_are_not_priced(self):
+        """Pricing means reading GGUF metadata off disk; a port change should
+        not pay for it."""
+        with self._patches(self._env())[0]:
+            result = manager.preflight_config({"AGGREGATE_PORT": "8012"})
+        self.assertEqual(result["backends"], [])
+        self.assertTrue(result["ok"])
+
+    def test_a_configuration_that_cannot_allocate_is_refused(self):
+        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0")
+        patches = self._patches(env)
+        with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
+            response = client.post("/api/config", json={"CHAT_PRIMARY_CTX_SIZE": "1048576"})
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual([issue["code"] for issue in payload["preflight"]["errors"]],
+                         ["vram_overcommit"])
+        # Refused means not written.
+        self.assertIn("CHAT_PRIMARY_CTX_SIZE=131072", self.config_file.read_text())
+
+    def test_the_operator_can_override_the_prediction(self):
+        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0")
+        patches = self._patches(env)
+        with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
+            response = client.post("/api/config?force=1",
+                                   json={"CHAT_PRIMARY_CTX_SIZE": "1048576"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ok"])
+        self.assertTrue(response.get_json()["forced"])
+        self.assertIn("CHAT_PRIMARY_CTX_SIZE=1048576", self.config_file.read_text())
+
+    def test_a_workable_configuration_saves_and_reports_its_warnings(self):
+        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0,1")
+        patches = self._patches(env)
+        with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
+            response = client.post("/api/config", json={
+                "CHAT_PRIMARY_CTX_SIZE": "131072",
+                "CHAT_PRIMARY_CTX_CHECKPOINTS": "32",
+                "CHAT_PRIMARY_CACHE_RAM": "1024",
+            })
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["forced"])
+        # 32 checkpoints of a hybrid model against 1 GiB of budget is the
+        # eviction storm, stated before it happens rather than after.
+        self.assertIn("cache_ram_shortfall",
+                      {issue["code"] for issue in payload["preflight"]["warnings"]})
+
+    def test_dead_and_contradictory_flags_are_reported_on_save(self):
+        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0,1")
+        patches = self._patches(env)
+        with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
+            response = client.post("/api/config", json={
+                "CHAT_PRIMARY_SWA_FULL": "on",
+                "CHAT_PRIMARY_FIT": "off",
+                "CHAT_PRIMARY_FIT_CTX": "4096",
+            })
+        codes = {issue["code"] for issue in response.get_json()["preflight"]["warnings"]}
+        self.assertIn("swa_full_unsupported", codes)
+        self.assertIn("fit_ctx_without_fit", codes)
+
+    def test_preflight_endpoint_prices_without_writing(self):
+        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0,1")
+        patches = self._patches(env)
+        with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
+            response = client.post("/api/config/preflight",
+                                   json={"CHAT_PRIMARY_CTX_SIZE": "262144"})
+        payload = response.get_json()
+        self.assertEqual(payload["backends"][0]["per_slot_context"], 131072)
+        self.assertIn("CHAT_PRIMARY_CTX_SIZE=131072", self.config_file.read_text())
+
+    def test_an_unreadable_model_reports_rather_than_blocking_the_save(self):
+        """Pointing at a model that has not been fetched yet is not a
+        configuration that fails to fit."""
+        patches = self._patches({"CHAT_PRIMARY_MODEL_PATH": "/nope.gguf"})
+        with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
+            response = client.post("/api/config", json={"CHAT_PRIMARY_CTX_SIZE": "262144"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("model not found", response.get_json()["preflight"]["backends"][0]["error"])
+
+
+class EnvDeprecationTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = pathlib.Path(self._tmp.name)
+        self.config_file = self.root / "llm-stack.env"
+        self.saved_dir = self.root / "saved"
+        self.saved_dir.mkdir()
+
+    def _patches(self):
+        return (patch.object(manager, "CONFIG_FILE", self.config_file),
+                patch.object(manager, "SAVED_CONFIGS_DIR", self.saved_dir))
+
+    def test_legacy_keys_still_on_disk_are_named_with_their_replacement(self):
+        self.config_file.write_text(
+            "CHAT_DENSE_MODEL_PATH=/models/a.gguf\nCHAT_PRIMARY_CTX_SIZE=131072\n")
+        with self._patches()[0], self._patches()[1]:
+            report = manager.collect_env_deprecations()
+        self.assertEqual([entry["key"] for entry in report["env_keys"]],
+                         ["CHAT_DENSE_MODEL_PATH"])
+        self.assertEqual(report["env_keys"][0]["replacement"], "CHAT_PRIMARY_MODEL_PATH")
+        self.assertFalse(report["env_keys"][0]["canonical_present"])
+
+    def test_a_clean_env_file_reports_nothing_to_migrate(self):
+        self.config_file.write_text("CHAT_PRIMARY_MODEL_PATH=/models/a.gguf\n")
+        with self._patches()[0], self._patches()[1]:
+            self.assertEqual(manager.collect_env_deprecations()["migratable"], 0)
+
+    def test_saved_profiles_are_reported_but_not_migrated(self):
+        self.config_file.write_text("CHAT_DENSE_CTX_SIZE=131072\n")
+        (self.saved_dir / "Qwen.json").write_text(json.dumps({
+            "CHAT_DENSE_MODEL_PATH": "/models/a.gguf",
+            "_config_form": {"CHAT_MOE_CTX_SIZE": "65536"},
+        }))
+        with manager.app.test_client() as client, self._patches()[0], self._patches()[1]:
+            client.post("/api/config/deprecations/migrate")
+            report = client.get("/api/config/deprecations").get_json()
+
+        self.assertEqual(report["migratable"], 0, "the env file should be migrated")
+        # The profile is untouched: it is user data, and the read-side backfill
+        # keeps it working as written.
+        self.assertEqual(report["saved_configs"],
+                         [{"name": "Qwen", "keys": ["CHAT_DENSE_MODEL_PATH", "CHAT_MOE_CTX_SIZE"]}])
+        self.assertIn("CHAT_DENSE_MODEL_PATH", (self.saved_dir / "Qwen.json").read_text())
+
+    def test_migration_preserves_the_value_under_the_canonical_name(self):
+        self.config_file.write_text("CHAT_DENSE_MODEL_PATH=/models/a.gguf\n")
+        with manager.app.test_client() as client, self._patches()[0], self._patches()[1]:
+            response = client.post("/api/config/deprecations/migrate")
+            resolved = manager.read_env()
+        self.assertTrue(response.get_json()["ok"])
+        written = self.config_file.read_text()
+        self.assertIn("CHAT_PRIMARY_MODEL_PATH=/models/a.gguf", written)
+        self.assertNotIn("CHAT_DENSE_MODEL_PATH", written)
+        self.assertEqual(resolved["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
+
+    def test_read_env_raw_shows_the_file_without_backfill(self):
+        self.config_file.write_text("CHAT_DENSE_MODEL_PATH=/models/a.gguf\n")
+        with self._patches()[0]:
+            self.assertEqual(manager.read_env_raw(),
+                             {"CHAT_DENSE_MODEL_PATH": "/models/a.gguf"})
+            self.assertEqual(manager.read_env()["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
+
 
 if __name__ == "__main__":
     unittest.main()

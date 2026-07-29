@@ -502,7 +502,24 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 .cache-aware-status.warning { border-color: rgba(245, 158, 11, .45); color: #fde68a; }
 .cache-aware-status.incompatible { border-color: rgba(239, 68, 68, .45); color: #fecaca; }
 .cache-aware-status ul { margin: 6px 0 0 18px; }
+.cache-aware-status .cache-aware-note { margin-top: 6px; color: #fde68a; }
 .cache-aware-snippet-label { color: var(--muted); font-size: 11px; margin-top: 10px; }
+
+/* Pre-flight: what the memory budget model makes of a configuration. */
+.preflight { margin: 14px 0 0; display: grid; gap: 6px; }
+.preflight-issue {
+  border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px;
+  padding: 8px 10px; font-size: 12px; background: rgba(3, 7, 18, .45); color: var(--dim);
+}
+.preflight-issue.error { border-left-color: var(--danger); color: #fecaca; }
+.preflight-issue.warn  { border-left-color: var(--warn, #f59e0b); color: #fde68a; }
+.preflight-issue.info  { border-left-color: var(--accent); }
+.preflight-ctx { color: var(--muted); font-size: 11px; }
+
+/* Per-slot context, shown next to any total that llama.cpp will divide. */
+.per-slot-hint { color: var(--muted); font-size: 11px; margin-top: 4px; display: block; }
+.per-slot-hint strong { color: var(--dim); }
+.card-ctx { color: var(--muted); font-size: 11px; margin-top: 2px; }
 @media (max-width: 900px) {
   .config-toolbar { grid-template-columns: 1fr; }
 }
@@ -1058,6 +1075,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
         <div class="card-desc">{{ svc.desc }}</div>
         <div class="card-port">:{{ svc.ports }}</div>
+        <div class="card-ctx" id="ctx-{{ svc.name }}"></div>
         <div class="card-acts">
           <button class="btn btn-success btn-sm" onclick="svcAction('{{ svc.name }}','start',this)">Start</button>
           <button class="btn btn-danger  btn-sm" onclick="svcAction('{{ svc.name }}','stop',this)">Stop</button>
@@ -1528,6 +1546,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
             <span class="hint">Updates GPU Devices, Main GPU Index, Split Mode, and Tensor Split.</span>
           </div>
         </div>
+        <span class="per-slot-hint" data-per-slot-prefix="{{ backend_prefix }}"></span>
       </div>
 
       <div class="cfg-panel cache-aware-card" style="margin-bottom:20px;" data-cache-aware-prefix="{{ backend_prefix }}">
@@ -1982,6 +2001,8 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       </div>
       {% endif %}
 
+      <div class="preflight" id="preflight-{{ section|replace(' ','-') }}" aria-live="polite" style="display:none;"></div>
+
       <div class="save-bar">
         <button class="btn btn-primary" onclick="saveCfgSection('{{ section }}',this)">Save {{ section }}</button>
         <button class="btn btn-ghost" id="restart-btn-{{ section|replace(' ','-') }}" onclick="restartSectionServices('{{ section|replace(' ','-') }}', this)" style="display:none;">Restart Service</button>
@@ -2147,6 +2168,7 @@ async function poll() {
     const d = await fetchJSON('/api/status');
     applyStatuses(d.services);
     applyGpus(d.gpus);
+    applyServiceContexts(d.contexts);
   } catch {}
   try { await pollTelemetry(); } catch {}
   try { await pollActiveModel(); } catch {}
@@ -2305,6 +2327,20 @@ function applyStatuses(statuses) {
     card.dataset.status = status;
     pill.className = 'status-pill ' + status;
     pill.textContent = status;
+  }
+}
+
+// The configured context of each model service, per slot. Read from the env
+// rather than the running backend so it is there while the service is stopped,
+// which is when the number is being chosen.
+function applyServiceContexts(contexts) {
+  for (const [name, ctx] of Object.entries(contexts || {})) {
+    const el = document.getElementById('ctx-' + name);
+    if (!el) continue;
+    const perSlot = Number(ctx.per_slot_context || 0).toLocaleString('en-US');
+    el.textContent = ctx.slots > 1
+      ? `${perSlot} tokens/slot × ${ctx.slots} = ${Number(ctx.total_context).toLocaleString('en-US')} total`
+      : `${perSlot} tokens of context`;
   }
 }
 
@@ -4491,6 +4527,7 @@ async function loadConfig() {
     initConfigArgEditors();
     initCacheAwareScheduling();
     refreshAllCacheAwareScheduling();
+    initPerSlotHints();
     syncQuickGpuPlacementSelects();
   } catch (e) { toast('Could not load config: ' + e, 'err'); }
 }
@@ -4514,10 +4551,30 @@ function cacheAwareValues(prefix) {
   }));
 }
 
+// Host measurements from /api/backend/budget/recommend, keyed by config
+// prefix. The recommended profile is derived from detected VRAM, host RAM and
+// the selected model's geometry rather than from a constant, so it has to be
+// fetched; until it arrives the panel reports compatibility only.
+const cacheAwareRecommendations = {};
+const CACHE_AWARE_BACKENDS = { CHAT_PRIMARY: 'chat-primary', CHAT2: 'chat-secondary' };
+
+async function loadCacheAwareRecommendation(prefix) {
+  const backend = CACHE_AWARE_BACKENDS[prefix];
+  if (!backend) return null;
+  try {
+    const payload = await fetchJSON(`/api/backend/budget/recommend?backend=${backend}`);
+    cacheAwareRecommendations[prefix] = payload && !payload.error ? payload : null;
+  } catch (_e) {
+    cacheAwareRecommendations[prefix] = null;
+  }
+  return cacheAwareRecommendations[prefix];
+}
+
 function refreshCacheAwareScheduling(prefix) {
   const status = document.getElementById(`cache-aware-status-${prefix}`);
   if (!status || typeof CacheAwareScheduling === 'undefined') return;
-  const result = CacheAwareScheduling.evaluate(cacheAwareValues(prefix));
+  const recommendation = cacheAwareRecommendations[prefix];
+  const result = CacheAwareScheduling.evaluate(cacheAwareValues(prefix), recommendation);
   const total = result.totalContext.toLocaleString('en-US');
   const perSlot = result.perSlotContext.toLocaleString('en-US');
   let headline = '';
@@ -4526,27 +4583,37 @@ function refreshCacheAwareScheduling(prefix) {
   if (!result.compatible) {
     status.classList.add('incompatible');
     headline = '<strong>Incompatible with cache-aware scheduling.</strong>';
-  } else if (result.recommended) {
+  } else if (!result.hasRecommendation) {
     status.classList.add(result.conflicts.length ? 'warning' : 'compatible');
-    headline = '<strong>Compatible — recommended context profile is configured.</strong>';
+    headline = '<strong>Compatible.</strong> This host has not been measured — the model file could not be read, so no context profile is recommended.';
+  } else if (result.recommended && !result.notes.length) {
+    status.classList.add(result.conflicts.length ? 'warning' : 'compatible');
+    headline = '<strong>Compatible — the profile measured to fit this host is configured.</strong>';
   } else {
     status.classList.add('warning');
-    headline = '<strong>Compatible — 262,144 or more total context is recommended.</strong>';
+    headline = `<strong>Compatible — this host was measured to fit ${result.recommendedTotalContext.toLocaleString('en-US')} total tokens.</strong>`;
   }
 
-  const contextSummary = `<div>${total} total tokens across ${result.slots || 0} slots provides approximately ${perSlot} tokens per slot.</div>`;
+  // The per-slot figure is the one a request is measured against, so it leads.
+  const contextSummary = `<div><strong>${perSlot}</strong> tokens per slot × ${result.slots || 0} slots = ${total} total. A request above the per-slot figure is rejected.</div>`;
   const issues = result.issues.length
     ? `<ul>${result.issues.map(issue => `<li>${escapeHtml(issue)}</li>`).join('')}</ul>`
     : '';
+  const notes = result.notes.map(note => `<div class="cache-aware-note">${escapeHtml(note)}</div>`).join('');
   const conflicts = result.conflicts.length
     ? `<div style="margin-top:6px;"><strong>Custom argument warning:</strong> these later arguments may override the structured settings: ${result.conflicts.map(escapeHtml).join(', ')}</div>`
     : '';
-  status.innerHTML = `${headline}${contextSummary}${issues}${conflicts}`;
+  status.innerHTML = `${headline}${contextSummary}${issues}${notes}${conflicts}`;
 }
 
 function refreshAllCacheAwareScheduling() {
   refreshCacheAwareScheduling('CHAT_PRIMARY');
   refreshCacheAwareScheduling('CHAT2');
+  // Measuring the host means reading GGUF metadata off disk, so it trails the
+  // form rather than blocking it.
+  for (const prefix of Object.keys(CACHE_AWARE_BACKENDS)) {
+    loadCacheAwareRecommendation(prefix).then(() => refreshCacheAwareScheduling(prefix));
+  }
 }
 
 function initCacheAwareScheduling() {
@@ -4561,16 +4628,77 @@ function initCacheAwareScheduling() {
   }
 }
 
-function applyCacheAwarePreset(prefix, section) {
+async function applyCacheAwarePreset(prefix, section) {
   if (typeof CacheAwareScheduling === 'undefined') return;
-  const updates = CacheAwareScheduling.presetValues(prefix);
+  const recommendation = cacheAwareRecommendations[prefix] ?? await loadCacheAwareRecommendation(prefix);
+  const updates = CacheAwareScheduling.presetValues(prefix, recommendation);
   for (const [key, value] of Object.entries(updates)) {
     const input = document.getElementById(`cfg-${key}`);
     if (input) input.value = value;
   }
   markDirty(section);
   refreshCacheAwareScheduling(prefix);
-  toast(`Cache-aware scheduling preset applied to ${section}. Save and restart the backend to activate it.`, 'ok');
+  refreshPerSlotHints();
+  const perSlot = (Number(recommendation?.per_slot_context) || 0).toLocaleString('en-US');
+  toast(recommendation
+    ? `Applied the profile measured for this host: ${perSlot} tokens per slot. Save and restart the backend to activate it.`
+    : `Applied fallback scheduling values to ${section} — this host could not be measured. Save and restart the backend to activate it.`,
+    recommendation ? 'ok' : 'info');
+}
+
+// -- per-slot context and pre-flight --
+
+// Every field whose value llama.cpp divides by --parallel gets a live per-slot
+// readout beside it. The total is what is configured; the per-slot figure is
+// what a request is measured against, and only one of the two used to be shown.
+function refreshPerSlotHints() {
+  document.querySelectorAll('[data-per-slot-prefix]').forEach(hint => {
+    const prefix = hint.dataset.perSlotPrefix;
+    const total = Number.parseInt(document.getElementById(`cfg-${prefix}_CTX_SIZE`)?.value || '', 10);
+    const slots = Number.parseInt(document.getElementById(`cfg-${prefix}_N_PARALLEL`)?.value || '', 10);
+    if (!Number.isFinite(total) || total <= 0) { hint.textContent = ''; return; }
+    const divisor = Number.isFinite(slots) && slots > 0 ? slots : 1;
+    hint.innerHTML = `llama.cpp divides this across slots: <strong>${Math.floor(total / divisor).toLocaleString('en-US')}</strong> tokens per slot × ${divisor}. A request larger than the per-slot figure is rejected.`;
+  });
+}
+
+function initPerSlotHints() {
+  for (const prefix of Object.keys(CACHE_AWARE_BACKENDS)) {
+    for (const suffix of ['CTX_SIZE', 'N_PARALLEL']) {
+      const input = document.getElementById(`cfg-${prefix}_${suffix}`);
+      if (!input || input.dataset.perSlotListener === '1') continue;
+      input.dataset.perSlotListener = '1';
+      input.addEventListener('input', refreshPerSlotHints);
+      input.addEventListener('change', refreshPerSlotHints);
+    }
+  }
+  refreshPerSlotHints();
+}
+
+function showPreflight(section, preflight) {
+  const panel = document.getElementById('preflight-' + section.replace(/ /g, '-'));
+  if (!panel) return;
+  if (!preflight || !(preflight.backends || []).length) {
+    panel.style.display = 'none';
+    panel.innerHTML = '';
+    return;
+  }
+
+  const parts = [];
+  for (const backend of preflight.backends) {
+    if (backend.error) {
+      parts.push(`<div class="preflight-issue info">${escapeHtml(backend.prefix)}: ${escapeHtml(backend.error)} — the configuration could not be priced.</div>`);
+      continue;
+    }
+    if (Number.isFinite(backend.per_slot_context)) {
+      parts.push(`<div class="preflight-ctx">${escapeHtml(backend.prefix)}: ${backend.per_slot_context.toLocaleString('en-US')} tokens per slot × ${backend.slots} = ${backend.total_context.toLocaleString('en-US')} total · predicted peak ${(backend.vram_upper_mib || 0).toLocaleString('en-US')} MiB VRAM</div>`);
+    }
+    for (const issue of backend.issues || []) {
+      parts.push(`<div class="preflight-issue ${escapeHtml(issue.level)}">${escapeHtml(issue.text)}</div>`);
+    }
+  }
+  panel.innerHTML = parts.join('');
+  panel.style.display = parts.length ? 'grid' : 'none';
 }
 
 async function copyPiForgeSchedulingSnippet(btn) {
@@ -4653,7 +4781,24 @@ async function saveCfgSection(section, btn) {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Saving...';
   try {
-    const d = await fetchJSON('/api/config', 'POST', updates);
+    let d = await fetchJSON('/api/config', 'POST', updates);
+    // The budget model refuses configurations it predicts cannot allocate. It
+    // is a prediction, so the operator can override it — but they have to be
+    // told what they are overriding first.
+    if (!d.ok && d.preflight && !d.preflight.ok) {
+      const reasons = (d.preflight.errors || []).map(issue => '• ' + issue.text).join('\n\n');
+      const proceed = confirm(
+        `This configuration is predicted not to fit:\n\n${reasons}\n\n` +
+        'Save it anyway?'
+      );
+      if (!proceed) {
+        showPreflight(section, d.preflight);
+        toast('Not saved. Adjust the configuration or save again to override.', 'err');
+        return;
+      }
+      d = await fetchJSON('/api/config?force=1', 'POST', updates);
+    }
+    showPreflight(section, d.preflight);
     if (d.ok) {
       cfgCurrent = { ...cfgCurrent, ...updates };
       refreshBuiltInModelButtons(updates);

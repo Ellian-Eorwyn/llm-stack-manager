@@ -494,6 +494,76 @@ class RecommendTest(unittest.TestCase):
         self.assertEqual(budget.recommend(self.qwen, [{"index": 0, "mem_total": 24576}],
                                           {"mem_available_mib": 19800})["swa_full"], "off")
 
+    def test_the_recommendation_passes_its_own_verdict(self):
+        """A recommendation that trips the pre-flight is not a recommendation."""
+        gpus = [{"index": 0, "mem_total": 24576}, {"index": 1, "mem_total": 24576}]
+        host = {"mem_available_mib": 19800}
+        recommendation = budget.recommend(self.qwen, gpus, host)
+        settings = {
+            "ctx_size": recommendation["ctx_size"],
+            "parallel": recommendation["parallel"],
+            "ctx_checkpoints": recommendation["ctx_checkpoints"],
+            "cache_ram": recommendation["cache_ram"],
+            "cache_type_k": recommendation["cache_type_k"],
+            "cache_type_v": recommendation["cache_type_v"],
+            "cache_reuse": recommendation["cache_reuse"],
+            "swa_full": recommendation["swa_full"],
+            "fit": recommendation["fit"],
+            "fit_ctx": recommendation["fit_ctx"],
+            "devices": 2,
+            "weights_mib": self.qwen["file_size_mib"],
+        }
+        verdict = budget.evaluate(
+            self.qwen, settings, budget.predict(self.qwen, settings), gpus, host)
+        actionable = [issue for issue in verdict["issues"] if issue["level"] != "info"]
+        self.assertEqual(actionable, [], actionable)
+
+    def test_it_does_not_recommend_past_the_trained_context(self):
+        roomy = budget.recommend(self.qwen, [{"index": 0, "mem_total": 81920},
+                                             {"index": 1, "mem_total": 81920}],
+                                 {"mem_available_mib": 128000})
+        self.assertLessEqual(roomy["ctx_size"], self.qwen["train_context_length"])
+
+    def test_the_projector_and_draft_head_are_priced_in(self):
+        """Priced without them, the recommendation is for a backend nobody is
+        launching: this box carries an 885 MiB projector and an MTP head."""
+        # Sized so the ceiling is VRAM rather than the trained context, which is
+        # where the difference between the two is visible at all.
+        gpus = [{"index": 0, "mem_total": 20480}, {"index": 1, "mem_total": 20480}]
+        host = {"mem_available_mib": 19800}
+        bare = budget.recommend(self.qwen, gpus, host,
+                                base_settings={"weights_mib": self.qwen["file_size_mib"]})
+        loaded = budget.recommend(self.qwen, gpus, host, base_settings={
+            "weights_mib": self.qwen["file_size_mib"],
+            "projector_mib": 885, "spec_method": "draft-mtp",
+        })
+        self.assertLess(loaded["ctx_size"], bare["ctx_size"])
+
+    def test_cache_reuse_is_not_recommended_for_a_multimodal_backend(self):
+        """llama-server disables --cache-reuse outright when a projector is
+        loaded, so a chunk size there is a dead flag."""
+        gpus = [{"index": 0, "mem_total": 24576}]
+        host = {"mem_available_mib": 19800}
+        self.assertEqual(budget.recommend(self.qwen, gpus, host,
+                                          base_settings={"projector_mib": 885})["cache_reuse"], 0)
+        self.assertEqual(budget.recommend(self.qwen, gpus, host)["cache_reuse"], 256)
+
+    def test_auto_fit_off_clears_the_flag_it_contradicts(self):
+        recommendation = budget.recommend(self.qwen, [{"index": 0, "mem_total": 24576}],
+                                          {"mem_available_mib": 19800})
+        self.assertEqual(recommendation["fit"], "off")
+        self.assertEqual(recommendation["fit_ctx"], "")
+
+    def test_the_prompt_cache_budget_matches_what_the_checkpoints_claim(self):
+        """The budget used to be a flat quarter of host RAM, which is either far
+        more than the checkpoints can use or far less than they need."""
+        recommendation = budget.recommend(self.qwen, [{"index": 0, "mem_total": 24576}],
+                                          {"mem_available_mib": 128000})
+        claimed = (recommendation["checkpoint_each_mib"]
+                   * recommendation["ctx_checkpoints"] * recommendation["parallel"])
+        self.assertLessEqual(claimed, recommendation["cache_ram"])
+        self.assertLess(recommendation["cache_ram"], claimed + 1024)
+
 
 # --------------------------------------------------------------------------
 # the model this box actually runs, when it is present

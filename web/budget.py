@@ -687,25 +687,61 @@ def budget_for(env: dict, backend: str = "chat-primary",
     return result
 
 
+# Terms of an existing configuration that change the footprint without being
+# things a recommendation should choose. Pricing candidate contexts without
+# them recommends a configuration that then fails its own pre-flight: this box
+# loads an 885 MiB projector and an MTP draft head, together worth several
+# gigabytes that a bare `predict` call never sees.
+_RECOMMEND_CARRIED_SETTINGS = (
+    "ubatch", "batch", "weights_mib", "projector_mib", "tensor_split",
+    "spec_method", "spec_draft_type_k", "spec_draft_type_v",
+)
+
+# Candidate total contexts, largest first. Not powers of two throughout: the
+# useful sizes are the ones that divide evenly across two slots.
+_CONTEXT_LADDER = (524288, 393216, 262144, 196608, 131072, 98304, 65536, 32768, 16384, 8192)
+
+
 def recommend(geometry: dict, gpus: list[dict], host: dict, slots: int = 2,
-              cache_type_k: str = "q8_0", cache_type_v: str = "q8_0") -> dict:
+              cache_type_k: str = "q8_0", cache_type_v: str = "q8_0",
+              base_settings: dict | None = None) -> dict:
     """Derive a configuration that fits this host, instead of a constant.
 
-    `cache-aware-scheduling.js` currently hardcodes a preset that was measured
-    to thrash this box. This is the replacement: pick the largest power-of-two
-    context whose predicted footprint fits detected VRAM, then size checkpoints
-    and prompt-cache RAM from what the model actually costs per checkpoint.
+    `cache-aware-scheduling.js` used to hardcode a preset that was measured to
+    thrash this box. This is the replacement: pick the largest context whose
+    predicted footprint fits detected VRAM, then size checkpoints and
+    prompt-cache RAM from what the model actually costs per checkpoint.
+
+    `base_settings` carries the parts of the live configuration that a
+    recommendation has no business choosing but that still move the number —
+    the projector, the draft head, the micro-batch, the tensor split. Priced
+    without them, the recommendation is for a backend nobody is launching.
+
+    The result is a configuration `evaluate` has nothing to say about. That is
+    the point of deriving it: a recommendation that trips the pre-flight on the
+    way in is not a recommendation.
     """
     capacity = sum(gpu.get("mem_total") or 0 for gpu in gpus)
     devices = max(1, len(gpus))
     usable = capacity * 0.92
+    slots = max(1, slots)
+
+    carried = {key: value for key, value in (base_settings or {}).items()
+               if key in _RECOMMEND_CARRIED_SETTINGS and value not in (None, "")}
+
+    # Never recommend past what the model was trained for. `evaluate` warns
+    # about it, and a recommendation should not be the thing that earns the
+    # warning.
+    ceiling = geometry.get("train_context_length") or 0
 
     best_ctx = 0
-    for ctx in (524288, 393216, 262144, 196608, 131072, 98304, 65536, 32768, 16384, 8192):
-        prediction = predict(geometry, {
+    for ctx in _CONTEXT_LADDER:
+        if ceiling and ctx > ceiling:
+            continue
+        prediction = predict(geometry, dict(carried, **{
             "ctx_size": ctx, "parallel": slots, "devices": devices,
             "cache_type_k": cache_type_k, "cache_type_v": cache_type_v,
-        })
+        }))
         if prediction["vram"]["upper_mib"] <= usable:
             best_ctx = ctx
             break
@@ -716,12 +752,15 @@ def recommend(geometry: dict, gpus: list[dict], host: dict, slots: int = 2,
     cache_budget = max(2048, int(available * 0.25))
 
     fixed_b, per_token_b = checkpoint_bytes(geometry, best_ctx, cache_type_k, cache_type_v)
-    per_slot = best_ctx // max(1, slots)
+    per_slot = best_ctx // slots
     each_mib = (fixed_b + per_token_b * per_slot) / MIB
     checkpoints = 8
     if each_mib > 0:
         checkpoints = int(cache_budget / (each_mib * slots))
         checkpoints = max(2, min(32, checkpoints))
+    # Size the budget to what the checkpoints actually claim rather than to a
+    # quarter of RAM the cache will never reach for.
+    cache_budget = min(cache_budget, max(2048, int(each_mib * checkpoints * slots) + 256))
 
     return {
         "ctx_size": best_ctx,
@@ -731,10 +770,19 @@ def recommend(geometry: dict, gpus: list[dict], host: dict, slots: int = 2,
         "cache_ram": cache_budget,
         "cache_type_k": cache_type_k,
         "cache_type_v": cache_type_v,
-        "cache_reuse": 256,
+        # llama-server disables --cache-reuse outright for multimodal backends,
+        # so recommending a chunk size there recommends a dead flag.
+        "cache_reuse": 0 if carried.get("projector_mib") else 256,
         "swa_full": "on" if geometry["supports_swa"] else "off",
+        # Auto-fit exists to shrink the context at launch, which is the one
+        # thing a cache-aware slot layout cannot tolerate. Off means --fit-ctx
+        # has nothing to act on, so it is cleared with it.
+        "fit": "off",
+        "fit_ctx": "",
+        "cache_idle_slots": "on",
         "checkpoint_each_mib": round(each_mib, 1),
         "fits_vram_mib": round(usable),
+        "train_context_length": ceiling,
     }
 
 

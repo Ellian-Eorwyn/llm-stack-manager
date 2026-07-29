@@ -247,6 +247,45 @@ NEW_ENV_KEY_LEGACY_ALIASES = defaultdict(list)
 for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
     NEW_ENV_KEY_LEGACY_ALIASES[new_key].append(legacy_key)
 
+# Why the dual naming exists, and how it ends.
+#
+# The backend slots were once named for what they held — CHAT_DENSE_* for a
+# dense model, CHAT_MOE_* for a mixture-of-experts one — and before that for the
+# specific models themselves (CHAT_MODEL_27B_PATH). Both schemes described the
+# contents rather than the slot, so both went stale the moment a slot's model
+# changed. CHAT_PRIMARY_* / CHAT2_* name the slot instead, and are the canonical
+# form: `normalize_env_keys` backfills the canonical key from its legacy twin on
+# read, and `normalize_config_updates` rewrites legacy keys to canonical on
+# write. Nothing writes a legacy key any more.
+#
+# What remains is residue: legacy keys still sitting in llm-stack.env and in
+# saved profiles, read every time and written never. They cannot simply be
+# deleted — a saved profile that carries only CHAT_DENSE_MODEL_PATH would lose
+# its model. The path out, staged so no stage can break a saved config:
+#
+#   1. (done) Canonical on write, backfilled on read. Legacy keys are inert.
+#   2. (here) Report them. `GET /api/config/deprecations` names every legacy key
+#      still present, where it lives, and what replaces it.
+#   3. (here) Migrate on request. `POST /api/config/deprecations/migrate`
+#      rewrites llm-stack.env in place: canonical key written from the legacy
+#      value where it is missing, legacy key dropped. Saved profiles are left
+#      alone — they are user data, and step 1 keeps reading them correctly.
+#   4. (future) Once a report comes back empty on this host, drop the legacy
+#      names from `allowed_config_keys` so they stop being writable at all,
+#      keeping `LEGACY_ENV_KEY_MAP` for read-side backfill of old profiles.
+#
+# Step 4 is deliberately not taken here: it is only safe once step 3 has run and
+# the report is empty, and that is an operator action, not a code change.
+DEPRECATED_ENV_KEY_NOTES = {
+    "CHAT_MODEL_27B_PATH": "named for a model size that the slot no longer implies",
+    "CHAT_MMPROJ_27B_PATH": "named for a model size that the slot no longer implies",
+    "CHAT_27B_CTX_SIZE": "named for a model size that the slot no longer implies",
+    "CHAT_MODEL_35B_PATH": "named for a model size that the slot no longer implies",
+    "CHAT_MMPROJ_35B_PATH": "named for a model size that the slot no longer implies",
+    "CHAT_35B_CTX_SIZE": "named for a model size that the slot no longer implies",
+}
+DEFAULT_DEPRECATION_NOTE = "named for the model architecture a slot happened to hold"
+
 SHARED_CHAT_BACKEND_RESTART = ["chat-backend-dense", "chat-backend-moe", "chat-backend", "chat-backend2"]
 TTS_BACKEND_SERVICES = []
 TTS_MANAGED_SERVICES = []
@@ -1597,8 +1636,13 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("WHISPERKIT_LARGE_V3_SPEAKER_COUNT", "2")
     return normalized
 
-def read_env() -> dict:
-    """Parse env file and return non-commented key=value pairs."""
+def read_env_raw() -> dict:
+    """Exactly the keys the env file carries, with no backfill or defaults.
+
+    `read_env` answers "what is the configuration"; this answers "what is
+    written down". Only the deprecation report needs the difference, which is
+    precisely the set of legacy keys still on disk.
+    """
     env = {}
     try:
         with open(CONFIG_FILE) as f:
@@ -1612,7 +1656,12 @@ def read_env() -> dict:
                     env[key.strip()] = value
     except FileNotFoundError:
         pass
-    return normalize_env_keys(env)
+    return env
+
+
+def read_env() -> dict:
+    """Parse env file and return non-commented key=value pairs."""
+    return normalize_env_keys(read_env_raw())
 
 
 def _quote_env_value(value) -> str:
@@ -1690,6 +1739,99 @@ def filter_config_updates(updates: dict, env: dict | None = None) -> dict:
 def config_form_snapshot(values: dict, env: dict | None = None) -> dict:
     """Exact UI form values from a saved profile, filtered to valid config keys."""
     return filter_config_updates(values, env)
+
+
+# Which env prefix each llama.cpp service is launched from. Only the chat
+# backends divide their context across slots, but the rest are listed so the
+# services panel can show a context for every model service it renders.
+SERVICE_ENV_PREFIXES = {
+    "chat-backend-dense": "CHAT_PRIMARY",
+    "chat-backend": "CHAT_PRIMARY",
+    "chat-backend2": "CHAT2",
+    "chat-backend-moe": "CHAT2",
+    "embed": "EMBED",
+    "embed2": "EMBED2",
+    "rerank": "RERANK",
+    "task": "TASK",
+    "ocr": "OCR",
+}
+
+
+def backend_context_summary(env: dict | None = None) -> dict:
+    """Configured total and per-slot context for each llama.cpp service.
+
+    `--ctx-size` is a total that llama.cpp divides by `--parallel`; a request is
+    measured against the quotient, not the total. Showing only the total is how
+    a backend the UI called "262144" came to reject a 155751-token request. This
+    is read from the env rather than from the running backend so it is available
+    for services that are stopped, which is when the number is being chosen.
+    """
+    env = normalize_env_keys(env or read_env())
+    summary = {}
+    for service, prefix in SERVICE_ENV_PREFIXES.items():
+        try:
+            total = int(str(env.get(f"{prefix}_CTX_SIZE") or "").strip() or 0)
+            slots = int(str(env.get(f"{prefix}_N_PARALLEL") or "").strip() or 1)
+        except ValueError:
+            continue
+        if total <= 0:
+            continue
+        slots = max(1, slots)
+        summary[service] = {
+            "total_context": total,
+            "slots": slots,
+            "per_slot_context": total // slots,
+        }
+    return summary
+
+
+def preflight_config(updates: dict, env: dict | None = None) -> dict:
+    """Price a proposed configuration before it is written.
+
+    The config form has always accepted anything, and the cost of that arrived
+    later and somewhere else: a backend that fails to allocate on restart, or a
+    prompt cache that evicts on most requests because its checkpoints never fit
+    the RAM they were given. Both are computable from the model's own geometry,
+    so they are computable here, before the write.
+
+    Only backends the update actually touches are priced — reading GGUF
+    metadata means touching the model file, and an unrelated port change should
+    not pay for it.
+    """
+    env = normalize_env_keys(env or read_env())
+    proposed = dict(env)
+    proposed.update(updates)
+
+    gpus = get_gpu_info()
+    host = telemetry.host_memory(read_meminfo())
+    backends = []
+    for backend, prefix in budget.BACKEND_PREFIXES.items():
+        if not any(key.startswith(f"{prefix}_") for key in updates):
+            continue
+        result = budget.budget_for(proposed, backend, gpus, host)
+        verdict = result.get("verdict") or {}
+        prediction = result.get("prediction") or {}
+        backends.append({
+            "backend": backend,
+            "prefix": prefix,
+            # A model that cannot be read is not a configuration that fails —
+            # the operator may be pointing at a file they have not fetched yet.
+            "error": result.get("error"),
+            "issues": verdict.get("issues", []),
+            "per_slot_context": prediction.get("per_slot_context"),
+            "total_context": prediction.get("total_context"),
+            "slots": prediction.get("slots"),
+            "vram_upper_mib": (prediction.get("vram") or {}).get("upper_mib"),
+            "cache_ram_shortfall_mib": (prediction.get("host") or {}).get("cache_ram_shortfall_mib"),
+        })
+
+    issues = [issue for entry in backends for issue in entry["issues"]]
+    return {
+        "ok": not any(issue["level"] == "error" for issue in issues),
+        "backends": backends,
+        "errors": [issue for issue in issues if issue["level"] == "error"],
+        "warnings": [issue for issue in issues if issue["level"] == "warn"],
+    }
 
 
 def saved_config_apply_updates(config: dict) -> dict:
@@ -3590,7 +3732,8 @@ def index():
 @app.route('/api/status')
 def api_status():
     statuses = {s['name']: get_service_status(s['name']) for s in patch_service_labels()}
-    return jsonify(services=statuses, gpus=get_gpu_info())
+    return jsonify(services=statuses, gpus=get_gpu_info(),
+                   contexts=backend_context_summary())
 
 
 @app.route('/api/backend/telemetry')
@@ -3669,11 +3812,20 @@ def api_backend_budget_recommend():
     except (budget.GGUFError, OSError, TypeError) as exc:
         return jsonify(error=f"could not read model metadata: {exc}", model_path=model_path), 400
 
+    # Price candidates against the backend as it will actually launch. The
+    # projector and the draft head are worth gigabytes that a bare prediction
+    # never sees, and a recommendation blind to them recommends what does not fit.
+    base = budget.settings_from_env(env, backend)
+    projector = base.get("mmproj_path") or ''
+    if projector and Path(projector).is_file():
+        base["projector_mib"] = Path(projector).stat().st_size / budget.MIB
+
     return jsonify(budget.recommend(
         geometry,
         get_gpu_info(),
         telemetry.host_memory(read_meminfo()),
         slots=slots,
+        base_settings=base,
     ) | {"model_path": model_path, "backend": backend})
 
 
@@ -5084,6 +5236,10 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
     config = json.loads(path.read_text())
     updates = saved_config_apply_updates(config)
     updates = apply_code_chat_mirrors(updates)
+    # Reported, not enforced. Applying a saved profile is a deliberate choice
+    # of a whole configuration, and this path also runs at startup, where
+    # refusing would leave the stack with no configuration at all.
+    preflight = preflight_config(updates)
     try:
         update_env_values(updates)
     except Exception as e:
@@ -5107,6 +5263,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
                 'restart_needed': sorted(restart_needed),
                 'active_chat_model': active,
                 'active_backend_slots': slots,
+                'preflight': preflight,
             }
         restart_needed.difference_update(SHARED_CHAT_BACKEND_RESTART)
         restart_needed.discard('chat-proxy')
@@ -5142,6 +5299,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
         'active_backend_slots': slots,
         'launched_services': launched,
         'output': launch_output,
+        'preflight': preflight,
     }
 
 
@@ -5217,6 +5375,99 @@ def api_config_get():
     return jsonify(normalize_env_keys(read_env()))
 
 
+def collect_env_deprecations() -> dict:
+    """Every legacy env key still written down, and what replaces it.
+
+    Two places carry them: llm-stack.env, which the migration can rewrite, and
+    saved profiles, which it deliberately cannot — those are user data, and the
+    read-side backfill keeps them working untouched. See
+    DEPRECATED_ENV_KEY_NOTES for the staged path this reports against.
+    """
+    raw = read_env_raw()
+    env_keys = []
+    for legacy_key, canonical in LEGACY_ENV_KEY_MAP.items():
+        if legacy_key not in raw:
+            continue
+        env_keys.append({
+            "key": legacy_key,
+            "replacement": canonical,
+            "value": raw[legacy_key],
+            # A legacy key whose canonical twin is absent is the only case where
+            # deleting the line would lose a value, so migration must write the
+            # canonical key first. Reported so that is visible before it runs.
+            "canonical_present": canonical in raw,
+            "note": DEPRECATED_ENV_KEY_NOTES.get(legacy_key, DEFAULT_DEPRECATION_NOTE),
+        })
+
+    profiles = []
+    for path in sorted(SAVED_CONFIGS_DIR.glob('*.json')) if SAVED_CONFIGS_DIR.is_dir() else []:
+        try:
+            config = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        found = sorted(key for key in LEGACY_ENV_KEY_MAP if key in config)
+        form = config.get("_config_form")
+        if isinstance(form, dict):
+            found = sorted(set(found) | {key for key in LEGACY_ENV_KEY_MAP if key in form})
+        if found:
+            profiles.append({"name": path.stem, "keys": found})
+
+    return {
+        "ok": True,
+        "env_file": str(CONFIG_FILE),
+        "env_keys": sorted(env_keys, key=lambda item: item["key"]),
+        "saved_configs": profiles,
+        "migratable": len(env_keys),
+        "stage": "canonical on write, legacy readable; migration is opt-in",
+    }
+
+
+@app.route('/api/config/deprecations', methods=['GET'])
+def api_config_deprecations():
+    return jsonify(collect_env_deprecations())
+
+
+@app.route('/api/config/deprecations/migrate', methods=['POST'])
+def api_config_deprecations_migrate():
+    """Rewrite llm-stack.env onto the canonical key names.
+
+    `update_env_values` already collapses a canonical key's legacy aliases onto
+    one line when it writes, so migrating is writing each canonical key with the
+    value the configuration already resolves to. Saved profiles are untouched
+    by design.
+    """
+    report = collect_env_deprecations()
+    if not report["env_keys"]:
+        return jsonify(ok=True, migrated=[], report=report)
+
+    env = read_env()
+    updates = {}
+    for entry in report["env_keys"]:
+        canonical = entry["replacement"]
+        # read_env has already resolved which value wins; writing that keeps the
+        # migration a rename rather than a change of configuration.
+        if canonical in env:
+            updates[canonical] = env[canonical]
+    try:
+        update_env_values(updates)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 500
+    return jsonify(ok=True, migrated=sorted(updates), report=collect_env_deprecations())
+
+
+@app.route('/api/config/preflight', methods=['POST'])
+def api_config_preflight():
+    """What the budget model makes of a configuration that has not been saved.
+
+    Same body as the save, no write. The form uses this to show the cost of an
+    edit while it is still an edit.
+    """
+    updates = request.json
+    if not isinstance(updates, dict):
+        return jsonify(ok=False, error='Expected JSON object'), 400
+    return jsonify(preflight_config(apply_code_chat_mirrors(filter_config_updates(updates))))
+
+
 @app.route('/api/config', methods=['POST'])
 def api_config_save():
     updates = request.json
@@ -5224,6 +5475,20 @@ def api_config_save():
         return jsonify(ok=False, error='Expected JSON object'), 400
     filtered = filter_config_updates(updates)
     filtered = apply_code_chat_mirrors(filtered)
+
+    # Refuse configurations the budget model says cannot allocate. `?force=1`
+    # overrides, because the model is a prediction and the operator is the one
+    # holding the hardware — but the refusal is the default so the failure
+    # surfaces here rather than in a restart loop.
+    preflight = preflight_config(filtered)
+    forced = str(request.args.get('force', '')).lower() in {'1', 'true', 'yes', 'on'}
+    if not preflight['ok'] and not forced:
+        return jsonify(
+            ok=False,
+            error='; '.join(issue['text'] for issue in preflight['errors']),
+            preflight=preflight,
+        ), 409
+
     try:
         update_env_values(filtered)
     except Exception as e:
@@ -5231,7 +5496,8 @@ def api_config_save():
     restart_needed = set()
     for key in filtered:
         restart_needed.update(RESTART_HINTS.get(key, []))
-    return jsonify(ok=True, restart_needed=sorted(restart_needed))
+    return jsonify(ok=True, restart_needed=sorted(restart_needed),
+                   preflight=preflight, forced=forced and not preflight['ok'])
 
 
 @app.route('/api/graphiti/status')
