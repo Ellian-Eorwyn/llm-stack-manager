@@ -731,7 +731,14 @@ class SwapMonitor:
             "out_pages_per_second": round(rate_out, 1),
             "in_mib_per_second": round(rate_in * _PAGE_MIB, 2),
             "out_mib_per_second": round(rate_out * _PAGE_MIB, 2),
-            "active": max(rate_in, rate_out) >= SWAP_ACTIVE_PAGES_PER_SECOND,
+            # Pressure is pages going *out*: that is the kernel choosing to
+            # evict rather than allocate. Pages coming back in with nothing
+            # going out is recovery — a model reload touching what an earlier
+            # configuration had swapped — and a backend restart alone can push
+            # that rate near the threshold. Sustained paging in still counts
+            # when it comes with any paging out at all, which is thrashing.
+            "active": rate_out >= SWAP_ACTIVE_PAGES_PER_SECOND
+                      or (rate_in >= SWAP_ACTIVE_PAGES_PER_SECOND and rate_out > 0),
         }
 
 

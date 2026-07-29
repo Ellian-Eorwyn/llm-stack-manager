@@ -296,12 +296,31 @@ class SwapMonitorTest(unittest.TestCase):
         self.assertAlmostEqual(sample["in_pages_per_second"], 7.2, places=1)
         self.assertEqual(sample["out_pages_per_second"], 0.0)
 
-    def test_sustained_paging_reports_active(self):
+    def test_sustained_paging_out_reports_active(self):
         monitor = self._monitor((1000, 2000), (1000, 202000))
         monitor.sample(now=100.0)
         sample = monitor.sample(now=105.0)
         self.assertTrue(sample["active"])
         self.assertEqual(sample["out_pages_per_second"], 40000.0)
+
+    def test_paging_back_in_alone_is_recovery_not_pressure(self):
+        """A backend restart faults in what an earlier configuration swapped.
+
+        Measured at 235 pages/s in and 0 out immediately after a model reload,
+        which is within 8% of the threshold — keying on the higher of the two
+        rates would warn about the reload itself.
+        """
+        monitor = self._monitor((1000, 2000), (201000, 2000))
+        monitor.sample(now=100.0)
+        sample = monitor.sample(now=105.0)
+        self.assertFalse(sample["active"])
+        self.assertEqual(sample["in_pages_per_second"], 40000.0)
+
+    def test_paging_both_ways_is_thrashing(self):
+        monitor = self._monitor((1000, 2000), (201000, 2100))
+        monitor.sample(now=100.0)
+        sample = monitor.sample(now=105.0)
+        self.assertTrue(sample["active"])
 
     def test_counter_reset_does_not_report_negative_rates(self):
         """A reboot or counter wrap must not read as paging in reverse."""
