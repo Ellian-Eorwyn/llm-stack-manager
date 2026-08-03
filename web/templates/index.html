@@ -396,6 +396,17 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 .card-health { font-size: 11px; color: var(--warning); margin: -6px 0 10px; }
 .card-health:empty { display: none; }
 .card-health.muted { color: var(--muted); }
+/* Pooled models on the router card. These are not services, so they get rows
+   rather than cards of their own — the unit is the router. */
+.card-router:empty { display: none; }
+.card-router { margin: 0 0 10px; display: flex; flex-direction: column; gap: 4px; }
+.router-model { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.router-model-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.router-model-state { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: .04em; }
+.router-model-state.loaded { color: var(--success); }
+.router-model-state.loading { color: var(--warning); }
+.router-model-state.sleeping { color: var(--accent, #93c5fd); }
+.router-note { font-size: 11px; color: var(--muted); }
 .card-acts  { display: flex; gap: 6px; flex-wrap: wrap; }
 
 /* -- Config panel -- */
@@ -1143,6 +1154,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         <div class="card-desc">{{ svc.desc }}</div>
         <div class="card-port">:{{ svc.ports }}</div>
         <div class="card-health" id="health-{{ svc.name }}"></div>
+        <div class="card-router" id="router-{{ svc.name }}"></div>
         <div class="card-ctx" id="ctx-{{ svc.name }}"></div>
         <div class="card-acts">
           <button class="btn btn-success btn-sm" onclick="svcAction('{{ svc.name }}','start',this)">Start</button>

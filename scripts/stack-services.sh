@@ -14,6 +14,7 @@ STACK_CORE_SERVICES=(
   rerank
   task
   ocr
+  llama-router
   glmocr-sdk
   playwright-server
   honcho-api

@@ -27,6 +27,7 @@ ALL_SERVICES=(
     rerank
     task
     ocr
+    llama-router
     glmocr-sdk
     honcho-api
     honcho-deriver
@@ -131,22 +132,35 @@ PYDEFAULT
     fi
 fi
 
+# A model the router pools is not started here: it is a child of llama-router
+# and loads on demand. Starting it would fight nginx for its port.
+router_owns() {
+    [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] || return 1
+    [[ ",${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}," == *",$1,"* ]]
+}
+
 if [[ -n "${LLM_STACK_SELECTED_COMPONENTS:-}" ]]; then
     SELECTED=",${LLM_STACK_SELECTED_COMPONENTS},"
     selected() { [[ "${SELECTED}" == *",$1,"* ]]; }
     DEFAULT_SERVICES=()
     selected primary && DEFAULT_SERVICES+=("${DEFAULT_CHAT_BACKEND}" chat-proxy)
     selected secondary && DEFAULT_SERVICES+=(chat-backend2 chat-proxy2)
-    selected embedding && DEFAULT_SERVICES+=(embed)
-    selected embedding2 && DEFAULT_SERVICES+=(embed2)
-    selected reranker && DEFAULT_SERVICES+=(rerank)
-    selected task && DEFAULT_SERVICES+=(task)
-    selected ocr && DEFAULT_SERVICES+=(ocr)
+    [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] && DEFAULT_SERVICES+=(llama-router)
+    selected embedding && ! router_owns EMBED && DEFAULT_SERVICES+=(embed)
+    selected embedding2 && ! router_owns EMBED2 && DEFAULT_SERVICES+=(embed2)
+    selected reranker && ! router_owns RERANK && DEFAULT_SERVICES+=(rerank)
+    selected task && ! router_owns TASK && DEFAULT_SERVICES+=(task)
+    selected ocr && ! router_owns OCR && DEFAULT_SERVICES+=(ocr)
     selected glmocr-sdk && DEFAULT_SERVICES+=(glmocr-sdk)
     selected playwright && DEFAULT_SERVICES+=(playwright-server)
     selected honcho && DEFAULT_SERVICES+=(honcho-api honcho-deriver)
 else
-    DEFAULT_SERVICES=("${DEFAULT_CHAT_BACKEND}" chat-proxy chat-backend2 chat-proxy2 embed embed2 rerank task)
+    DEFAULT_SERVICES=("${DEFAULT_CHAT_BACKEND}" chat-proxy chat-backend2 chat-proxy2)
+    if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
+        DEFAULT_SERVICES+=(llama-router)
+    else
+        DEFAULT_SERVICES+=(embed embed2 rerank task)
+    fi
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_SERVICES+=(honcho-api honcho-deriver)
     fi

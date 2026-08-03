@@ -7,15 +7,25 @@ SELECTED=",${LLM_STACK_SELECTED_COMPONENTS:-primary,embedding,task,ocr,glmocr-sd
 
 has_component() { [[ "${SELECTED}" == *",$1,"* ]]; }
 
-declare -a ALL_UNITS=(chat-backend-dense chat-proxy chat-backend2 chat-proxy2 embed embed2 task ocr glmocr-sdk rerank playwright-server honcho-api honcho-deriver)
+declare -a ALL_UNITS=(chat-backend-dense chat-proxy chat-backend2 chat-proxy2 embed embed2 task ocr glmocr-sdk rerank llama-router playwright-server honcho-api honcho-deriver)
 declare -a START_UNITS=()
+
+# In router mode the pooled models are the router's children, not units. Start
+# the router instead and let it load them on demand; starting them here would
+# fight nginx for their ports.
+router_owns() {
+    [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] || return 1
+    [[ ",${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}," == *",$1,"* ]]
+}
+
 has_component primary && START_UNITS+=(chat-backend-dense chat-proxy)
 has_component secondary && START_UNITS+=(chat-backend2 chat-proxy2)
-has_component embedding && START_UNITS+=(embed)
-has_component embedding2 && START_UNITS+=(embed2)
-has_component reranker && START_UNITS+=(rerank)
-has_component task && START_UNITS+=(task)
-has_component ocr && START_UNITS+=(ocr)
+[[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] && START_UNITS+=(llama-router)
+has_component embedding && ! router_owns EMBED && START_UNITS+=(embed)
+has_component embedding2 && ! router_owns EMBED2 && START_UNITS+=(embed2)
+has_component reranker && ! router_owns RERANK && START_UNITS+=(rerank)
+has_component task && ! router_owns TASK && START_UNITS+=(task)
+has_component ocr && ! router_owns OCR && START_UNITS+=(ocr)
 has_component glmocr-sdk && START_UNITS+=(glmocr-sdk)
 has_component playwright && START_UNITS+=(playwright-server)
 has_component honcho && START_UNITS+=(honcho-api honcho-deriver)

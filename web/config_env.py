@@ -259,6 +259,9 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("OCR_MIN_P", "0.00")
     normalized.setdefault("OCR_FIT", "off")
     normalized.setdefault("OCR_CUSTOM_ARGS_JSON", "[]")
+    # Read by /api/ocr/extract. Generous because a router-mode request can wait
+    # out a cold model load before any inference starts.
+    normalized.setdefault("OCR_TIMEOUT_SECONDS", "600")
     normalized.setdefault("GLMOCR_SDK_ENABLED", "on")
     normalized.setdefault("GLMOCR_SDK_HOST", normalized.get("LISTEN_HOST", "0.0.0.0"))
     normalized.setdefault("GLMOCR_SDK_PORT", "5002")
@@ -266,9 +269,14 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("GLMOCR_SDK_LOG_LEVEL", "INFO")
     normalized.setdefault("GLMOCR_OCR_API_MODE", "openai")
     normalized.setdefault("GLMOCR_OCR_API_URL", "")
-    normalized.setdefault("GLMOCR_OCR_REQUEST_TIMEOUT", "120")
+    # A read timeout, and the binding constraint on OCR: it has to cover a cold
+    # model load as well as the inference. Connecting is never the problem —
+    # something is always listening — so the connect timeout stays short.
+    normalized.setdefault("GLMOCR_OCR_REQUEST_TIMEOUT", "600")
     normalized.setdefault("GLMOCR_OCR_CONNECT_TIMEOUT", "30")
-    normalized.setdefault("GLMOCR_OCR_RETRY_MAX_ATTEMPTS", "2")
+    normalized.setdefault("GLMOCR_OCR_RETRY_MAX_ATTEMPTS", "4")
+    normalized.setdefault("GLMOCR_OCR_RETRY_BACKOFF_BASE_SECONDS", "0.5")
+    normalized.setdefault("GLMOCR_OCR_RETRY_BACKOFF_MAX_SECONDS", "30")
     normalized.setdefault("GLMOCR_OCR_CONNECTION_POOL_SIZE", "128")
     normalized.setdefault("GLMOCR_MAX_WORKERS", "16")
     normalized.setdefault("GLMOCR_PAGE_MAXSIZE", "100")
@@ -304,6 +312,18 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("GLMOCR_PROMPT_TABLE", "Table Recognition:")
     normalized.setdefault("GLMOCR_PROMPT_FORMULA", "Formula Recognition:")
     normalized.setdefault("GLMOCR_ADVANCED_CONFIG_JSON", "{}")
+    # Model router. Off by default: turning it on replaces four systemd units
+    # with one, so it is a deliberate act rather than something an upgrade does
+    # to a working stack.
+    normalized.setdefault("MODEL_ROUTER_ENABLED", "off")
+    normalized.setdefault("MODEL_ROUTER_PORT", "8013")
+    # Loopback: nginx fronts the per-model ports and proxies here, so exposing
+    # the router itself would only add an unauthenticated way in.
+    normalized.setdefault("MODEL_ROUTER_HOST", "127.0.0.1")
+    normalized.setdefault("MODEL_ROUTER_MAX", "2")
+    normalized.setdefault("MODEL_ROUTER_MEMBERS", "EMBED,OCR,RERANK,TASK")
+    normalized.setdefault("MODEL_ROUTER_SLEEP_IDLE_SECONDS", "600")
+    normalized.setdefault("MODEL_ROUTER_GPU_VISIBLE_DEVICES", "0,1")
     normalized.setdefault("SEARXNG_ENABLED", "on")
     normalized.setdefault("SEARXNG_URL_PATH", "/searxng")
     normalized.setdefault("SEARXNG_BASE_URL", "http://127.0.0.1/searxng/")

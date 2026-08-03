@@ -1356,6 +1356,8 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/huggingface/transcription-repo-files", ("POST",), "api_huggingface_transcription_repo_files"),
         ("/api/llamacpp/update", ("POST",), "api_llamacpp_update"),
         ("/api/logs/<name>", ("GET",), "api_logs"),
+        ("/api/model-router", ("GET",), "api_model_router"),
+        ("/api/model-router/<action>", ("POST",), "api_model_router_action"),
         ("/api/ocr/extract", ("POST",), "api_ocr_extract"),
         ("/api/ocr/parse", ("POST",), "api_ocr_parse"),
         ("/api/playwright/install", ("POST",), "api_playwright_install"),
@@ -1505,10 +1507,16 @@ class ModuleBoundaryTests(unittest.TestCase):
     BEHAVIOUR_MODULES = {"core", "config_env", "models", "graphiti", "deploy",
                          "health", "telemetry", "scheduling", "budget"}
 
-    @staticmethod
-    def _python_sources():
+    # `web/.venv` is the manager's own virtualenv, created in place by
+    # start-llm-manager.sh, so on any machine that has run the manager these
+    # rules would otherwise be applied to Flask's source instead of ours.
+    SKIP_DIRS = {"__pycache__", ".venv", "venv", "site-packages", "node_modules"}
+
+    @classmethod
+    def _python_sources(cls):
         web = pathlib.Path(__file__).resolve().parents[1] / "web"
-        return [p for p in sorted(web.rglob("*.py")) if "__pycache__" not in str(p)]
+        return [p for p in sorted(web.rglob("*.py"))
+                if not cls.SKIP_DIRS & set(p.relative_to(web).parts)]
 
     def test_behaviour_modules_are_never_bound_into_another_module(self):
         import ast

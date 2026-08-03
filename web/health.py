@@ -130,6 +130,14 @@ SERVICE_PROBES = _llama_probes() | {
         "kind": "tcp",
         "host_key": "PLAYWRIGHT_HOST", "port_key": "PLAYWRIGHT_PORT", "default_port": "3001",
     },
+    # `/health` and not `/props`: in router mode `/props` needs a `?model=`
+    # and would 400. `/health` answers for the router itself and, unlike the
+    # inference paths, llama.cpp documents it as never loading a model — which
+    # is what keeps this five-second sweep from becoming a swap generator.
+    "llama-router": {
+        "kind": "http", "path": "/health",
+        "host_key": "MODEL_ROUTER_HOST", "port_key": "MODEL_ROUTER_PORT", "default_port": "8013",
+    },
 }
 
 
@@ -150,11 +158,32 @@ SERVICE_DEPENDENCIES = {
     "honcho-deriver": [["honcho-api"]],
 }
 
+# What those upstreams become when `llama-router` owns the models instead. The
+# models still exist, but as the router's children rather than as units, so
+# naming the old unit would report every dependant as degraded forever.
+#
+# Kept separate rather than folded in because the map above states the shape of
+# the stack as installed, and `tests/test_health.py` checks it against
+# `setup_engine.COMPONENT_DEPENDENCIES`. Router mode is a runtime choice.
+ROUTER_DEPENDENCY_OVERRIDES = {
+    "glmocr-sdk": [["llama-router"]],
+    "honcho-api": [["chat-proxy"], ["llama-router", "embed", "embed2"]],
+}
+
+
+def dependencies_for(name: str, env: dict) -> list:
+    """The upstream groups to judge `name` against, given the current mode."""
+    if telemetry.router_enabled(env) and name in ROUTER_DEPENDENCY_OVERRIDES:
+        return ROUTER_DEPENDENCY_OVERRIDES[name]
+    return SERVICE_DEPENDENCIES.get(name, [])
+
+
 # A flag set to `off` means the start script exits 0 without launching anything,
 # so the unit cannot come up and being down is not a fault. Only `off` is
 # meaningful here: these flags read `on` for services that are deliberately
 # stopped, so `on` says nothing about whether the service should be running.
 ENABLED_FLAGS = {
+    "llama-router": "MODEL_ROUTER_ENABLED",
     "glmocr-sdk": "GLMOCR_SDK_ENABLED",
     "searxng": "SEARXNG_ENABLED",
     "playwright-server": "PLAYWRIGHT_ENABLED",
@@ -171,8 +200,10 @@ def dependency_units() -> set[str]:
     to be asked about, or `chat-proxy` reads as degraded whenever the primary is
     served by a unit the panel does not list.
     """
-    return {member for groups in SERVICE_DEPENDENCIES.values()
-            for group in groups for member in group}
+    return ({member for groups in SERVICE_DEPENDENCIES.values()
+             for group in groups for member in group}
+            | {member for groups in ROUTER_DEPENDENCY_OVERRIDES.values()
+               for group in groups for member in group})
 
 
 def endpoint_for(name: str, env: dict) -> tuple[str, str] | None:
@@ -321,6 +352,11 @@ def expectation_for(name: str, env: dict, expectations: dict) -> str:
     """`on`, `off`, or `unspecified` when nobody has said."""
     if _disabled_by_flag(name, env):
         return "off"
+    # A pooled model is not supposed to be a running unit, whatever anyone
+    # recorded before the router took it over. Reading a stale `on` here would
+    # report every pooled model as missing for as long as router mode is on.
+    if name in telemetry.pooled_units(env):
+        return "off"
     entry = expectations.get(name)
     if isinstance(entry, dict) and entry.get("expected") in {"on", "off"}:
         return entry["expected"]
@@ -362,7 +398,7 @@ def collect(env: dict, statuses: dict, probes: dict | None = None,
         expected = expectation_for(name, env, expectations)
         probe_result = probes.get(name)
         upstreams = []
-        for group in SERVICE_DEPENDENCIES.get(name, []):
+        for group in dependencies_for(name, env):
             states = {member: resolve(member)["state"] for member in group
                       if member in statuses}
             upstreams.append({
@@ -410,7 +446,10 @@ def collect(env: dict, statuses: dict, probes: dict | None = None,
                 entry["state"] = STATE_STOPPED
                 # Distinguishing these matters: one is a switch in the config
                 # file, the other is somebody having pressed Stop.
-                if expected == "off" and _disabled_by_flag(name, env):
+                if name in telemetry.pooled_units(env):
+                    entry["reason"] = ("held by the model router — the model loads "
+                                       "on demand and is not run as a unit")
+                elif expected == "off" and _disabled_by_flag(name, env):
                     entry["reason"] = "turned off in the configuration"
                 elif expected == "off":
                     entry["reason"] = "stopped on purpose"
@@ -517,5 +556,5 @@ __all__ = [
     "STATE_ACTIVE", "STATE_DEGRADED", "STATE_FAILED", "STATE_INACTIVE",
     "STATE_STOPPED", "STATE_UNKNOWN", "collect", "endpoint_for", "expectation_for",
     "pid_alive", "probe", "read_expectations", "record_expectation", "tcp_port_open",
-    "dependency_units",
+    "dependency_units", "dependencies_for", "ROUTER_DEPENDENCY_OVERRIDES",
 ]

@@ -146,3 +146,13 @@ warns when the OCR SDK is up without its backend.
 | One sample is never a flap verdict | `RestartTrackerTests.test_a_first_sample_cannot_prove_anything` |
 | A service that settles goes green again | `RestartTrackerTests.test_a_steady_count_clears_it` |
 | Status and restart count cost one call | `ServiceHealthTests.test_statuses_and_restart_counts_come_from_one_pass` |
+
+## Postscript: the OCR flap has a cause, not just a symptom
+
+§3 above treats the 32 restarts as a reporting problem, which is what it was for
+the panel. The underlying reason `ocr` could not allocate was that `embed` had
+been holding VRAM since boot for a request that had not arrived. That is fixed
+separately, by making the auxiliary models load on demand instead of running as
+four permanent units — see [model-router.md](model-router.md). The `Wants=`
+edge that pulled `ocr` up now points at the router, which is the thing that can
+actually decide whether the model fits.

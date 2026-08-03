@@ -107,6 +107,7 @@ SERVICES = [
     {"group": "auxiliary", "name": "task",             "label": "Task",         "desc": "Small fast task model",             "ports": "8007", "config_section": "Task Model"},
     {"group": "auxiliary", "name": "ocr",              "label": "OCR Model",    "desc": "GLM-OCR llama.cpp model backend",      "ports": "8009", "config_section": "OCR"},
     {"group": "auxiliary", "name": "glmocr-sdk",       "label": "OCR SDK",      "desc": "Local GLM-OCR layout/PDF parser",       "ports": "5002", "config_section": "GLM-OCR SDK"},
+    {"group": "auxiliary", "name": "llama-router",     "label": "Model Router", "desc": "Loads the auxiliary models on demand",  "ports": "8013", "config_section": "Model Router"},
     {"group": "auxiliary", "name": "honcho-api",       "label": "Honcho API",   "desc": "Local Honcho memory API",           "ports": "8090"},
     {"group": "auxiliary", "name": "honcho-deriver",   "label": "Honcho Worker", "desc": "Local Honcho background deriver",   "ports": "worker"},
     {"group": "auxiliary", "name": "searxng",          "label": "SearXNG",      "desc": "Local metasearch engine via uWSGI/nginx", "ports": "/searxng", "config_section": "SearXNG"},
@@ -125,6 +126,25 @@ LLAMACPP_MODEL_SERVICES = [
     "ocr",
 ]
 LLAMACPP_PROXY_SERVICE = "chat-proxy"
+
+
+def router_pooled_units(env: dict) -> set:
+    """Units the model router owns, which nothing else may start or stop."""
+    return telemetry.pooled_units(env)
+
+
+def apply_router_restart_hints(restart_needed: set, env: dict) -> set:
+    """Point restart hints at the router when it owns the model.
+
+    `RESTART_HINTS` names the unit that serves each setting, which is right
+    whenever the models are units. In router mode the setting is rendered into
+    the preset file instead, so the thing to restart is the router — and the
+    named unit is not even running.
+    """
+    pooled = router_pooled_units(env)
+    if not pooled or not restart_needed & pooled:
+        return restart_needed
+    return (restart_needed - pooled) | {telemetry.ROUTER_UNIT}
 
 
 
@@ -1288,6 +1308,15 @@ def api_service_action(name, action):
         return jsonify(ok=False, error='Unknown action'), 400
     if name not in {s['name'] for s in patch_service_labels()}:
         return jsonify(ok=False, error='Unknown service'), 400
+    if name in router_pooled_units(config_env.read_env()):
+        # Starting it would fight nginx for the port and put a second copy of
+        # the model on the GPU. Say so rather than half-succeeding.
+        return jsonify(
+            ok=False,
+            error=(f"{name} is held by the model router, which loads it on demand. "
+                   f"Use the Model Router controls, or turn MODEL_ROUTER_ENABLED off "
+                   f"to run it as its own service again."),
+        ), 409
     if is_searxng_service(name):
         ok, output = run_searxng_manager(action)
         record_service_expectation(name, action, ok)
@@ -1366,6 +1395,82 @@ def _ocr_backend_url(env: dict) -> str:
         host = "127.0.0.1"
     port = env.get("OCR_PORT", "8009")
     return f"http://{host}:{port}/v1/chat/completions"
+
+
+def _model_router_url(env: dict, path: str) -> str:
+    host = env.get("MODEL_ROUTER_HOST") or "127.0.0.1"
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    port = env.get("MODEL_ROUTER_PORT", "8013")
+    return f"http://{host}:{port}{path}"
+
+
+def _model_router_request(env: dict, path: str, payload=None, timeout=15):
+    """Call the router's control API. Returns (ok, parsed-or-error-string)."""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urlrequest.Request(
+        _model_router_url(env, path),
+        data=data,
+        headers={"Content-Type": "application/json"} if data else {},
+        method="POST" if data is not None else "GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        return True, (json.loads(raw) if raw.strip() else {})
+    except urlerror.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+        return False, f"router returned HTTP {exc.code}: {body[:400]}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+@app.route('/api/model-router')
+def api_model_router():
+    """Which pooled models exist and which are resident right now.
+
+    `GET /models` is one of the endpoints llama.cpp documents as never loading
+    a model, so the services page can poll this without causing the very
+    swapping it is reporting on.
+    """
+    env = config_env.read_env()
+    if not telemetry.router_enabled(env):
+        return jsonify(ok=True, enabled=False, models=[])
+    ok, result = _model_router_request(env, "/models")
+    if not ok:
+        return jsonify(ok=False, enabled=True, reachable=False, error=result, models=[])
+    models = []
+    for entry in (result.get("data") or []):
+        status = entry.get("status") or {}
+        models.append({
+            "id": entry.get("id"),
+            "state": status.get("value") if isinstance(status, dict) else str(status),
+            "path": entry.get("path", ""),
+        })
+    models.sort(key=lambda m: str(m.get("id") or ""))
+    return jsonify(ok=True, enabled=True, reachable=True, models=models,
+                   max_resident=env.get("MODEL_ROUTER_MAX", "2"))
+
+
+@app.route('/api/model-router/<action>', methods=['POST'])
+def api_model_router_action(action):
+    if action not in ('load', 'unload'):
+        return jsonify(ok=False, error='Unknown action'), 400
+    env = config_env.read_env()
+    if not telemetry.router_enabled(env):
+        return jsonify(ok=False, error='The model router is not enabled'), 409
+    model = str((request.get_json(silent=True) or {}).get('model') or '').strip()
+    if not model:
+        return jsonify(ok=False, error='model is required'), 400
+    # A cold load is the whole point, so allow for one rather than timing out
+    # partway through and reporting a failure that is still in progress.
+    timeout = int(float(env.get("MODEL_ROUTER_LOAD_TIMEOUT", "600") or 600))
+    ok, result = _model_router_request(
+        env, f"/models/{action}", {"model": model},
+        timeout=timeout if action == 'load' else 60)
+    if not ok:
+        return jsonify(ok=False, error=result), 502
+    return jsonify(ok=True, result=result)
 
 
 def _glmocr_backend_url(env: dict) -> str:
@@ -2091,6 +2196,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
     restart_needed = set()
     for key in updates:
         restart_needed.update(RESTART_HINTS.get(key, []))
+    restart_needed = apply_router_restart_hints(restart_needed, config_env.read_env())
 
     active = config.get('_active_chat_model') if isinstance(config.get('_active_chat_model'), dict) else {}
     slots = config.get('_active_backend_slots') if isinstance(config.get('_active_backend_slots'), dict) else {}
@@ -2114,10 +2220,17 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
 
         active_services = config.get('_active_services')
         if active_services is not None:
+            # Saved profiles predate the router and still list the models as
+            # services. Starting one now would race nginx for its port and
+            # duplicate a model the router already has in hand, so the router's
+            # members are left alone and it decides what is resident.
+            pooled = router_pooled_units(config_env.read_env())
             for svc in SERVICES:
                 name = svc.get('name')
-                if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 
+                if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe',
                                         'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
+                    continue
+                if name in pooled:
                     continue
                 is_active = get_service_status(name) == 'active'
                 should_be_active = name in active_services
@@ -2344,6 +2457,7 @@ def api_config_save():
     restart_needed = set()
     for key in filtered:
         restart_needed.update(RESTART_HINTS.get(key, []))
+    restart_needed = apply_router_restart_hints(restart_needed, config_env.read_env())
     return jsonify(ok=True, restart_needed=sorted(restart_needed),
                    preflight=preflight, forced=forced and not preflight['ok'])
 

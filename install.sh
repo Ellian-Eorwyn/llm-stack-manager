@@ -410,6 +410,16 @@ UNIT
     setup_has_component task && install_unit "task" "LLM Task Model - llama-server" "start-task.sh" 120
     setup_has_component ocr && install_unit "ocr" "LLM OCR GLM-OCR Backend - llama-server" "start-ocr.sh" 120
     setup_has_component glmocr-sdk && install_unit "glmocr-sdk" "LLM OCR GLM-OCR SDK Parser" "start-glmocr-sdk.sh" 300
+    # One llama-server owning embed/ocr/rank/task on demand. The member units
+    # above stay installed but stopped, so turning the flag off and starting
+    # them is the whole rollback.
+    install_unit "llama-router" "LLM Model Router - on-demand auxiliary models" "start-model-router.sh" 60
+    if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
+        bash "${STACK_DIR}/scripts/install-model-router-nginx.sh" || \
+            echo "  WARNING: model router nginx shims failed; the per-model ports will not answer" >&2
+    else
+        bash "${STACK_DIR}/scripts/install-model-router-nginx.sh" --remove >/dev/null 2>&1 || true
+    fi
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         install_playwright_nginx_conf
         cat > /etc/systemd/system/playwright-server.service <<UNIT
@@ -445,16 +455,26 @@ UNIT
 
     [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service|" /etc/systemd/system/chat-proxy.service
     [[ -f /etc/systemd/system/chat-proxy2.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
+    # In router mode the OCR model is not a unit any more, so the SDK's upstream
+    # is the router. Keeping Wants=ocr.service here is what pulled the OCR model
+    # onto a full GPU and bounced it 32 times — see docs/service-health.md.
+    if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
+        OCR_UPSTREAM_UNIT="llama-router.service"
+        EMBED_UPSTREAM_UNITS="llama-router.service embed2.service"
+    else
+        OCR_UPSTREAM_UNIT="ocr.service"
+        EMBED_UPSTREAM_UNITS="embed.service embed2.service"
+    fi
     if [[ -f /etc/systemd/system/glmocr-sdk.service ]]; then
-        cp_sed_inplace "s|^After=network.target$|After=network.target ocr.service|" /etc/systemd/system/glmocr-sdk.service
-        cp_sed_inplace "/^After=/a Wants=ocr.service" /etc/systemd/system/glmocr-sdk.service
+        cp_sed_inplace "s|^After=network.target$|After=network.target ${OCR_UPSTREAM_UNIT}|" /etc/systemd/system/glmocr-sdk.service
+        cp_sed_inplace "/^After=/a Wants=${OCR_UPSTREAM_UNIT}" /etc/systemd/system/glmocr-sdk.service
         cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
     fi
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-        cp_sed_inplace "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service embed.service embed2.service|" /etc/systemd/system/honcho-api.service
-        cp_sed_inplace "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service embed.service embed2.service" /etc/systemd/system/honcho-api.service
-        cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service embed.service embed2.service|" /etc/systemd/system/honcho-deriver.service
-        cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service embed.service embed2.service" /etc/systemd/system/honcho-deriver.service
+        cp_sed_inplace "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}|" /etc/systemd/system/honcho-api.service
+        cp_sed_inplace "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}" /etc/systemd/system/honcho-api.service
+        cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}|" /etc/systemd/system/honcho-deriver.service
+        cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}" /etc/systemd/system/honcho-deriver.service
     fi
     [[ -f /etc/systemd/system/chat-backend-dense.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
     [[ -f /etc/systemd/system/chat-backend-moe.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
@@ -470,6 +490,13 @@ UNIT
         DEFAULT_BOOT_SERVICES+=(playwright-server)
     fi
     NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-dense chat-backend-moe chat-backend2 chat-proxy chat-proxy2 embed embed2 rerank task ocr glmocr-sdk)
+    if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
+        # The router has to be up at boot: it is what the per-model ports point
+        # at, and it is the only thing that can bring those models back.
+        DEFAULT_BOOT_SERVICES+=(llama-router)
+    else
+        NON_DEFAULT_SERVICES+=(llama-router)
+    fi
     LEGACY_SERVICES=(
         qwen-think
         qwen-nothink
@@ -535,13 +562,23 @@ elif is_mac; then
     install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
     install_mac_service "task"               "LLM Task Model - llama-server"                       "start-task.sh"
     install_mac_service "ocr"                "LLM OCR GLM-OCR Backend - llama-server"              "start-ocr.sh"
+    install_mac_service "llama-router"       "LLM Model Router - on-demand auxiliary models"       "start-model-router.sh"
+    # Same reasoning as the systemd path: in router mode the SDK's upstream is
+    # the router, and waiting on `ocr` would summon a model nothing manages.
+    if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
+        _ocr_upstream="llama-router"
+        _embed_upstream="llama-router embed2"
+    else
+        _ocr_upstream="ocr"
+        _embed_upstream="embed embed2"
+    fi
     install_mac_service "glmocr-sdk"         "LLM OCR GLM-OCR SDK Parser"                          "start-glmocr-sdk.sh" \
-        "ocr"
+        "${_ocr_upstream}"
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         install_mac_service "honcho-api"     "Local Honcho Memory API"                             "start-honcho-api.sh" \
-            "chat-proxy embed embed2"
+            "chat-proxy ${_embed_upstream}"
         install_mac_service "honcho-deriver" "Local Honcho Memory Deriver"                         "start-honcho-deriver.sh" \
-            "honcho-api chat-proxy embed embed2"
+            "honcho-api chat-proxy ${_embed_upstream}"
     fi
 
     # Fix glmocr-sdk plist for on-failure restart

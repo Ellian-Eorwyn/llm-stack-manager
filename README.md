@@ -202,6 +202,14 @@ Model files stay outside git. The wizard supports the primary, secondary, embedd
 
 The CUDA build no longer assumes CUDA 13.3, compute capability 8.6, two GPUs, or GPU 1. Setup queries every GPU through `nvidia-smi`, selects a driver-compatible toolkit, builds a pinned llama.cpp revision for the detected compute capabilities, reserves 10% of reported free VRAM, and generates placement for the chosen model files. GLM-OCR layout processing is always restricted to one GPU.
 
+## Model router (on-demand auxiliary models)
+
+`embed`, `ocr`, `rerank` and `task` each hold VRAM from the moment they start, though none is busy for more than seconds at a time. Setting `MODEL_ROUTER_ENABLED=on` replaces those four units with a single `llama-router` running llama.cpp's router mode: models load on the first request that names them and evict each other once `MODEL_ROUTER_MAX` are resident.
+
+Callers are unaffected. nginx fronts 8005/8006/8007/8009 onto the router, which picks the model from the request body, so no client or integration is repointed. Per-model settings stay in the config UI — `scripts/render-models-ini.py` renders them into the router's preset at start.
+
+`MODEL_ROUTER_MAX` is a count, not a memory budget: the router evicts least-recently-used but does not know how large the survivors are. Size it against measured free VRAM, or use `1` for strict one-at-a-time. Off by default; turning it off and re-running the installer restores the four units. See [docs/model-router.md](docs/model-router.md).
+
 ## Testing
 
 ```bash

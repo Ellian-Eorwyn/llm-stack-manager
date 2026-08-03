@@ -22,6 +22,7 @@ Note that `/props` reports context *per slot*, which is `--ctx-size` divided by
 262144 --parallel 2` rejects requests above 131072 tokens.
 """
 
+import functools
 import json
 import re
 import subprocess
@@ -67,6 +68,49 @@ DEFAULT_BACKEND_PORTS = {
     "TASK_PORT": "8007",
     "OCR_PORT": "8009",
 }
+
+# Env prefix -> unit, for the models `llama-router` can own. When router mode is
+# on these units are deliberately not running: the router holds the models as
+# child processes and loads them on demand, so the unit being inactive says
+# nothing about whether the model is available.
+#
+# `scripts/render-models-ini.py` keys the same set by prefix. A member added
+# there needs adding here too, or the panel will report it as stopped-on-purpose
+# while the router is quietly serving it.
+ROUTER_MEMBER_UNITS = {
+    "EMBED": "embed",
+    "EMBED2": "embed2",
+    "RERANK": "rerank",
+    "TASK": "task",
+    "OCR": "ocr",
+}
+
+ROUTER_UNIT = "llama-router"
+
+
+def router_enabled(env: dict) -> bool:
+    return str(env.get("MODEL_ROUTER_ENABLED", "")).strip().lower() == "on"
+
+
+@functools.lru_cache(maxsize=8)
+def _pooled_units(enabled: bool, members: str) -> frozenset:
+    if not enabled:
+        return frozenset()
+    return frozenset(
+        unit for unit in
+        (ROUTER_MEMBER_UNITS.get(prefix.strip().upper()) for prefix in members.split(","))
+        if unit
+    )
+
+
+def pooled_units(env: dict) -> frozenset:
+    """Units the router owns right now, or an empty set when it is off.
+
+    Cached on its two inputs because `collect()` asks once per service on every
+    five-second poll, and the answer only changes when the config does.
+    """
+    return _pooled_units(router_enabled(env),
+                         str(env.get("MODEL_ROUTER_MEMBERS") or "EMBED,OCR,RERANK,TASK"))
 
 
 # --------------------------------------------------------------------------

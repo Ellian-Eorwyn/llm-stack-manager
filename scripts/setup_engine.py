@@ -366,12 +366,39 @@ def estimate_model_mib(model: dict[str, Any], ctx_size: int = PLACEMENT_ASSUMED_
         return fallback
 
 
-def plan_gpu_placement(gpus: list[dict[str, Any]], models: dict[str, dict[str, Any]], allow_override: bool = False) -> dict[str, Any]:
+def _required_mib(models: dict[str, dict[str, Any]],
+                  exclusive_groups: tuple[tuple[str, ...], ...] = ()) -> int:
+    """Total VRAM the selection needs, counting each exclusive group once."""
+    grouped: set[str] = set()
+    required = 0
+    for group in exclusive_groups:
+        present = [models[name] for name in group if name in models]
+        if not present:
+            continue
+        required += max(estimate_model_mib(model) for model in present)
+        grouped.update(group)
+    for name, model in models.items():
+        if name not in grouped:
+            required += estimate_model_mib(model)
+    return required
+
+
+def plan_gpu_placement(gpus: list[dict[str, Any]], models: dict[str, dict[str, Any]],
+                       allow_override: bool = False,
+                       exclusive_groups: tuple[tuple[str, ...], ...] = ()) -> dict[str, Any]:
+    """Assign each model a GPU, refusing plans that cannot fit.
+
+    `exclusive_groups` names components that are never resident together — the
+    model router loads its members on demand and evicts between them — so a
+    group costs its largest member rather than the sum of all of them. Without
+    it a four-model pool is priced at four times what it can actually occupy,
+    and a configuration that runs comfortably is refused.
+    """
     if not gpus:
         return {"ok": False, "assignments": {}, "error": "No NVIDIA GPUs detected"}
     remaining = {int(gpu["index"]): int(gpu.get("memory_free_mib", gpu["memory_total_mib"]) * 0.90) for gpu in gpus}
     total = sum(remaining.values())
-    required = sum(estimate_model_mib(model) for model in models.values())
+    required = _required_mib(models, exclusive_groups)
     if required > total and not allow_override:
         return {"ok": False, "assignments": {}, "required_mib": required, "usable_mib": total, "error": "Selected models exceed 90% of available aggregate VRAM"}
     assignments: dict[str, Any] = {}

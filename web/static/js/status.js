@@ -24,7 +24,51 @@ async function poll() {
   } catch {}
   try { await pollTelemetry(); } catch {}
   try { await pollActiveModel(); } catch {}
+  try { await pollModelRouter(); } catch {}
   try { await loadTtsOverview(true); } catch {}
+}
+
+// -- model router --
+// Which pooled models are resident. `/api/model-router` proxies the router's
+// `GET /models`, which llama.cpp documents as never loading a model, so polling
+// this cannot cause the swapping it reports on.
+async function pollModelRouter() {
+  const el = document.getElementById('router-llama-router');
+  if (!el) return;
+  const d = await fetchJSON('/api/model-router');
+  if (!d.enabled) { el.innerHTML = ''; return; }
+  if (!d.reachable) {
+    el.innerHTML = '<div class="router-note">Router unreachable — its models cannot be loaded.</div>';
+    return;
+  }
+  if (!d.models?.length) {
+    el.innerHTML = '<div class="router-note">No models configured.</div>';
+    return;
+  }
+  const resident = d.models.filter(m => m.state === 'loaded').length;
+  el.innerHTML = d.models.map(m => {
+    const state = m.state || 'unknown';
+    const loaded = state === 'loaded';
+    const act = loaded ? 'unload' : 'load';
+    return `<div class="router-model">
+      <span class="router-model-name">${escapeHtml(m.id)}</span>
+      <span class="router-model-state ${escapeHtml(state)}">${escapeHtml(state)}</span>
+      <button class="btn btn-ghost btn-sm" onclick="routerModelAction('${escapeHtml(m.id)}','${act}',this)">${loaded ? 'Unload' : 'Load'}</button>
+    </div>`;
+  }).join('') + `<div class="router-note">${resident} of ${escapeHtml(String(d.max_resident))} resident</div>`;
+}
+
+async function routerModelAction(model, action, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    // A cold load can take a while; the button stays busy until it lands.
+    const d = await fetchJSON(`/api/model-router/${action}`, 'POST', { model });
+    toast(d.ok ? `${model} - ${action} OK` : (d.error || 'failed'), d.ok ? 'ok' : 'err');
+    await pollModelRouter();
+  } catch (e) { toast('Error: ' + e, 'err'); }
+  finally { btn.disabled = false; btn.textContent = orig; }
 }
 
 // -- service actions --

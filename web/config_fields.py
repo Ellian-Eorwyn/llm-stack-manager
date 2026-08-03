@@ -147,6 +147,7 @@ CORE_CONFIG_SECTIONS = {
     "Reranker",
     "OCR",
     "GLM-OCR SDK",
+    "Model Router",
     "SearXNG",
     "Playwright",
     "Ports",
@@ -514,6 +515,7 @@ CONFIG_FIELDS = [
     {"section": "OCR",        "key": "OCR_MLOCK",                "label": "Lock Memory",          "type": "select", "options": ["false", "true"]},
     {"section": "OCR",        "key": "OCR_GPU_VISIBLE_DEVICES",  "label": "OCR GPU Devices",      "type": "text",   "hint": "CUDA_VISIBLE_DEVICES for OCR. Use 0 or 1 for one GPU, 0,1 for both GPUs."},
     {"section": "OCR",        "key": "OCR_PROMPT",               "label": "Default OCR Prompt",   "type": "text",   "hint": "Used by /api/ocr/extract when a call does not provide a prompt"},
+    {"section": "OCR",        "key": "OCR_TIMEOUT_SECONDS",      "label": "Extract Timeout",      "type": "number", "hint": "How long /api/ocr/extract waits for the backend. Must cover a cold model load when the router is on."},
     {"section": "OCR",        "key": "OCR_TEMP",                 "label": "Temperature",          "type": "text",   "hint": "Low values are best for OCR"},
     {"section": "OCR",        "key": "OCR_TOP_P",                "label": "Top-P",                "type": "text"},
     {"section": "OCR",        "key": "OCR_TOP_K",                "label": "Top-K",                "type": "number"},
@@ -530,6 +532,8 @@ CONFIG_FIELDS = [
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_REQUEST_TIMEOUT", "label": "OCR Request Timeout",  "type": "number"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_CONNECT_TIMEOUT", "label": "OCR Connect Timeout",  "type": "number"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_RETRY_MAX_ATTEMPTS", "label": "OCR Retry Attempts", "type": "number"},
+    {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_RETRY_BACKOFF_BASE_SECONDS", "label": "Retry Backoff Base", "type": "text", "hint": "Read by the SDK config generator; was not previously editable here"},
+    {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_RETRY_BACKOFF_MAX_SECONDS",  "label": "Retry Backoff Cap",  "type": "text", "hint": "Raise alongside retry attempts so a retry can outlast a cold model load"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_CONNECTION_POOL_SIZE", "label": "Connection Pool", "type": "number"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_MAX_WORKERS",        "label": "OCR Workers",          "type": "number", "hint": "Concurrent region OCR requests to the local OCR model"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_PAGE_MAXSIZE",       "label": "Page Queue Size",      "type": "number"},
@@ -624,6 +628,18 @@ CONFIG_FIELDS = [
     {"section": "Playwright",  "key": "PLAYWRIGHT_BROWSERS_PATH",   "label": "Browser Cache Path",     "type": "path"},
     {"section": "Playwright",  "key": "PLAYWRIGHT_NODE_ENV",        "label": "Node Environment",       "type": "text"},
     {"section": "Playwright",  "key": "PLAYWRIGHT_NGINX_CONF",      "label": "Nginx Config",           "type": "path"},
+    # Model Router. One llama-server in router mode owns the auxiliary models
+    # instead of one systemd unit each, so they load on demand and evict each
+    # other rather than each holding VRAM permanently. Per-model settings still
+    # come from the sections above; `scripts/render-models-ini.py` turns them
+    # into the preset file the router reads.
+    {"section": "Model Router", "key": "MODEL_ROUTER_ENABLED",       "label": "Router Enabled",       "type": "select", "options": ["off", "on"], "hint": "Replaces the embed/ocr/rerank/task units with one on-demand router. Off leaves every service exactly as it is today."},
+    {"section": "Model Router", "key": "MODEL_ROUTER_PORT",          "label": "Router Port",          "type": "number", "hint": "The router's own listener. Callers keep using the per-model ports, which nginx fronts onto this one."},
+    {"section": "Model Router", "key": "MODEL_ROUTER_HOST",          "label": "Router Listen Host",   "type": "text",   "hint": "Loopback by default. nginx reaches it from this host, so exposing it on the LAN only adds a second unauthenticated way in."},
+    {"section": "Model Router", "key": "MODEL_ROUTER_MAX",           "label": "Models Resident",      "type": "number", "hint": "How many models may be loaded at once. A count, not a memory budget — the router evicts least-recently-used, but does not know how large the survivors are. Use 1 for strict one-at-a-time."},
+    {"section": "Model Router", "key": "MODEL_ROUTER_MEMBERS",       "label": "Pooled Models",        "type": "text",   "hint": "Comma-separated env prefixes to pool, e.g. EMBED,OCR,RERANK,TASK"},
+    {"section": "Model Router", "key": "MODEL_ROUTER_SLEEP_IDLE_SECONDS", "label": "Idle Unload (s)", "type": "number", "hint": "Unload a resident model's weights and KV after this much idleness; the next request reloads it. -1 disables."},
+    {"section": "Model Router", "key": "MODEL_ROUTER_GPU_VISIBLE_DEVICES", "label": "GPU Devices",    "type": "text",   "hint": "CUDA_VISIBLE_DEVICES for the router. Every pooled model inherits it, so per-model placement uses real device indices in Main GPU / Tensor Split."},
     # Ports
     {"section": "Ports",       "key": "THINK_PORT",                 "label": "Thinking Port",        "type": "number"},
     {"section": "Ports",       "key": "NOTHINK_PORT",               "label": "Chat Port",            "type": "number"},
@@ -1138,6 +1154,8 @@ for _field in CONFIG_FIELDS:
         RESTART_HINTS.setdefault(_key, ["ocr"])
     if _key.startswith("GLMOCR_"):
         RESTART_HINTS.setdefault(_key, ["glmocr-sdk"])
+    if _key.startswith("MODEL_ROUTER_"):
+        RESTART_HINTS.setdefault(_key, ["llama-router"])
     if _key.startswith("SEARXNG_"):
         RESTART_HINTS.setdefault(_key, ["searxng"])
     if _key.startswith("PLAYWRIGHT_"):
