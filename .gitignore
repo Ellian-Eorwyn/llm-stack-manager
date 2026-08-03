@@ -41,6 +41,14 @@ __pycache__/
 # Generated local config/state
 /config/default-saved-config
 /config/glmocr-sdk.json
+# The model router's preset, rendered from the env keys on every service start
+# by scripts/render-models-ini.py. Committing it would put a build artefact in
+# the tree, and — because the installed stack is a checkout — every router start
+# would dirty it and make update.sh refuse to run.
+/config/models.ini
+# Kept empty on purpose: it is LLAMA_CACHE for the router, pointed away from the
+# real one so that only the preset decides which models are routable.
+/config/model-router-cache/
 # Which services this box is meant to be running. Recorded by the manager as
 # they are started and stopped, so it is per-install state, not configuration.
 /config/service-expectations.json
