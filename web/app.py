@@ -675,6 +675,60 @@ LLAMACPP_UPDATE_IGNORABLE_DIRTY_FILES = {
 }
 
 
+def llamacpp_patches() -> list[Path]:
+    """Local patches this repo re-applies to deps/llama.cpp.
+
+    Declared in dependencies.json so that `install-dependencies.py` and this
+    updater work from one list rather than two that can drift apart. See
+    docs/llama-cpp-patches.md.
+    """
+    try:
+        manifest = json.loads((core.STACK_DIR / "dependencies.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    for dep in manifest.get("dependencies", []):
+        if dep.get("path") == "deps/llama.cpp":
+            return [core.STACK_DIR / name for name in dep.get("patches", [])]
+    return []
+
+
+def llamacpp_patched_paths() -> set[str]:
+    """Files inside the checkout that those patches modify.
+
+    A patched checkout is dirty by design, so these have to read as expected
+    rather than as local edits worth protecting — otherwise applying a patch
+    permanently disables the Update llama.cpp button.
+    """
+    paths: set[str] = set()
+    for patch in llamacpp_patches():
+        try:
+            text = patch.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.startswith("+++ b/"):
+                paths.add(line[len("+++ b/"):].strip())
+    return paths
+
+
+def apply_llamacpp_patches(git_cmd: list[str], lines: list[str]) -> bool:
+    """Re-apply the local patches after the checkout has moved."""
+    for patch in llamacpp_patches():
+        if not patch.is_file():
+            lines.append(f"Patch is declared but missing: {patch}")
+            return False
+        cmd = [*git_cmd, "apply", str(patch)]
+        rc, out = core.run_command(cmd, timeout=60)
+        core.append_command_log(lines, cmd, rc, out)
+        if rc != 0:
+            lines.append(
+                f"Could not apply {patch.name} to the updated checkout. "
+                "Refresh the patch against the new revision, or drop it if it landed upstream."
+            )
+            return False
+    return True
+
+
 def has_uncommitted_git_changes(git_cmd: list[str]) -> tuple[bool, str]:
     rc, out = core.run_command([*git_cmd, "status", "--porcelain"], timeout=30)
     if rc != 0:
@@ -687,16 +741,18 @@ def try_restore_ignorable_llamacpp_update_changes(git_cmd: list[str], dirty_outp
     if not entries:
         return False
 
+    restorable = LLAMACPP_UPDATE_IGNORABLE_DIRTY_FILES | llamacpp_patched_paths()
     paths: list[str] = []
     for line in entries:
         status = line[:2]
         path = line[3:] if len(line) > 3 else ""
-        if status != " M" or path not in LLAMACPP_UPDATE_IGNORABLE_DIRTY_FILES:
+        if status != " M" or path not in restorable:
             return False
         paths.append(path)
 
     lines.append(
-        "Only generated llama.cpp UI lockfile metadata changed; restoring it before update."
+        "Only generated metadata and locally patched files changed; "
+        "restoring them before update. Patches are re-applied after the pull."
     )
     cmd = [*git_cmd, "restore", "--", *paths]
     rc, out = core.run_command(cmd, timeout=60)
@@ -818,6 +874,12 @@ def update_llamacpp_and_restart_active_services() -> tuple[bool, str, list[str]]
             core.append_command_log(lines, cmd, rc, out)
             if rc != 0:
                 return False, "\n".join(lines), restarted
+
+        # The pull discarded them along with everything else, and this path builds
+        # with cmake directly rather than through install-dependencies.py, so it
+        # has to put them back itself or the update silently reverts the fix.
+        if not apply_llamacpp_patches(git_cmd, lines):
+            return False, "\n".join(lines), restarted
 
         build_dir.mkdir(parents=True, exist_ok=True)
         for cmd in (

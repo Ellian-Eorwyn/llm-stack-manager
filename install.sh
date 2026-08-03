@@ -113,6 +113,18 @@ example = Path(sys.argv[1])
 config = Path(sys.argv[2])
 stack_dir = sys.argv[3]
 service_user = sys.argv[4]
+
+# Backfilling on literal key names alone is what kept resurrecting the legacy
+# CHAT_DENSE_*/CHAT_MOE_* spellings: a config that had been migrated to the
+# canonical names looked, to this script, like a config missing the legacy ones.
+# They are no longer in the example, but a config written by an older install
+# still is, so honour the map rather than relying on the example alone.
+sys.path.insert(0, str(Path(stack_dir) / "web"))
+try:
+    from config_fields import LEGACY_ENV_KEY_MAP
+except Exception:
+    LEGACY_ENV_KEY_MAP = {}
+
 content = config.read_text(encoding="utf-8")
 existing = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)=", content, re.MULTILINE))
 missing = []
@@ -121,6 +133,8 @@ for line in example.read_text(encoding="utf-8").splitlines():
         continue
     key = line.split("=", 1)[0]
     if key in existing:
+        continue
+    if LEGACY_ENV_KEY_MAP.get(key) in existing:
         continue
     rendered = line.replace("@STACK_DIR@", stack_dir).replace("@SERVICE_USER@", service_user)
     missing.append(rendered)

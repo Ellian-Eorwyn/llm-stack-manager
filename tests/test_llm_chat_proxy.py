@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import sys
 import tempfile
 import unittest
 
@@ -461,6 +462,200 @@ class SlotSchedulingPassthroughTests(unittest.TestCase):
                    **self.SCHEDULING_FIELDS}
         proxy._inject_memory(payload, "chat", "remember this")
         self.assertEqual(payload["id_slot"], 1)
+
+
+class ReasoningVisibilityTests(unittest.TestCase):
+    """`hidden` has to keep reasoning out of the answer without erasing it.
+
+    In `content` the streaming and non-streaming paths disagreed: a complete
+    reply came back clean, because the copy is guarded on `content` being empty
+    and a finished message has an answer in it, while a *stream* copied every
+    reasoning delta into content, because each of those deltas has no content of
+    its own. So streaming clients on :8008 opened every reply with ~1,900 tokens
+    of "Here's a thinking process:" and non-streaming clients never saw it.
+
+    `hidden` fixes that, but naively it introduces a worse failure: a reply
+    truncated mid-thought has no content at all, so the client gets an empty
+    string and `finish_reason: "length"`. That is what :8007 does under a tight
+    budget, and it reads as the model having nothing to say.
+    """
+
+    def _stream(self, mode: str, events: list[dict]) -> str:
+        rewriter = proxy.SSEEventRewriter("code", mode)
+        raw = b"".join(
+            b"data: " + json.dumps(event).encode("utf-8") + b"\n\n" for event in events
+        )
+        return (rewriter.feed(raw) + rewriter.flush()).decode("utf-8")
+
+    @staticmethod
+    def _delta(**delta) -> dict:
+        return {"model": "code-backend", "choices": [{"index": 0, "delta": delta}]}
+
+    @staticmethod
+    def _finish(reason: str = "stop") -> dict:
+        return {"model": "code-backend",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": reason}]}
+
+    def _nonstream(self, mode: str, message: dict) -> dict:
+        raw = json.dumps({"choices": [{"message": message}]}).encode("utf-8")
+        return json.loads(proxy._rewrite_json_reasoning_visibility(raw, mode))["choices"][0]["message"]
+
+    def test_hidden_keeps_a_streamed_answer_free_of_the_preamble(self):
+        text = self._stream("hidden", [
+            self._delta(reasoning_content="Here's a thinking process: "),
+            self._delta(reasoning_content="the user wants four."),
+            self._delta(content="4"),
+            self._finish(),
+        ])
+        self.assertNotIn("thinking process", json.dumps(_contents(text)))
+        self.assertEqual("".join(_contents(text)), "4")
+        self.assertIn("reasoning_content", text)
+
+    def test_hidden_spends_the_reasoning_when_a_stream_produced_no_answer(self):
+        text = self._stream("hidden", [
+            self._delta(reasoning_content="Let me work through "),
+            self._delta(reasoning_content="the first case, which"),
+            self._finish("length"),
+        ])
+        self.assertEqual(
+            "".join(_contents(text)),
+            "Let me work through the first case, which",
+        )
+
+    def test_a_stream_that_answered_does_not_also_replay_its_reasoning(self):
+        """The held reasoning is a fallback, not a suffix."""
+        text = self._stream("hidden", [
+            self._delta(reasoning_content="thinking"),
+            self._delta(content="4"),
+            self._finish("length"),
+        ])
+        self.assertEqual("".join(_contents(text)), "4")
+
+    def test_content_mode_still_streams_reasoning_as_the_answer(self):
+        text = self._stream("content", [
+            self._delta(reasoning_content="step"),
+            self._finish(),
+        ])
+        self.assertIn('"content":"step"', text)
+        self.assertNotIn("reasoning_content", text)
+
+    def test_hidden_leaves_a_complete_reply_alone(self):
+        message = self._nonstream("hidden", {"content": "4", "reasoning_content": "thinking"})
+        self.assertEqual(message["content"], "4")
+        self.assertEqual(message["reasoning_content"], "thinking")
+
+    def test_hidden_fills_in_an_empty_reply_from_its_reasoning(self):
+        message = self._nonstream("hidden", {"content": "", "reasoning_content": "half a thought"})
+        self.assertEqual(message["content"], "half a thought")
+        self.assertEqual(message["reasoning_content"], "half a thought")
+
+    def test_content_mode_discards_reasoning_once_there_is_an_answer(self):
+        message = self._nonstream("content", {"content": "4", "reasoning_content": "thinking"})
+        self.assertEqual(message["content"], "4")
+        self.assertNotIn("reasoning_content", message)
+
+    def test_a_reply_with_no_reasoning_at_all_is_untouched(self):
+        for mode in ("hidden", "mirror", "content"):
+            with self.subTest(mode=mode):
+                self.assertEqual(self._nonstream(mode, {"content": "4"}), {"content": "4"})
+
+    def test_the_deployed_endpoints_default_to_hidden(self):
+        """The reason CODE was on `content` is now handled inside `hidden`."""
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
+        import config_env  # noqa: PLC0415
+
+        normalized = config_env.normalize_env_keys({})
+        for key in ("THINK_REASONING_STREAM_MODE", "NOTHINK_REASONING_STREAM_MODE",
+                    "CODE_REASONING_STREAM_MODE"):
+            self.assertEqual(normalized[key], "hidden", key)
+
+
+def _contents(stream_text: str) -> list[str]:
+    """Every `delta.content` in an SSE stream, in order."""
+    out = []
+    for line in stream_text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            continue
+        for choice in json.loads(data).get("choices", []):
+            content = choice.get("delta", {}).get("content")
+            if isinstance(content, str) and content:
+                out.append(content)
+    return out
+
+
+class JsonObjectResponseFormatTests(unittest.TestCase):
+    """`response_format: {"type": "json_object"}` has to actually constrain.
+
+    llama.cpp turns a schema-less `json_object` into an empty schema and then
+    tests `!json_schema.empty()` before building a grammar, so the request goes
+    through unconstrained and the client only finds out when parsing fails.
+    Measured on :8010: asking for one plain English sentence *while* demanding
+    JSON returned the sentence; adding `schema: {"type": "object"}` to the same
+    request returned an object.
+    """
+
+    def _round_trip(self, payload: dict) -> dict:
+        raw = json.dumps(payload).encode("utf-8")
+        parsed = proxy._safe_json_loads(raw)
+        proxy._normalize_json_object_response_format(parsed)
+        return json.loads(proxy._body_from_json(parsed, raw))
+
+    def _ask(self, **extra) -> dict:
+        return self._round_trip({
+            "model": "chat",
+            "messages": [{"role": "user", "content": "hi"}],
+            **extra,
+        })
+
+    def test_a_schema_less_json_object_gains_the_schema_that_makes_it_bind(self):
+        sent = self._ask(response_format={"type": "json_object"})
+        self.assertEqual(
+            sent["response_format"],
+            {"type": "json_object", "schema": {"type": "object"}},
+        )
+
+    def test_a_client_supplied_schema_is_never_overwritten(self):
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+        sent = self._ask(response_format={"type": "json_object", "schema": schema})
+        self.assertEqual(sent["response_format"]["schema"], schema)
+
+    def test_a_grammar_is_left_to_win_on_its_own(self):
+        """llama.cpp refuses json_schema and grammar together, so adding a
+        schema next to a grammar would turn a working request into a 400."""
+        sent = self._ask(
+            response_format={"type": "json_object"},
+            grammar='root ::= "YES"',
+        )
+        self.assertEqual(sent["response_format"], {"type": "json_object"})
+        self.assertEqual(sent["grammar"], 'root ::= "YES"')
+
+    def test_a_top_level_json_schema_is_left_to_win_on_its_own(self):
+        sent = self._ask(
+            response_format={"type": "json_object"},
+            json_schema={"type": "array"},
+        )
+        self.assertEqual(sent["response_format"], {"type": "json_object"})
+        self.assertEqual(sent["json_schema"], {"type": "array"})
+
+    def test_json_schema_response_format_already_works_and_is_untouched(self):
+        fmt = {"type": "json_schema", "json_schema": {"schema": {"type": "object"}}}
+        self.assertEqual(self._ask(response_format=fmt)["response_format"], fmt)
+
+    def test_plain_text_and_absent_response_formats_are_untouched(self):
+        self.assertEqual(
+            self._ask(response_format={"type": "text"})["response_format"],
+            {"type": "text"},
+        )
+        self.assertNotIn("response_format", self._ask())
+
+    def test_a_malformed_response_format_is_not_a_crash(self):
+        for value in ("json_object", ["json_object"], None, 7):
+            with self.subTest(value=value):
+                self.assertEqual(self._ask(response_format=value)["response_format"], value)
 
 
 class ListenerTests(unittest.TestCase):

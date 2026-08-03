@@ -186,8 +186,40 @@ def verify_gpu_binary(binary: Path) -> None:
             f"{output}"
         )
 
+def apply_patches(dep: dict, path: Path) -> None:
+    """Re-apply this repo's local patches on top of the pinned checkout.
+
+    A patched checkout is permanently dirty, so the dirty-worktree guard cannot
+    also be the thing that protects it — for a patched dependency the worktree
+    is discarded back to the pinned ref and the patches are applied fresh. That
+    is safe because the checkout is a build artefact and not somewhere to keep
+    work, and it makes the step idempotent: running install twice does not stack
+    a patch on itself or leave a half-applied one behind.
+
+    `git apply --check` runs first so that a patch which has stopped applying —
+    almost always because `ref` was bumped — fails here, naming the patch,
+    rather than as a compiler error several hundred lines into the build.
+    """
+    patches = [ROOT / name for name in dep.get("patches", [])]
+    if not patches:
+        return
+    run(["git", "checkout", "--", "."], cwd=path)
+    for patch in patches:
+        if not patch.is_file():
+            raise SystemExit(f"Patch not found: {patch}")
+        print(f"Applying patch: {patch.relative_to(ROOT)}", flush=True)
+        if subprocess.run(["git", "apply", "--check", str(patch)], cwd=path).returncode != 0:
+            raise SystemExit(
+                f"Patch does not apply to {dep['name']} at {dep.get('ref', 'master')}:\n"
+                f"  {patch.relative_to(ROOT)}\n"
+                "Refresh the patch against the new ref, or drop it if it landed upstream."
+            )
+        run(["git", "apply", str(patch)], cwd=path)
+
+
 def install_git_checkout(dep: dict, *, update: bool, force: bool) -> Path:
     path = ROOT / dep["path"]
+    patched = bool(dep.get("patches"))
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         run(["git", "clone", dep["repo"], str(path)])
@@ -195,10 +227,15 @@ def install_git_checkout(dep: dict, *, update: bool, force: bool) -> Path:
     else:
         if not (path / ".git").exists():
             raise SystemExit(f"Dependency path exists but is not a git checkout: {path}")
-        if has_dirty_worktree(path) and not force:
+        # A patched checkout is dirty by design, and apply_patches resets it
+        # anyway, so the guard would only ever refuse the expected state.
+        if has_dirty_worktree(path) and not force and not patched:
             raise SystemExit(f"Refusing to update dirty dependency checkout: {path}")
         if update:
+            if patched:
+                run(["git", "checkout", "--", "."], cwd=path)
             checkout_ref(path, dep.get("ref", "master"))
+    apply_patches(dep, path)
     return path
 
 

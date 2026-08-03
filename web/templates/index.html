@@ -499,6 +499,12 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 .field.wide { grid-column: 1 / -1; }
 .field label { font-size: 12px; color: var(--dim); }
 .field .hint  { font-size: 11px; color: var(--muted); }
+.field .hint.shadowed-alias { color: var(--warning); }
+.field .hint.shadowed-alias code { font-family: var(--mono); }
+.shadowed-alias-banner { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--warning); border-radius: var(--radius); font-size: 12px; color: var(--warning); }
+.shadowed-alias-banner ul { margin: 6px 0 0; padding-left: 18px; }
+.shadowed-alias-banner code { font-family: var(--mono); }
+.shadowed-alias-banner .btn { margin-top: 8px; }
 .field input, .field select {
   background: var(--bg); border: 1px solid var(--border); color: var(--text);
   padding: 7px 10px; border-radius: var(--radius); font-size: 13px; width: 100%;
@@ -1535,6 +1541,11 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   {% if f.get('hint') and f.type not in ('path',) %}
   <span class="hint">{{ f.hint }}</span>
   {% endif %}
+  {# Filled in by refreshShadowedAliasHints() from /api/config/deprecations.
+     A legacy key sitting in the env file beside its replacement is inert, but
+     nothing said so, and several of them name a different model file than the
+     one actually running. #}
+  <span class="hint shadowed-alias" data-shadowed-key="{{ f.key }}" hidden></span>
 </div>
 {%- endmacro %}
 <div id="tab-config" class="tab-panel">
@@ -1560,6 +1571,11 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       <p>Each section saves independently. Primary Backend and Secondary Backend each have their own proxy and model-routed aggregate endpoint.</p>
     </div>
   </div>
+
+  {# Not every shadowed key has a field to sit under — the CHAT_SECONDARY_*
+     controls are not generated — so the banner carries the full list and the
+     per-field badges are the in-context nudge. #}
+  <div class="shadowed-alias-banner" id="shadowed-alias-banner" hidden></div>
 
   <div class="cfg-nav" id="cfg-nav">
     {% for section in config_sections.keys() %}

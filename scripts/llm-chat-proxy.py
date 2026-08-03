@@ -937,6 +937,12 @@ def _normalize_reasoning_stream_mode(mode: str) -> str:
 
 
 def _rewrite_reasoning_delta(delta: dict[str, Any], mode: str):
+    """Expose a streamed reasoning delta as content, for the modes that ask.
+
+    `hidden` does not come through here: it has to know whether any content ever
+    arrived, which a single delta cannot say. See
+    `SSEEventRewriter._hold_reasoning`.
+    """
     reasoning = delta.get("reasoning_content")
     if not isinstance(reasoning, str) or not reasoning:
         return
@@ -947,9 +953,15 @@ def _rewrite_reasoning_delta(delta: dict[str, Any], mode: str):
 
 
 def _rewrite_json_reasoning_visibility(raw: bytes, mode: str) -> bytes:
+    """Apply the reasoning visibility mode to a complete (non-streamed) reply.
+
+    Every mode falls back to showing the reasoning when there is no content to
+    show. A reply that spent its whole budget reasoning comes back as
+    `content: ""` with `finish_reason: "length"`, which reads to a client as the
+    model having nothing to say — a much harder failure to debug than a visible
+    truncated thought.
+    """
     mode = _normalize_reasoning_stream_mode(mode)
-    if mode == "hidden":
-        return raw
     parsed = _safe_json_loads(raw)
     if not parsed:
         return raw
@@ -966,7 +978,7 @@ def _rewrite_json_reasoning_visibility(raw: bytes, mode: str) -> bytes:
         reasoning = message.get("reasoning_content")
         if not isinstance(reasoning, str) or not reasoning:
             continue
-        if mode in {"mirror", "content"} and not message.get("content"):
+        if not message.get("content"):
             message["content"] = reasoning
             changed = True
         if mode == "content":
@@ -982,6 +994,34 @@ class SSEEventRewriter:
         self._public_model_name = public_model_name
         self._reasoning_mode = _normalize_reasoning_stream_mode(reasoning_mode)
         self._buffer = ""
+        # Per choice index, for the `hidden` fallback in _hold_reasoning below.
+        self._saw_content: set[int] = set()
+        self._held_reasoning: dict[int, list[str]] = {}
+
+    def _hold_reasoning(self, choice: dict[str, Any], delta: dict[str, Any]):
+        """Keep reasoning out of `content` without ever streaming back nothing.
+
+        `hidden` leaves the deltas alone, which is the point — but a reply
+        truncated mid-reasoning never produced a content delta at all, so the
+        client is handed an empty string with `finish_reason: "length"` and no
+        indication that anything happened. Hold the reasoning as it goes past
+        and spend it on the final chunk, but only if nothing else turned up.
+        """
+        index = choice.get("index", 0)
+        if not isinstance(index, int):
+            index = 0
+        content = delta.get("content")
+        if isinstance(content, str) and content:
+            self._saw_content.add(index)
+            self._held_reasoning.pop(index, None)
+        elif index not in self._saw_content:
+            reasoning = delta.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning:
+                self._held_reasoning.setdefault(index, []).append(reasoning)
+        if choice.get("finish_reason") and index not in self._saw_content:
+            held = "".join(self._held_reasoning.pop(index, []))
+            if held:
+                delta["content"] = held
 
     def feed(self, chunk: bytes) -> bytes:
         try:
@@ -1029,7 +1069,10 @@ class SSEEventRewriter:
                         continue
                     delta = choice.get("delta")
                     if isinstance(delta, dict):
-                        _rewrite_reasoning_delta(delta, self._reasoning_mode)
+                        if self._reasoning_mode == "hidden":
+                            self._hold_reasoning(choice, delta)
+                        else:
+                            _rewrite_reasoning_delta(delta, self._reasoning_mode)
             rewritten_lines.append(f"data: {json.dumps(obj, ensure_ascii=True, separators=(',', ':'))}")
         return "\n".join(rewritten_lines)
 
@@ -1201,6 +1244,31 @@ def _inject_max_tokens(payload: dict[str, Any], kind: str | None, max_tokens: in
         payload["max_tokens"] = max_tokens
 
 
+def _normalize_json_object_response_format(payload: dict[str, Any]):
+    """Give a schema-less `json_object` the schema that makes it mean something.
+
+    `{"type": "json_object"}` with no schema is the ordinary way every
+    OpenAI-compatible client asks for JSON, and llama.cpp drops it on the floor:
+    `oaicompat_chat_params_parse` turns it into an *empty* schema, and the
+    autoparser then tests `!json_schema.empty()` before building a grammar, so
+    `{}` is indistinguishable from "no constraint asked for". The client gets
+    unconstrained prose and only finds out when parsing fails.
+
+    Spelling the schema out as `{"type": "object"}` is both what makes the check
+    pass and what the OpenAI contract actually means — the reply must be a JSON
+    object. `json_schema` and `grammar` reach the grammar by other routes and
+    already work, so a request carrying either is left exactly as it arrived.
+    """
+    fmt = payload.get("response_format")
+    if not isinstance(fmt, dict) or fmt.get("type") != "json_object":
+        return
+    if "schema" in fmt:
+        return
+    if payload.get("grammar") or payload.get("json_schema") is not None:
+        return
+    payload["response_format"] = {**fmt, "schema": {"type": "object"}}
+
+
 def _requested_model_id_from_path(path: str) -> str:
     normalized = _normalized_path(path)
     prefix = "/v1/models/"
@@ -1363,6 +1431,7 @@ def make_handler(
                     _inject_overrides(payload, self._overrides)
                 if is_generation_request:
                     _inject_max_tokens(payload, kind, self._max_tokens)
+                    _normalize_json_object_response_format(payload)
 
                 request_messages = _payload_messages(payload, kind)
                 request_user_text = _extract_last_user_text(request_messages)

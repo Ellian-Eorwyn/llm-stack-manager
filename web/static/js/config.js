@@ -58,7 +58,77 @@ async function loadConfig() {
     refreshAllCacheAwareScheduling();
     initPerSlotHints();
     syncQuickGpuPlacementSelects();
+    refreshShadowedAliasHints();
   } catch (e) { toast('Could not load config: ' + e, 'err'); }
+}
+
+// A legacy env key sitting in the file next to its replacement is read by
+// nothing — `normalize_env_keys` only backfills when the canonical key is
+// absent, and every start script resolves the canonical name first. But
+// `/api/config` reports both, with their independent on-disk values, and
+// nothing distinguished the live one from the dead one. On this host the dead
+// `CHAT_DENSE_MODEL_PATH` names a different model file than the running
+// `CHAT_PRIMARY_MODEL_PATH`, and `CHAT_DENSE_CTX_SIZE=32768` sits beside a live
+// 262144 — a reader of the config page had no way to tell.
+async function refreshShadowedAliasHints() {
+  document.querySelectorAll('[data-shadowed-key]').forEach(hint => {
+    hint.hidden = true;
+    hint.textContent = '';
+  });
+  let deprecations;
+  try {
+    deprecations = await fetchJSON('/api/config/deprecations');
+  } catch (e) {
+    return; // A missing annotation must never take the config form with it.
+  }
+  const entries = deprecations?.env_keys || [];
+  for (const entry of entries) {
+    // Without a canonical twin the legacy key is still the live value, backfilled
+    // on read. That is worth saying too, but it is not the same warning.
+    const target = entry.canonical_present ? entry.replacement : entry.key;
+    const hint = document.querySelector(`[data-shadowed-key="${CSS.escape(target)}"]`);
+    if (!hint) continue;
+    hint.hidden = false;
+    hint.innerHTML = entry.canonical_present
+      ? `Ignored: <code>${escapeHtml(entry.key)}=${escapeHtml(entry.value)}</code> is still in the env file but this field wins.`
+      : `Read from the legacy <code>${escapeHtml(entry.key)}</code>; saving this field writes <code>${escapeHtml(entry.replacement)}</code>.`;
+  }
+  renderShadowedAliasBanner(entries, deprecations?.saved_configs || []);
+}
+
+// Not every legacy key has a field to sit under — the CHAT_SECONDARY_* controls
+// are never generated (config_fields.py builds the "primary" variant only), so
+// five of the ten on this host would otherwise stay invisible.
+function renderShadowedAliasBanner(entries, savedConfigs) {
+  const banner = document.getElementById('shadowed-alias-banner');
+  if (!banner) return;
+  if (!entries.length) { banner.hidden = true; banner.innerHTML = ''; return; }
+  const rows = entries.map(entry => {
+    const fate = entry.canonical_present
+      ? `ignored — <code>${escapeHtml(entry.replacement)}</code> wins`
+      : `still live, read in place of <code>${escapeHtml(entry.replacement)}</code>`;
+    return `<li><code>${escapeHtml(entry.key)}=${escapeHtml(entry.value)}</code> — ${fate}</li>`;
+  }).join('');
+  const profiles = savedConfigs.length
+    ? `<p>Saved profiles also carry these and are left alone: ${
+        savedConfigs.map(p => `<code>${escapeHtml(p.name)}</code>`).join(', ')}.</p>`
+    : '';
+  banner.innerHTML =
+    `<strong>${entries.length} legacy config key${entries.length === 1 ? '' : 's'} in the env file</strong>` +
+    `<ul>${rows}</ul>${profiles}` +
+    `<button class="btn btn-ghost btn-sm" onclick="migrateShadowedAliases()">Rewrite to canonical keys</button>`;
+  banner.hidden = false;
+}
+
+async function migrateShadowedAliases() {
+  try {
+    // fetchJSON resolves on a 500 too, so the body is the only error signal.
+    const result = await fetchJSON('/api/config/deprecations/migrate', 'POST');
+    if (result.ok === false) { toast('Could not migrate legacy keys: ' + (result.error || 'unknown'), 'err'); return; }
+    const migrated = result.migrated?.length ?? 0;
+    toast(`Rewrote ${migrated} key${migrated === 1 ? '' : 's'} to canonical names`, 'ok');
+    await loadConfig();
+  } catch (e) { toast('Could not migrate legacy keys: ' + e, 'err'); }
 }
 
 function markDirty(section) { cfgDirty[section] = true; }

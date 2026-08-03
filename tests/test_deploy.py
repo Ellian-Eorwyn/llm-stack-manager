@@ -13,8 +13,10 @@ import importlib.util
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 def _load(name: str, relative: str):
@@ -28,6 +30,9 @@ def _load(name: str, relative: str):
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 deploy = _load("llm_stack_manager_deploy", "web/deploy.py")
+
+sys.path.insert(0, str(ROOT / "web"))
+import app  # noqa: E402
 
 
 def git(repo: pathlib.Path, *args: str) -> str:
@@ -239,6 +244,94 @@ class BackendSensitivePathTests(unittest.TestCase):
     def test_the_env_example_documents_the_interval(self):
         example = (ROOT / "config" / "llm-stack.env.example").read_text()
         self.assertIn("LLM_MANAGER_DEPLOY_CHECK_INTERVAL", example)
+
+
+class LlamaCppPatchTests(unittest.TestCase):
+    """A patched llama.cpp checkout must not disable its own updater.
+
+    `deps/llama.cpp` is a pinned clone, not a fork, so every local change to it
+    is re-applied from `patches/` on each install. That leaves the worktree
+    permanently dirty — and the Update llama.cpp button refuses to run against a
+    dirty checkout. Adding the first patch therefore disabled the button, which
+    is exactly the kind of breakage that only shows up the day someone needs it.
+
+    Both halves are load-bearing: the guard has to read a patched file as
+    expected rather than as a local edit, and the update path has to re-apply
+    the patches after the pull, because it builds with cmake directly instead of
+    going through install-dependencies.py.
+    """
+
+    def test_the_declared_patches_all_exist(self):
+        patches = app.llamacpp_patches()
+        self.assertTrue(patches, "dependencies.json declares no llama.cpp patches")
+        for patch in patches:
+            self.assertTrue(patch.is_file(), f"declared but missing: {patch}")
+
+    def test_patched_files_are_discovered_from_the_patches_themselves(self):
+        """Not from a second hand-maintained list that could drift."""
+        self.assertIn("tools/server/server-common.cpp", app.llamacpp_patched_paths())
+
+    def test_a_patched_file_does_not_block_the_update(self):
+        lines: list[str] = []
+        restored: list[list[str]] = []
+
+        def fake_run(cmd, timeout=None):
+            restored.append(cmd)
+            return 0, ""
+
+        with mock.patch.object(app.core, "run_command", fake_run), \
+             mock.patch.object(app, "has_uncommitted_git_changes", lambda _cmd: (False, "")):
+            ok = app.try_restore_ignorable_llamacpp_update_changes(
+                ["git"], " M tools/server/server-common.cpp", lines)
+        self.assertTrue(ok)
+        self.assertIn(["git", "restore", "--", "tools/server/server-common.cpp"], restored)
+
+    def test_a_genuine_local_edit_still_blocks_the_update(self):
+        """The guard is relaxed for patched files only, not switched off."""
+        lines: list[str] = []
+        self.assertFalse(app.try_restore_ignorable_llamacpp_update_changes(
+            ["git"], " M tools/server/server-context.cpp", lines))
+
+    def test_an_untracked_file_still_blocks_the_update(self):
+        lines: list[str] = []
+        self.assertFalse(app.try_restore_ignorable_llamacpp_update_changes(
+            ["git"], "?? tools/server/server-common.cpp", lines))
+
+    def test_the_patches_are_reapplied_after_the_pull(self):
+        applied: list[list[str]] = []
+        with mock.patch.object(app.core, "run_command",
+                               lambda cmd, timeout=None: (applied.append(cmd), (0, ""))[1]):
+            self.assertTrue(app.apply_llamacpp_patches(["git"], []))
+        names = [c[-1] for c in applied if "apply" in c]
+        self.assertEqual(len(names), len(app.llamacpp_patches()))
+
+    def test_a_patch_that_no_longer_applies_fails_the_update_loudly(self):
+        """Bumping the pin must surface here, not as a compile error later."""
+        lines: list[str] = []
+        with mock.patch.object(app.core, "run_command", lambda cmd, timeout=None: (1, "does not apply")):
+            self.assertFalse(app.apply_llamacpp_patches(["git"], lines))
+        self.assertTrue(any("Refresh the patch" in line for line in lines))
+
+    def test_the_patch_applies_to_the_pinned_revision(self):
+        """A stale patch is only discovered on the next rebuild otherwise."""
+        source = ROOT / "deps" / "llama.cpp"
+        if not (source / ".git").is_dir():
+            self.skipTest("deps/llama.cpp is not checked out")
+        for patch in app.llamacpp_patches():
+            result = subprocess.run(
+                ["git", "-c", f"safe.directory={source}", "-C", str(source),
+                 "apply", "--check", "--reverse", str(patch)],
+                capture_output=True, text=True)
+            # --reverse succeeds when the patch is already applied, which is the
+            # steady state on a deployed box; forward-check the clean case too.
+            if result.returncode != 0:
+                forward = subprocess.run(
+                    ["git", "-c", f"safe.directory={source}", "-C", str(source),
+                     "apply", "--check", str(patch)],
+                    capture_output=True, text=True)
+                self.assertEqual(forward.returncode, 0,
+                                 f"{patch.name} applies neither forwards nor in reverse:\n"
+                                 f"{forward.stderr}")
 
 
 if __name__ == "__main__":

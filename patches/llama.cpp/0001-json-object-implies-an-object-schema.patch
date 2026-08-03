@@ -1,0 +1,58 @@
+Subject: response_format json_object without a schema must still constrain
+
+A request asking for {"type": "json_object"} with no schema — the ordinary way
+every OpenAI-compatible client asks for JSON — comes back as unconstrained
+prose, and the caller only finds out when parsing fails.
+
+oaicompat_chat_params_parse defaults the missing schema to an empty object.
+Every downstream check then asks whether a response format was requested by
+testing that the schema is non-empty:
+
+    common/chat-auto-parser-generator.cpp:81   !inputs.json_schema.empty() && ...is_object()
+    common/chat-auto-parser-generator.cpp:134  ...is_object() && !...empty()
+    common/chat.cpp:1019, :2431                same shape
+
+so {} is indistinguishable from "no constraint was asked for" and no grammar is
+built. The handlers that spell the test the other way round
+(chat.cpp:1170, :1318, :1707, :1875 — !is_null() && is_object()) are unaffected,
+which is why this reproduces on some chat formats and not others. A top-level
+json_schema, or response_format {"type": "json_schema"}, produces a non-empty
+object and has always worked.
+
+Defaulting to {"type": "object"} is both what makes the check pass and what the
+OpenAI contract means: the reply must be a JSON object.
+
+Measured against llama-server on this stack, Qwen3.6-27B, temperature 0,
+prompt "Write one plain English sentence about cats. Do not use JSON or braces."
+
+    before: Cats are independent and affectionate pets that enjoy napping...
+    after:  {"sentence": "Cats are independent and playful creatures..."}
+
+A caller that supplied its own `grammar` is left alone: a schema takes
+precedence over a grammar downstream, so manufacturing one here would silently
+discard what they asked for. Verified: `grammar: 'root ::= "YES"'` returns YES
+with and without a bare `json_object` alongside it.
+
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index 78b5c6819..5f0abf1b8 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -942,7 +942,17 @@ json oaicompat_chat_params_parse(
+         std::string response_type = json_value(response_format, "type", std::string());
+         if (response_type == "json_object") {
+             if (response_format.contains("schema") || json_schema.empty()) {
+-                json_schema = json_value(response_format, "schema", json::object());
++                // An absent schema means "any JSON object", so it has to be spelled
++                // out. Defaulting to an empty object loses the request entirely:
++                // every downstream has_response_format check tests !empty() before
++                // building a grammar, so {} reads as "no constraint was asked for".
++                //
++                // Not when the caller supplied a grammar, though. A schema beats a
++                // grammar downstream, so inventing one here would silently discard
++                // what they actually asked for; leaving it empty keeps the grammar
++                // authoritative, which is what happens without this change.
++                json implied = grammar.empty() ? json{{"type", "object"}} : json::object();
++                json_schema = json_value(response_format, "schema", implied);
+             }
+         } else if (response_type == "json_schema") {
+             auto schema_wrapper = json_value(response_format, "json_schema", json::object());

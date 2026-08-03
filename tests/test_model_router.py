@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 
 def _load_renderer():
@@ -159,6 +161,118 @@ class OptionRenderingTests(unittest.TestCase):
     def test_shell_quoting_is_stripped_from_env_values(self):
         env = dict(BASE_ENV, EMBED_CTX_SIZE='"4096"')
         self.assertEqual(_sections(renderer.render(env))["embed"]["ctx-size"], "4096")
+
+
+class TaskSettingCoverageTests(unittest.TestCase):
+    """A setting the UI offers has to survive the trip into the preset.
+
+    The router never runs `start-task.sh`; it builds each child's argv from this
+    file. So anything the start script derives and the renderer does not is a
+    control the config UI claims to have and silently does not — which is how
+    `TASK_THINKING=off` came to be honoured by the unit and lost by the router,
+    leaving :8007 reasoning on every request.
+    """
+
+    # Suffixes the preset deliberately does not carry. PORT and
+    # GPU_VISIBLE_DEVICES belong to the router, which assigns a free port per
+    # child and owns CUDA_VISIBLE_DEVICES for all of them. The SPEC_* family
+    # needs the method-dependent branching of start-task.sh:127-214, which a
+    # flat suffix table cannot express; it is off in the shipped config.
+    KNOWINGLY_DROPPED = {"PORT", "GPU_VISIBLE_DEVICES"}
+
+    def _task(self, **overrides):
+        return _sections(renderer.render(dict(BASE_ENV, **overrides)))["task"]
+
+    def test_every_task_setting_is_carried_or_knowingly_dropped(self):
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
+        import config_fields  # noqa: PLC0415
+
+        carried = set(renderer.VALUE_OPTIONS) | set(renderer.FLAG_OPTIONS) | {
+            "MODEL_PATH", "MMPROJ_PATH", "MODEL_NAME", "CUSTOM_ARGS_JSON",
+            "THINKING", "CHAT_TEMPLATE_ID",
+        }
+        declared = {
+            field["key"][len("TASK_"):]
+            for field in config_fields.CONFIG_FIELDS
+            if field.get("key", "").startswith("TASK_")
+        }
+        dropped = {
+            suffix for suffix in declared - carried
+            if not suffix.startswith("SPEC_")
+        }
+        self.assertEqual(dropped, self.KNOWINGLY_DROPPED)
+
+    def test_thinking_rides_in_as_a_chat_template_kwarg(self):
+        """Thinking is a template variable, not a llama.cpp flag."""
+        self.assertEqual(
+            self._task(TASK_THINKING="off")["chat-template-kwargs"],
+            '{"enable_thinking":false}',
+        )
+        self.assertEqual(
+            self._task(TASK_THINKING="on")["chat-template-kwargs"],
+            '{"enable_thinking":true}',
+        )
+
+    def test_a_member_with_nothing_to_think_about_gets_no_kwargs(self):
+        sections = _sections(renderer.render(dict(BASE_ENV, TASK_THINKING="off")))
+        self.assertNotIn("chat-template-kwargs", sections["embed"])
+        self.assertNotIn("chat-template-kwargs", sections["rank"])
+
+    def test_a_chat_template_id_resolves_to_the_file_it_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            templates = pathlib.Path(tmp) / "config" / "chat-templates"
+            templates.mkdir(parents=True)
+            (templates / "custom.jinja").write_text("{{ messages }}")
+            with mock.patch.object(renderer, "STACK_DIR", pathlib.Path(tmp)):
+                task = self._task(TASK_CHAT_TEMPLATE_ID="custom")
+        self.assertEqual(task["chat-template-file"], str(templates / "custom.jinja"))
+
+    def test_a_missing_chat_template_skips_the_member_rather_than_guessing(self):
+        """Falling back to the model's built-in template is the worse failure.
+
+        A skipped member is loudly absent; a silent fallback answers every
+        request with a subtly wrong prompt format.
+        """
+        warnings: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(renderer, "STACK_DIR", pathlib.Path(tmp)):
+                sections = _sections(renderer.render(
+                    dict(BASE_ENV, TASK_CHAT_TEMPLATE_ID="absent"),
+                    warn=warnings.append,
+                ))
+        self.assertNotIn("task", sections)
+        self.assertTrue(any("chat template not found" in text for text in warnings))
+
+    def test_a_chat_template_id_cannot_name_a_path(self):
+        warnings: list[str] = []
+        sections = _sections(renderer.render(
+            dict(BASE_ENV, TASK_CHAT_TEMPLATE_ID="../../etc/passwd"),
+            warn=warnings.append,
+        ))
+        self.assertNotIn("task", sections)
+        self.assertTrue(any("invalid" in text.lower() for text in warnings))
+
+    def test_the_cache_and_fit_knobs_reach_the_preset(self):
+        task = self._task(
+            TASK_CACHE_IDLE_SLOTS="on",
+            TASK_CACHE_REUSE="256",
+            TASK_FIT="on",
+            TASK_FIT_TARGET="2048",
+            TASK_FIT_CTX="4096",
+        )
+        self.assertEqual(task["cache-idle-slots"], "on")
+        self.assertEqual(task["cache-reuse"], "256")
+        self.assertEqual(task["fit-target"], "2048")
+        self.assertEqual(task["fit-ctx"], "4096")
+
+    def test_fit_ctx_is_dropped_when_auto_fit_is_off(self):
+        """`add_fit_ctx_opt` drops it, so the preset has to drop it too."""
+        self.assertNotIn("fit-ctx", self._task(TASK_FIT="off", TASK_FIT_CTX="4096"))
+
+    def test_zero_reads_as_unset_rather_than_as_a_literal_zero(self):
+        task = self._task(TASK_FIT="on", TASK_FIT_CTX="0", TASK_CACHE_REUSE="0")
+        self.assertNotIn("fit-ctx", task)
+        self.assertNotIn("cache-reuse", task)
 
 
 class CustomArgumentTests(unittest.TestCase):

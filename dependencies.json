@@ -7,6 +7,9 @@
       "repo": "https://github.com/ggml-org/llama.cpp.git",
       "ref": "846e991ec3c7ccec49112ff2c5b00b710e5f551d",
       "path": "deps/llama.cpp",
+      "patches": [
+        "patches/llama.cpp/0001-json-object-implies-an-object-schema.patch"
+      ],
       "build_dir": "deps/llama.cpp/build",
       "target": "llama-server",
       "binary": "deps/llama.cpp/build/bin/llama-server",
