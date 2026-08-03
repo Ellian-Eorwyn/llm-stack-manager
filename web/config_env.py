@@ -273,7 +273,14 @@ def normalize_env_keys(env: dict) -> dict:
     # model load as well as the inference. Connecting is never the problem —
     # something is always listening — so the connect timeout stays short.
     normalized.setdefault("GLMOCR_OCR_REQUEST_TIMEOUT", "600")
-    normalized.setdefault("GLMOCR_OCR_CONNECT_TIMEOUT", "30")
+    # Not a socket timeout: the SDK's startup probe is a real inference POST,
+    # retried until this expires. Under the router that first POST is what loads
+    # the OCR model, so a value shorter than a cold load makes the SDK exit and
+    # `Restart=on-failure` flap it — the failure this stack already has history
+    # with. Each individual attempt is capped at 30s inside the SDK, and the
+    # load continues server-side after one gives up, so this only needs to be
+    # long enough for a later retry to find the model ready.
+    normalized.setdefault("GLMOCR_OCR_CONNECT_TIMEOUT", "300")
     normalized.setdefault("GLMOCR_OCR_RETRY_MAX_ATTEMPTS", "4")
     normalized.setdefault("GLMOCR_OCR_RETRY_BACKOFF_BASE_SECONDS", "0.5")
     normalized.setdefault("GLMOCR_OCR_RETRY_BACKOFF_MAX_SECONDS", "30")

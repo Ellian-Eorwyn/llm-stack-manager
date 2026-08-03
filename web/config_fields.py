@@ -530,7 +530,7 @@ CONFIG_FIELDS = [
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_API_MODE",       "label": "OCR API Mode",         "type": "select", "options": ["openai", "ollama_generate"], "hint": "How the SDK calls the local OCR model backend"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_API_URL",        "label": "OCR API URL Override", "type": "text", "hint": "Optional full local OCR backend URL; leave empty to use OCR_HOST/OCR_PORT"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_REQUEST_TIMEOUT", "label": "OCR Request Timeout",  "type": "number"},
-    {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_CONNECT_TIMEOUT", "label": "OCR Connect Timeout",  "type": "number"},
+    {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_CONNECT_TIMEOUT", "label": "OCR Connect Timeout",  "type": "number", "hint": "How long the SDK's startup probe keeps retrying. It is a real inference request, so with the model router this must outlast a cold model load or the SDK exits on boot."},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_RETRY_MAX_ATTEMPTS", "label": "OCR Retry Attempts", "type": "number"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_RETRY_BACKOFF_BASE_SECONDS", "label": "Retry Backoff Base", "type": "text", "hint": "Read by the SDK config generator; was not previously editable here"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_OCR_RETRY_BACKOFF_MAX_SECONDS",  "label": "Retry Backoff Cap",  "type": "text", "hint": "Raise alongside retry attempts so a retry can outlast a cold model load"},

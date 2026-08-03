@@ -90,6 +90,24 @@ addition to the preset, so anything ever pulled with `-hf` becomes routable.
 `start-model-router.sh` points `LLAMA_CACHE` at a directory of its own so the
 preset is the only source.
 
+## 4a. The OCR SDK loads the model just by starting
+
+`GLMOCR_OCR_CONNECT_TIMEOUT` is not a socket timeout. The SDK's `connect()`
+sends a **real inference POST** at startup and retries until that budget is
+spent, refusing to serve until one succeeds. Through the router, that first POST
+is what loads the OCR model.
+
+Two consequences. Starting `glmocr-sdk` forces OCR resident, evicting whatever
+else was there — the `Wants=ocr.service` problem in a new shape, except the
+router now decides whether the model fits instead of systemd assuming it does.
+And if a cold load outlasts the budget, the SDK exits and `Restart=on-failure`
+flaps it, which is the failure this whole change exists to remove.
+
+So the budget is 300s rather than 30s. Each individual attempt is capped at 30s
+inside the vendored SDK and cannot be configured, but a load that outlives one
+attempt keeps going server-side, so a later retry finds the model ready. The
+retry loop is doing the waiting, not any single request.
+
 ## 5. What the panel says
 
 A pooled model is not a unit any more, so `systemctl is-active` reports it
