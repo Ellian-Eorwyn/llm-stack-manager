@@ -15,6 +15,38 @@ source "${STACK_DIR}/scripts/cross-platform.sh"
 CONFIG_DIR="${STACK_DIR}/config"
 CONFIG_FILE="${CONFIG_DIR}/llm-stack.env"
 EXAMPLE_CONFIG="${CONFIG_DIR}/llm-stack.env.example"
+
+# Feature flags reach this script through the environment. That works when the
+# manager runs it, because systemd gives the manager `EnvironmentFile=` and
+# `setup_engine` hands its own environment down — but `update.sh` runs it from a
+# plain root shell, where none of the config is set. Any flag that decides how
+# units are wired has to come from the file in that case, or "change it in the
+# UI, re-run the installer" quietly regenerates the units for the old setting.
+#
+# Read explicitly and by name rather than sourcing the file: this runs as root
+# against a config the service user can write, and sourcing it would execute
+# whatever it contains. The caller's environment still wins.
+config_flag() {
+    local key="$1" fallback="$2" line
+    if [[ -n "${!key+x}" ]]; then
+        printf '%s' "${!key}"
+        return
+    fi
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        line="$(grep -aE "^[[:space:]]*${key}=" "${CONFIG_FILE}" | tail -n 1 || true)"
+        if [[ -n "${line}" ]]; then
+            line="${line#*=}"
+            line="${line%\"}"; line="${line#\"}"
+            line="${line%\'}"; line="${line#\'}"
+            printf '%s' "${line}"
+            return
+        fi
+    fi
+    printf '%s' "${fallback}"
+}
+
+MODEL_ROUTER_ENABLED="$(config_flag MODEL_ROUTER_ENABLED off)"
+MODEL_ROUTER_MEMBERS="$(config_flag MODEL_ROUTER_MEMBERS "EMBED,OCR,RERANK,TASK")"
 HONCHO_ENV_TEMPLATE="${CONFIG_DIR}/honcho.env.example"
 HONCHO_ENV_FILE="${CONFIG_DIR}/honcho.env"
 SERVICE_USER="$(cp_stat_user "${STACK_DIR}")"
