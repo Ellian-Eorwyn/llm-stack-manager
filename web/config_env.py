@@ -360,6 +360,16 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(core.STACK_DIR / "playwright" / "browsers"))
     normalized.setdefault("PLAYWRIGHT_NODE_ENV", "production")
     normalized.setdefault("PLAYWRIGHT_NGINX_CONF", "/etc/nginx/default.apps-available/playwright.conf")
+    # Read-only state API. Loopback by default: reaching it from another machine
+    # should be something someone chose, not something an upgrade did for them.
+    normalized.setdefault("LLM_API_ENABLED", "on")
+    normalized.setdefault("LLM_API_HOST", "127.0.0.1")
+    normalized.setdefault("LLM_API_PORT", "8078")
+    normalized.setdefault("LLM_API_TOKEN", "")
+    normalized.setdefault("LLM_API_ALLOW_ORIGINS", "")
+    normalized.setdefault("LLM_API_STREAM_INTERVAL", "2")
+    normalized.setdefault("LLM_API_WEBHOOK_URL", "")
+    normalized.setdefault("LLM_API_WEBHOOK_EVENTS", "service_state,alert")
     shared_transcript_model = normalized.get("TRANSCRIPT_LOCAL_MODEL")
     shared_transcript_legacy = normalized.get("TRANSCRIPT_LOCAL_MODEL_SIZE", "large-v3")
     normalized.setdefault("PARAKEET_V3_BACKEND_TYPE", "upstream")

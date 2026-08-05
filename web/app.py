@@ -49,11 +49,13 @@ import core
 import deploy
 import health
 import models
+import public_api
 import scheduling
 import telemetry
 
 from routes import graphiti as graphiti_routes
 from routes import models as model_routes
+from routes import public as public_routes
 from routes import setup as setup_routes
 
 # Bound rather than accessed through the module, because these are tables that
@@ -86,6 +88,10 @@ app = Flask(__name__)
 app.register_blueprint(graphiti_routes.bp)
 app.register_blueprint(model_routes.bp)
 app.register_blueprint(setup_routes.bp)
+# Also served here so `/api/v1/*` works on the manager's own port for local use
+# and testing. The listener that exists for other machines is built in
+# `create_state_api_app()`, and is the one that enforces the token.
+app.register_blueprint(public_routes.bp)
 
 # The tree this process is actually running from, which is not the tree anyone
 # edits: systemd starts the manager from the installed checkout, and that only
@@ -455,7 +461,50 @@ def process_cmdline(pid: int) -> str:
         return ""
 
 
+_CGROUP_UNIT_RE = re.compile(r"/([\w\-.@\\]+)\.service\b")
+
+
+def process_unit(pid: int) -> str:
+    """The systemd unit a PID belongs to, read from its cgroup.
+
+    Matching against each unit's MainPID only ever finds the process systemd
+    started, and the interesting ones are often children: `llama-router` forks a
+    `llama-server` per resident model, and it is those children that hold the
+    VRAM. The cgroup names the unit for every process in it, parent or child,
+    from one file read and no subprocess.
+    """
+    try:
+        text = Path(f"/proc/{int(pid)}/cgroup").read_text(errors="ignore")
+    except (OSError, ValueError):
+        return ""
+    match = _CGROUP_UNIT_RE.search(text)
+    return match.group(1) if match else ""
+
+
+def process_model_args(cmdline: str) -> tuple[str, str]:
+    """(model path, alias) from a llama-server command line.
+
+    The router's children are distinguished only by these: same binary, same
+    unit, different model. Without them every model the router holds would land
+    in one indistinguishable block.
+    """
+    parts = cmdline.split()
+    model = alias = ""
+    for flag, value in zip(parts, parts[1:]):
+        if flag == "--model" and not model:
+            model = value
+        elif flag == "--alias" and not alias:
+            alias = value
+    return model, alias
+
+
+@core.ttl_cache(2.0)
 def service_main_pids() -> dict[int, str]:
+    """PID -> service name for every managed unit.
+
+    Cached because it costs one `systemctl show` per service and is only ever
+    used to label GPU processes, which nothing needs sub-second.
+    """
     mapping = {}
     for svc in SERVICES:
         name = svc.get("name")
@@ -471,17 +520,41 @@ def service_main_pids() -> dict[int, str]:
 
 
 def label_gpu_process(pid: int, process_name: str, service_pids: dict[int, str]) -> str:
+    """Which service a GPU compute process belongs to.
+
+    nvidia-smi reports the executable, which for anything launched through a
+    wrapper is the interpreter — every Python service on the box would otherwise
+    be labelled `python3` and share one indistinguishable block of VRAM. The
+    cmdline is what distinguishes them, so it is read once and used for both the
+    service match and the fallback.
+    """
+    # The cgroup is authoritative and covers children; everything below it is
+    # inference from a command line.
+    unit = process_unit(pid)
+    if unit in {svc.get("name") for svc in SERVICES}:
+        return unit
     if pid in service_pids:
         return service_pids[pid]
-    haystack = f"{process_name} {process_cmdline(pid)}"
-    for svc in SERVICES:
-        name = svc.get("name", "")
-        if name and (name in haystack or f"start-{name}.sh" in haystack):
+    cmdline = process_cmdline(pid)
+    haystack = f"{process_name} {cmdline}"
+
+    # Longest name first, and never mid-word. A plain substring test made every
+    # `glmocr-sdk` process report as `ocr` — "ocr" occurs inside "glmocr" — which
+    # silently moved one service's VRAM onto another's row.
+    names = sorted((svc.get("name", "") for svc in SERVICES), key=len, reverse=True)
+    for name in names:
+        if name and f"start-{name}.sh" in haystack:
             return name
+    for name in names:
+        if name and re.search(rf"(?<![\w-]){re.escape(name)}", haystack):
+            return name
+
     if "llama-server" in haystack:
         return "llama-server"
     if "python" in process_name.lower():
-        return Path(cmdline.split(" ", 1)[0] if cmdline else process_name).name
+        # argv[0] is the interpreter; the script is what identifies the service.
+        script = next((part for part in cmdline.split(" ")[1:] if part.endswith(".py")), "")
+        return Path(script or process_name).name
     return Path(process_name or "process").name
 
 
@@ -511,24 +584,59 @@ def get_gpu_processes(uuid_by_index: dict[int, str]) -> dict[int, list[dict]]:
                 used = int(float(used_text))
             except ValueError:
                 continue
+            model, alias = process_model_args(process_cmdline(pid))
             processes.setdefault(index, []).append({
                 "pid": pid,
                 "name": label_gpu_process(pid, process_name, service_pids),
                 "process_name": Path(process_name).name,
                 "used_memory": used,
+                # Which model this particular process is holding. The router runs
+                # one child per resident model under a single unit, so the unit
+                # alone cannot say what the VRAM is being spent on.
+                "model": model,
+                "alias": alias,
             })
-    except Exception:
-        pass
+    # Narrow on purpose: this used to be a bare `except Exception`, and it spent
+    # an unknown length of time swallowing a NameError that discarded every
+    # attribution here while the payload still looked well-formed.
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        print(f"[llm-manager] GPU process attribution failed: {exc}", flush=True)
     for items in processes.values():
         items.sort(key=lambda item: item.get("used_memory", 0), reverse=True)
     return processes
 
 
+# Order matters: this is the `--query-gpu` field list and the column order it
+# comes back in. The first seven are what the UI has always shown; the rest are
+# for API consumers, and every one of them can be `[N/A]` on some card or driver
+# — an eGPU reports no fan, a datacentre card no power limit — so they parse to
+# None rather than failing the row.
+GPU_QUERY_FIELDS = [
+    'index', 'uuid', 'name', 'memory.used', 'memory.total',
+    'utilization.gpu', 'temperature.gpu',
+    'utilization.memory', 'power.draw', 'enforced.power.limit',
+    'clocks.current.sm', 'clocks.current.memory', 'fan.speed', 'pstate',
+]
+
+
+def _gpu_number(value: str):
+    """A numeric nvidia-smi field, or None for the several ways it says N/A."""
+    text = (value or "").strip()
+    if not text or text.startswith("[") or text.lower() in {"n/a", "unknown"}:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return int(number) if number.is_integer() else round(number, 2)
+
+
+@core.ttl_cache(2.0)
 def get_gpu_info() -> list:
     try:
         r = subprocess.run(
             ['nvidia-smi',
-             '--query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu,temperature.gpu',
+             '--query-gpu=' + ','.join(GPU_QUERY_FIELDS),
              '--format=csv,noheader,nounits'],
             capture_output=True, text=True, timeout=5,
         )
@@ -540,6 +648,10 @@ def get_gpu_info() -> list:
                 index = int(parts[0])
                 mem_used, mem_total = int(parts[3]), int(parts[4])
                 uuid_by_index[index] = parts[1]
+
+                def field(position: int) -> str:
+                    return parts[position] if position < len(parts) else ""
+
                 gpus.append({
                     'index':     index,
                     'uuid':      parts[1],
@@ -549,6 +661,14 @@ def get_gpu_info() -> list:
                     'util':      int(parts[5]),
                     'temp':      int(parts[6]),
                     'mem_pct':   round(100 * mem_used / max(mem_total, 1)),
+                    'mem_free':  max(0, mem_total - mem_used),
+                    'mem_util':      _gpu_number(field(7)),
+                    'power_watts':   _gpu_number(field(8)),
+                    'power_limit_watts': _gpu_number(field(9)),
+                    'clock_sm_mhz':  _gpu_number(field(10)),
+                    'clock_mem_mhz': _gpu_number(field(11)),
+                    'fan_pct':       _gpu_number(field(12)),
+                    'pstate':        field(13) or None,
                     'processes': [],
                 })
         processes = get_gpu_processes(uuid_by_index)
@@ -1487,20 +1607,21 @@ def _model_router_request(env: dict, path: str, payload=None, timeout=15):
         return False, str(exc)
 
 
-@app.route('/api/model-router')
-def api_model_router():
+def model_router_overview(env: dict) -> dict:
     """Which pooled models exist and which are resident right now.
 
     `GET /models` is one of the endpoints llama.cpp documents as never loading
     a model, so the services page can poll this without causing the very
     swapping it is reporting on.
+
+    Separate from the route because the state API reports the same thing, and a
+    second implementation of "which models are loaded" is a second answer to it.
     """
-    env = config_env.read_env()
     if not telemetry.router_enabled(env):
-        return jsonify(ok=True, enabled=False, models=[])
+        return {"ok": True, "enabled": False, "models": []}
     ok, result = _model_router_request(env, "/models")
     if not ok:
-        return jsonify(ok=False, enabled=True, reachable=False, error=result, models=[])
+        return {"ok": False, "enabled": True, "reachable": False, "error": result, "models": []}
     models = []
     for entry in (result.get("data") or []):
         status = entry.get("status") or {}
@@ -1510,8 +1631,13 @@ def api_model_router():
             "path": entry.get("path", ""),
         })
     models.sort(key=lambda m: str(m.get("id") or ""))
-    return jsonify(ok=True, enabled=True, reachable=True, models=models,
-                   max_resident=env.get("MODEL_ROUTER_MAX", "2"))
+    return {"ok": True, "enabled": True, "reachable": True, "models": models,
+            "max_resident": env.get("MODEL_ROUTER_MAX", "2")}
+
+
+@app.route('/api/model-router')
+def api_model_router():
+    return jsonify(model_router_overview(config_env.read_env()))
 
 
 @app.route('/api/model-router/<action>', methods=['POST'])
@@ -2592,8 +2718,87 @@ def apply_default_saved_config_on_startup():
         )
 
 
+# ---------------------------------------------------------------------------
+# The read-only state API
+# ---------------------------------------------------------------------------
+
+# Every entry is a lambda rather than the function itself, so the name is looked
+# up on this module at call time. Binding `get_gpu_info` here would capture the
+# original object and leave `patch.object(manager, 'get_gpu_info', ...)` with
+# nothing to patch — the same trap the module-boundary rule exists to avoid.
+STATE_API_PROVIDERS = public_api.Providers(
+    read_env=lambda: config_env.read_env(),
+    service_status=lambda name: get_service_status(name),
+    service_health=lambda env: service_health_snapshot(env),
+    gpu_info=lambda: get_gpu_info(),
+    context_summary=lambda env: backend_context_summary(env),
+    deployment=lambda: deployment_report(),
+    router_overview=lambda env: model_router_overview(env),
+    services_table=lambda env: patch_service_labels(env),
+)
+
+STATE_API_BROADCASTER = public_routes.configure(STATE_API_PROVIDERS)
+
+
+def create_state_api_app() -> Flask:
+    """The second listener: the read-only blueprint and nothing else.
+
+    A separate Flask app rather than a prefix or a filter on the existing one,
+    because the property worth having is that the routes which stop services and
+    read the env file are *not registered* on the port other machines can reach.
+    A check that has to be right on every route is a check that will eventually
+    be missed on one; an app that never learned those routes cannot serve them.
+    """
+    # `static_folder=None` because a default Flask app serves `web/static`, and
+    # the UI's scripts have no business being on a port whose entire purpose is
+    # that it carries less than the manager does.
+    state_app = Flask(__name__, static_folder=None)
+    state_app.config['PUBLIC_API_ENFORCE_TOKEN'] = True
+    state_app.register_blueprint(public_routes.bp)
+    return state_app
+
+
+def start_state_api(settings: dict) -> None:
+    """Serve the state API on its own port, on a daemon thread.
+
+    Same process as the manager on purpose: the journal tailers, the health
+    prober and the GPU cache are already running here, so a client costs a
+    dict serialisation rather than another `nvidia-smi`.
+    """
+    if not settings.get('enabled'):
+        print('[llm-api] LLM_API_ENABLED is off; the state API is not listening.', flush=True)
+        return
+
+    from werkzeug.serving import make_server
+
+    host, port = settings['host'], settings['port']
+    try:
+        server = make_server(host, port, create_state_api_app(), threaded=True)
+    # `SystemExit` is not paranoia: werkzeug prints its own message and calls
+    # `sys.exit(1)` when the address is in use, which would take the manager's
+    # UI down over a port collision on a secondary feature. This is the more
+    # important of the two servers and must survive the other failing to bind.
+    except (OSError, SystemExit) as exc:
+        detail = exc if isinstance(exc, OSError) else 'address already in use'
+        print(f'[llm-api] Could not bind {host}:{port} ({detail}); '
+              f'the manager is unaffected and the state API is not listening.', flush=True)
+        return
+
+    threading.Thread(target=server.serve_forever, name='llm-api', daemon=True).start()
+    print(f'[llm-api] Read-only state API on http://{host}:{port}/api/v1/snapshot', flush=True)
+    if settings.get('token'):
+        print('[llm-api] A token is set; requests must send Authorization: Bearer <token>.', flush=True)
+    if settings.get('bind_warning'):
+        print(f'[llm-api] WARNING: {settings["bind_warning"]}', flush=True)
+    if settings.get('webhook_url'):
+        # The broadcaster only runs while something needs it, and a webhook is
+        # a reason to run with no client connected.
+        STATE_API_BROADCASTER.ensure_running()
+
+
 if __name__ == '__main__':
     apply_default_saved_config_on_startup()
+    start_state_api(public_routes.api_settings())
     port = int(os.environ.get('LLM_MANAGER_PORT', 8080))
     host = os.environ.get('LLM_MANAGER_HOST', '0.0.0.0')
     print(f'[llm-manager] Serving on http://{host}:{port}', flush=True)

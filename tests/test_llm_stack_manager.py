@@ -1396,6 +1396,20 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/tts/activate/<backend_id>", ("POST",), "api_tts_activate"),
         ("/api/tts/overview", ("GET",), "api_tts_overview"),
         ("/api/tts/test", ("POST",), "api_tts_test"),
+        # The read-only state API. Also registered here so `/api/v1/*` works on
+        # the manager's own port; the listener other machines reach is built by
+        # `create_state_api_app()` and carries these and nothing else.
+        ("/api/v1/alerts", ("GET",), "api_v1_alerts"),
+        ("/api/v1/backends", ("GET",), "api_v1_backends"),
+        ("/api/v1/events", ("GET",), "api_v1_events"),
+        ("/api/v1/gpu", ("GET",), "api_v1_gpu"),
+        ("/api/v1/health", ("GET",), "api_v1_health"),
+        ("/api/v1/logs", ("GET",), "api_v1_logs"),
+        ("/api/v1/logs/raw", ("GET",), "api_v1_logs_raw"),
+        ("/api/v1/metrics", ("GET",), "api_v1_metrics"),
+        ("/api/v1/schema", ("GET",), "api_v1_schema"),
+        ("/api/v1/services", ("GET",), "api_v1_services"),
+        ("/api/v1/snapshot", ("GET",), "api_v1_snapshot"),
         ("/static/<path:filename>", ("GET",), "static"),
     }
 

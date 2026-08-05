@@ -211,6 +211,31 @@ Callers are unaffected. nginx fronts 8005/8006/8007/8009 onto the router, which 
 
 `MODEL_ROUTER_MAX` is a count, not a memory budget: the router evicts least-recently-used but does not know how large the survivors are. Size it against measured free VRAM, or use `1` for strict one-at-a-time. Off by default; turning it off and re-running the installer restores the four units. See [docs/model-router.md](docs/model-router.md).
 
+## Read-only state API
+
+Other applications can read live stack state over HTTP: GPU utilisation, VRAM
+per model per GPU, context used across slots, service health, parsed backend log
+events, and coded alerts. JSON, server-sent events, Prometheus and webhooks, all
+from one snapshot.
+
+It listens on **port 8078** by default (`LLM_API_PORT`), bound to loopback until
+you point `LLM_API_HOST` at the LAN or a Tailscale address. It is a separate
+listener from the manager on purpose: port 8077 is unauthenticated, runs as root,
+and serves an endpoint that returns every API key in your env file, so it is not
+something to expose. The routes that write anything are not registered on 8078
+at all, which is what makes it safe to reach from another machine.
+`LLM_API_TOKEN` is optional and off by default.
+
+```bash
+curl -s localhost:8078/api/v1/schema   | jq .          # what it serves
+curl -s localhost:8078/api/v1/gpu      | jq '.gpus[] | {index, util, models}'
+curl -s localhost:8078/api/v1/alerts   | jq '.alerts[] | {level, code, text}'
+curl -N  localhost:8078/api/v1/events                  # live
+curl -s localhost:8078/api/v1/metrics                  # Prometheus scrape
+```
+
+See [docs/local-api.md](docs/local-api.md).
+
 ## Testing
 
 ```bash

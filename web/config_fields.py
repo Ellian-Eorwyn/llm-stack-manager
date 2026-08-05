@@ -151,6 +151,7 @@ CORE_CONFIG_SECTIONS = {
     "SearXNG",
     "Playwright",
     "Ports",
+    "State API",
 }
 
 CODE_TO_CHAT_MIRRORS = {
@@ -653,6 +654,17 @@ CONFIG_FIELDS = [
     {"section": "Ports",       "key": "CHAT_BACKEND_PORT",          "label": "Backend Port",         "type": "number"},
     {"section": "Ports",       "key": "CHAT_BACKEND_HOST",          "label": "Backend Host",         "type": "text"},
     {"section": "Ports",       "key": "LISTEN_HOST",                "label": "Listen Host",          "type": "select", "options": ["0.0.0.0", "127.0.0.1"]},
+    # Read-only state API. Its own section rather than more Ports entries,
+    # because the host and token together decide who can read the stack's state
+    # and that is a decision worth presenting as one.
+    {"section": "State API",   "key": "LLM_API_ENABLED",            "label": "Enable State API",     "type": "select", "options": ["on", "off"], "hint": "Read-only live state for other applications: GPU, VRAM per model, context, health. Takes effect when the manager restarts"},
+    {"section": "State API",   "key": "LLM_API_HOST",               "label": "Listen Host",          "type": "text",   "hint": "127.0.0.1 keeps it on this box; 0.0.0.0 for the LAN; a Tailscale IP for the tailnet only. Takes effect when the manager restarts"},
+    {"section": "State API",   "key": "LLM_API_PORT",               "label": "Port",                 "type": "number", "hint": "Separate from the manager's own port, which is not safe to expose. Takes effect when the manager restarts"},
+    {"section": "State API",   "key": "LLM_API_TOKEN",              "label": "Access Token",         "type": "text",   "hint": "Blank means no authentication. Set it and requests need Authorization: Bearer <token>"},
+    {"section": "State API",   "key": "LLM_API_ALLOW_ORIGINS",      "label": "CORS Origins",         "type": "text",   "hint": "Comma-separated origins allowed to read this from a browser page; blank sends no CORS headers"},
+    {"section": "State API",   "key": "LLM_API_STREAM_INTERVAL",    "label": "Stream Interval",      "type": "number", "hint": "Seconds between event-stream collections (1-60). One collector serves every connected client"},
+    {"section": "State API",   "key": "LLM_API_WEBHOOK_URL",        "label": "Webhook URL",          "type": "text",   "hint": "Optional: POST service-state and alert transitions here instead of polling"},
+    {"section": "State API",   "key": "LLM_API_WEBHOOK_EVENTS",     "label": "Webhook Events",       "type": "text",   "hint": "Comma-separated: service_state, alert"},
     # pi-forge integration. Slot scheduling is coordinated through lease files
     # in pi-forge's own agent directory; the manager reads them to verify the
     # contract, and only writes there when explicitly allowed to.

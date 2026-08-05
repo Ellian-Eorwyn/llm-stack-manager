@@ -24,9 +24,12 @@ manager runs from `/mnt/LLMs/llamacpp/llm-stack-git` on this box and from a
 developer checkout in tests, with no setting to keep in sync.
 """
 
+import functools
 import json
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib import request as urlrequest
@@ -54,6 +57,58 @@ TTS_CONFIG_FILE    = STACK_DIR / "config" / "tts-backends.json"
 TTS_STATE_FILE     = STACK_DIR / "config" / "tts-state.json"
 LOGS_DIR           = STACK_DIR / "logs"
 GRAPHITI_EXPORTS_DIR = STACK_DIR / "exports" / "graphiti"
+
+# ---------------------------------------------------------------------------
+# Short-lived memoisation
+# ---------------------------------------------------------------------------
+
+def ttl_cache(seconds: float):
+    """Memoise a zero-argument function for `seconds`, across threads.
+
+    The status poll asks the same expensive questions several times per request
+    — `nvidia-smi` runs twice and `systemctl show` once per unit — and now has
+    external API clients polling alongside it. A window shorter than the UI's
+    own five-second interval keeps every reading fresh enough to act on while
+    collapsing the duplicates within one poll, and the duplicates are the whole
+    cost: two clients a second apart still see two real samples.
+
+    Deliberately zero-argument. A cache keyed on a config dict would either need
+    that dict to be hashable or would have to ignore it, and ignoring an
+    argument is how a cache comes to answer a question nobody asked.
+
+    Set `CACHE_TTL_SECONDS = 0` or call `.cache_clear()` to disable it in tests.
+    """
+    def decorate(func):
+        lock = threading.Lock()
+        state: dict = {"at": 0.0, "value": None, "filled": False}
+
+        @functools.wraps(func)
+        def wrapper():
+            ttl = CACHE_TTL_SECONDS if CACHE_TTL_SECONDS is not None else seconds
+            with lock:
+                if state["filled"] and ttl > 0 and (time.monotonic() - state["at"]) < ttl:
+                    return state["value"]
+            # Computed outside the lock: these call subprocesses, and holding a
+            # lock across one would serialise every poller behind the slowest.
+            value = func()
+            with lock:
+                state.update(at=time.monotonic(), value=value, filled=True)
+            return value
+
+        def cache_clear():
+            with lock:
+                state.update(at=0.0, value=None, filled=False)
+
+        wrapper.cache_clear = cache_clear
+        wrapper.__wrapped__ = func
+        return wrapper
+    return decorate
+
+
+# Overrides every `ttl_cache` window at once. `None` means each decorator keeps
+# the interval it asked for; tests set this to 0 to make caching a no-op.
+CACHE_TTL_SECONDS: float | None = None
+
 
 # ---------------------------------------------------------------------------
 # systemd
