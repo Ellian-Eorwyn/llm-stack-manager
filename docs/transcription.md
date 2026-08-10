@@ -26,6 +26,35 @@ bash scripts/install-transcribe.sh --engines nemo   # + Parakeet and Canary
 bash scripts/install-transcribe.sh --engines nemo,hf
 ```
 
+Or from the manager: the Transcription page has an **Install / Update** button
+that runs the same script as a polled job, because a torch install takes minutes
+and no HTTP request should sit through it.
+
+### Python version
+
+`torch` publishes wheels for **3.9–3.13**, and faster-whisper does not need
+torch at all. A host whose `python3` is newer than that — 3.14 here — runs
+Whisper perfectly and then fails to install NeMo with nothing more useful than
+`No matching distribution found for torch`.
+
+The installer therefore picks its own interpreter when `nemo` or `hf` are
+requested, preferring `python3.12`. If a venv already exists on an interpreter
+torch cannot use, it says so and stops rather than failing three minutes into a
+pip run; `--recreate` rebuilds it on a compatible one. `TRANSCRIPT_PYTHON`
+overrides the choice.
+
+Because the engines share one venv, adding NeMo to a 3.14 faster-whisper install
+means rebuilding both:
+
+```bash
+bash scripts/install-transcribe.sh --engines faster-whisper,nemo --recreate
+```
+
+torch comes from PyPI, whose wheels bundle their own CUDA runtime and work with
+any recent driver. Set `TRANSCRIPT_TORCH_INDEX_URL` only to force a specific
+build — hardcoding a `/whl/cuXXX` index silently pins you to older and older
+torch as it ages.
+
 Engines import lazily. A runtime that is not installed costs nothing at startup
 and answers its first request with `503 engine_unavailable` naming the flag that
 would install it — it cannot take the service down.

@@ -494,7 +494,55 @@ class AsyncThresholdTests(_StubMixin, unittest.TestCase):
         self.assertEqual(self.client.get("/jobs/nope").status_code, 404)
 
 
+class DurationFallbackTests(_StubMixin, unittest.TestCase):
+    """An engine that reports no duration must not report zero.
+
+    NeMo returns text and, unless timestamps are requested, no timeline at all.
+    Chaining the fallback off the last segment's end then reports a real
+    transcription as 0.0 seconds of audio at a realtime factor of 0 — which is
+    exactly the number someone benchmarking the engine would read.
+    """
+
+    class SilentEngine(StubEngine):
+        def transcribe(self, path, req):
+            return {"segments": [{"id": 0, "start": 0.0, "end": 0.0, "text": "hello",
+                                  "speaker": None, "avg_logprob": 0.0, "no_speech_prob": 0.0,
+                                  "compression_ratio": 0.0, "words": []}],
+                    "language": "", "language_probability": 0.0, "duration": 0.0}
+
+    def setUp(self):
+        super().setUp()
+        tsrv.ENGINES["stub"] = self.SilentEngine
+        self._real_probe = tsrv.probe_duration
+        tsrv.probe_duration = lambda path: 42.0
+        self.addCleanup(setattr, tsrv, "probe_duration", self._real_probe)
+
+    def test_duration_falls_back_to_the_probe(self):
+        body = self._post().get_json()
+        self.assertEqual(body["duration"], 42.0)
+        self.assertEqual(body["timings"]["audio_seconds"], 42.0)
+
+    def test_realtime_factor_is_meaningful(self):
+        self.assertGreater(self._post().get_json()["timings"]["realtime_factor"], 0)
+
+
 class ProbeDurationTests(unittest.TestCase):
+    def test_pyav_answers_when_ffprobe_is_off_the_path(self):
+        """The unit's PATH is systemd's, so a brew/opt ffmpeg is invisible to
+        it. PyAV is a library in the venv and needs no PATH at all."""
+        import shutil as _shutil
+        real_which = _shutil.which
+        tsrv.shutil.which = lambda name: None      # simulate the service's PATH
+        self.addCleanup(setattr, tsrv.shutil, "which", real_which)
+        fixture = pathlib.Path(__file__).resolve().parents[1] / "deps/llama.cpp/tools/mtmd/test-2.mp3"
+        if not fixture.exists():
+            self.skipTest("llama.cpp audio fixture not present")
+        try:
+            import av  # noqa: F401
+        except Exception:
+            self.skipTest("PyAV not installed in this environment")
+        self.assertAlmostEqual(tsrv.probe_duration(str(fixture)), 17.4, delta=0.5)
+
     def test_an_unreadable_file_reports_unknown_rather_than_guessing(self):
         """Unknown runs synchronously, which is what the caller asked for."""
         self.assertIsNone(tsrv.probe_duration("/nonexistent/file.wav"))

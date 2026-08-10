@@ -1104,6 +1104,11 @@ def create_app(config_path: str | None = None, cfg: dict | None = None) -> Flask
         text = " ".join(seg["text"] for seg in segments if seg["text"]).strip()
         words = [w for seg in segments for w in (seg.get("words") or [])]
         duration = float(raw.get("duration") or (segments[-1]["end"] if segments else 0.0))
+        # Not every engine reports one, and the segment-end fallback is zero
+        # when timestamps were not requested — which would report a real
+        # transcription as 0.0 seconds of audio at a realtime factor of 0.
+        if duration <= 0:
+            duration = probe_duration(path) or 0.0
         total_ms = (time.monotonic() - started) * 1000
         return {
             "ok": True,
