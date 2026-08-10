@@ -47,6 +47,7 @@ config_flag() {
 
 MODEL_ROUTER_ENABLED="$(config_flag MODEL_ROUTER_ENABLED off)"
 MODEL_ROUTER_MEMBERS="$(config_flag MODEL_ROUTER_MEMBERS "EMBED,OCR,RERANK,TASK")"
+TRANSCRIPT_ENABLED="$(config_flag TRANSCRIPT_ENABLED off)"
 HONCHO_ENV_TEMPLATE="${CONFIG_DIR}/honcho.env.example"
 HONCHO_ENV_FILE="${CONFIG_DIR}/honcho.env"
 SERVICE_USER="$(cp_stat_user "${STACK_DIR}")"
@@ -431,6 +432,7 @@ UNIT
         remove_unselected_units glmocr-sdk glmocr-sdk
         remove_unselected_units playwright playwright-server
         remove_unselected_units honcho honcho-api honcho-deriver
+        remove_unselected_units transcribe transcript-backend
         for unit in think nothink chat-backend chat-backend-moe; do
             systemctl disable --now "${unit}" 2>/dev/null || true
             [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
@@ -456,6 +458,9 @@ UNIT
     setup_has_component task && install_unit "task" "LLM Task Model - llama-server" "start-task.sh" 120
     setup_has_component ocr && install_unit "ocr" "LLM OCR GLM-OCR Backend - llama-server" "start-ocr.sh" 120
     setup_has_component glmocr-sdk && install_unit "glmocr-sdk" "LLM OCR GLM-OCR SDK Parser" "start-glmocr-sdk.sh" 300
+    # Holds no VRAM until its first request — the model is loaded on demand and
+    # released when idle — so installing the unit costs nothing while it is off.
+    setup_has_component transcribe && install_unit "transcript-backend" "LLM Transcription Sidecar - speech to text" "start-transcribe.sh" 120
     # One llama-server owning embed/ocr/rank/task on demand. The member units
     # above stay installed but stopped, so turning the flag off and starting
     # them is the whole rollback.
@@ -516,6 +521,20 @@ UNIT
         cp_sed_inplace "/^After=/a Wants=${OCR_UPSTREAM_UNIT}" /etc/systemd/system/glmocr-sdk.service
         cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/glmocr-sdk.service
     fi
+    # Same reason as the SDK above, and it is not optional here: the launcher
+    # exits 0 when TRANSCRIPT_ENABLED is off, which is the contract
+    # `health.ENABLED_FLAGS` relies on to call a switched-off service "not a
+    # fault". With Restart=always systemd reads that clean exit as something to
+    # retry, and a disabled sidecar bounces every RestartSec forever.
+    if [[ -f /etc/systemd/system/transcript-backend.service ]]; then
+        cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/transcript-backend.service
+    fi
+    # The router's launcher has the same clean exit when MODEL_ROUTER_ENABLED is
+    # off, and so had the same latent bounce loop — dormant only while the
+    # router happens to be on.
+    if [[ -f /etc/systemd/system/llama-router.service ]]; then
+        cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/llama-router.service
+    fi
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         cp_sed_inplace "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}|" /etc/systemd/system/honcho-api.service
         cp_sed_inplace "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}" /etc/systemd/system/honcho-api.service
@@ -542,6 +561,13 @@ UNIT
         DEFAULT_BOOT_SERVICES+=(llama-router)
     else
         NON_DEFAULT_SERVICES+=(llama-router)
+    fi
+    if [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]]; then
+        # Safe to boot: it imports no ASR runtime and loads no model until the
+        # first request, so an idle sidecar costs a socket and nothing else.
+        DEFAULT_BOOT_SERVICES+=(transcript-backend)
+    else
+        NON_DEFAULT_SERVICES+=(transcript-backend)
     fi
     LEGACY_SERVICES=(
         qwen-think
@@ -620,6 +646,9 @@ elif is_mac; then
     fi
     install_mac_service "glmocr-sdk"         "LLM OCR GLM-OCR SDK Parser"                          "start-glmocr-sdk.sh" \
         "${_ocr_upstream}"
+    # No upstream: only the optional `router` engine talks to llama-router, and
+    # the local runtimes need nothing at all. See the note in web/health.py.
+    install_mac_service "transcript-backend" "LLM Transcription Sidecar - speech to text"          "start-transcribe.sh"
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         install_mac_service "honcho-api"     "Local Honcho Memory API"                             "start-honcho-api.sh" \
             "chat-proxy ${_embed_upstream}"

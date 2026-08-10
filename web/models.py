@@ -45,33 +45,22 @@ from urllib.parse import quote, unquote, urlparse
 import config_env
 import core
 import setup_engine
-from config_fields import BUILTIN_CHAT_VARIANT_BY_ID
+from config_fields import (
+    BUILTIN_CHAT_VARIANT_BY_ID,
+    TRANSCRIPTION_ENGINE_BY_ID,
+    TRANSCRIPTION_ENGINES,
+    WHISPER_MODEL_PRESETS,
+)
 
 
 HF_ALLOWED_HOSTS = {"huggingface.co", "www.huggingface.co", "hf.co"}
 HF_DOWNLOAD_JOBS: dict[str, dict] = {}
 HF_DOWNLOAD_JOBS_LOCK = threading.Lock()
-TRANSCRIPTION_MODEL_PRESETS = [
-    "tiny",
-    "tiny.en",
-    "base",
-    "base.en",
-    "small",
-    "small.en",
-    "medium",
-    "medium.en",
-    "large-v1",
-    "large-v2",
-    "large-v3",
-    "distil-large-v2",
-    "distil-large-v3",
-    "turbo",
-]
-TRANSCRIPTION_ENGINES = [
-    {"id": "parakeet-v3", "label": "Parakeet v3", "env_prefix": "PARAKEET_V3"},
-    {"id": "whisperkit-large-v3", "label": "WhisperKit Large v3", "env_prefix": "WHISPERKIT_LARGE_V3"},
-]
-TRANSCRIPTION_ENGINE_BY_ID = {item["id"]: item for item in TRANSCRIPTION_ENGINES}
+# The engine registry lives in `config_fields` because `config_env` has to loop
+# it to set per-engine defaults and cannot import this module — `models` imports
+# `config_env`, so the dependency only runs one way. Re-exported here because
+# this is where callers have always found it.
+TRANSCRIPTION_MODEL_PRESETS = WHISPER_MODEL_PRESETS
 
 BUILTIN_CUSTOM_MODEL_ARG_PRESETS = {
     "qwen3.6": [
@@ -173,8 +162,19 @@ def validate_transcription_engine_id(engine_id: str) -> dict:
 
 
 def transcription_engine_models_dir(engine_id: str) -> Path:
-    validate_transcription_engine_id(engine_id)
-    return core.TRANSCRIPTION_MODELS_DIR / engine_id
+    """Where an engine's downloaded weights live.
+
+    Falls back to a `legacy_ids` directory when the canonical one does not exist
+    yet, so renaming an engine does not orphan models already on disk.
+    """
+    engine = validate_transcription_engine_id(engine_id)
+    canonical = core.TRANSCRIPTION_MODELS_DIR / engine_id
+    if not canonical.is_dir():
+        for legacy_id in engine.get("legacy_ids", []):
+            legacy = core.TRANSCRIPTION_MODELS_DIR / legacy_id
+            if legacy.is_dir():
+                return legacy
+    return canonical
 
 
 def transcription_model_storage_dir(engine_id: str, repo_ref: dict) -> Path:
@@ -187,15 +187,17 @@ def transcription_model_storage_dir(engine_id: str, repo_ref: dict) -> Path:
 
 
 def transcription_model_dir_info(path: Path) -> dict | None:
+    """Identify which runtime can load the weights in `path`, if any.
+
+    Order matters. A CTranslate2 export and a stock transformers checkpoint both
+    carry `config.json`, `tokenizer.json` and `preprocessor_config.json`, so
+    those markers cannot tell them apart — only CTranslate2 writes `model.bin`,
+    and only transformers writes safetensors/`pytorch_model.bin`. Testing the
+    ambiguous markers first is what would file every downloaded HF model as
+    faster-whisper and then fail to load it.
+    """
     if not path.is_dir():
         return None
-    ctranslate2_markers = ("model.bin", "config.json", "tokenizer.json", "preprocessor_config.json")
-    if any((path / name).exists() for name in ctranslate2_markers):
-        return {
-            "runtime": "faster-whisper",
-            "format": "ctranslate2",
-            "supported_local": True,
-        }
     nemo_files = sorted(path.glob("*.nemo"))
     if nemo_files:
         return {
@@ -203,6 +205,21 @@ def transcription_model_dir_info(path: Path) -> dict | None:
             "format": "nemo",
             "supported_local": True,
             "primary_file": nemo_files[0].name,
+        }
+    if (path / "model.bin").exists():
+        return {
+            "runtime": "faster-whisper",
+            "format": "ctranslate2",
+            "supported_local": True,
+        }
+    hf_weight_markers = ("model.safetensors", "pytorch_model.bin", "model.safetensors.index.json")
+    if (path / "config.json").exists() and (
+        any((path / name).exists() for name in hf_weight_markers) or any(path.glob("*.safetensors"))
+    ):
+        return {
+            "runtime": "hf",
+            "format": "transformers",
+            "supported_local": True,
         }
     return None
 
@@ -228,7 +245,9 @@ def list_transcription_models(engine_id: str) -> list[dict]:
     seen_values = set()
     base_dir = transcription_engine_models_dir(engine_id)
 
-    for preset in TRANSCRIPTION_MODEL_PRESETS:
+    # Per-engine rather than one global list: NeMo names full repo ids and the
+    # router names a served alias, so Whisper's size names are meaningless there.
+    for preset in engine.get("presets", []):
         value = format_transcription_model_value("preset", preset)
         items.append({
             "value": value,
@@ -282,12 +301,27 @@ def transcript_engine_capabilities(env: dict | None = None) -> dict[str, dict[st
                 {"runtime": "nemo", "format": "nemo", "supported_local": True, "primary_file": local_path.name}
                 if local_path.is_file() and local_path.suffix.lower() == ".nemo" else None
             )
+        runtime = engine.get("runtime", "")
         result[engine["id"]] = {
+            "id": engine["id"],
+            "label": engine["label"],
+            "runtime": runtime,
+            "install_extra": engine.get("install_extra", ""),
+            "backend_type": backend_type,
             "supports_streaming": (
                 env.get(f"{prefix}_SUPPORTS_STREAMING", "").strip().lower() in {"1", "true", "yes", "on"}
-                or (engine["id"] == "parakeet-v3" and backend_type == "local" and bool(local_info and local_info.get("runtime") == "nemo"))
+                # Keyed on the runtime, not the engine id: adding a second NeMo
+                # engine should inherit this rather than need the test extended.
+                or (runtime == "nemo" and backend_type == "local"
+                    and bool(local_info and local_info.get("runtime") == "nemo"))
             ),
             "supports_speaker_detection": (env.get(f"{prefix}_SUPPORTS_SPEAKER_DETECTION", "off").strip().lower() in {"1", "true", "yes", "on"}),
+            # The router forwards to llama.cpp, whose transcription endpoint
+            # returns prose with no timeline at all — see docs/transcription.md.
+            "supports_word_timestamps": runtime in {"faster-whisper", "nemo", "hf"},
+            "supports_segments": runtime != "router",
+            "supports_translate": runtime in {"faster-whisper", "hf"} or engine["id"] == "canary-qwen",
+            "supports_diarization": False,
         }
     return result
 

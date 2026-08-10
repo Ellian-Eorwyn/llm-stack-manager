@@ -30,8 +30,10 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib import error as urlerror
 from urllib import request as urlrequest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -338,18 +340,54 @@ def load_json_file(path: Path, default):
 # Talking to the services, and parsing what they say back
 # ---------------------------------------------------------------------------
 
-def http_json(url: str, method: str = "GET", payload=None, timeout: int = 30):
+def http_json(url: str, method: str = "GET", payload=None, timeout: int = 30, headers=None):
     data = None
-    headers = {}
+    request_headers = dict(headers or {})
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = urlrequest.Request(url, data=data, method=method, headers=headers)
+        request_headers["Content-Type"] = "application/json"
+    req = urlrequest.Request(url, data=data, method=method, headers=request_headers)
     with urlrequest.urlopen(req, timeout=timeout) as resp:
         body = resp.read()
         if not body:
             return {}
         return json.loads(body.decode("utf-8"))
+
+
+def http_multipart(url: str, fields: dict | None = None, files: dict | None = None,
+                   timeout: int = 300, headers=None) -> tuple[int, str]:
+    """POST multipart/form-data and return (status, body).
+
+    Hand-rolled because the stack has no `requests` in the manager's own
+    environment — `web/requirements.txt` is one line, and keeping it that way is
+    deliberate. `files` maps field name to (filename, bytes, content_type).
+
+    Returns the status rather than raising on 4xx/5xx: the caller is proxying
+    another service's answer, and that service's error body is the useful part.
+    """
+    boundary = f"----llmstack{uuid.uuid4().hex}"
+    body = bytearray()
+    for name, value in (fields or {}).items():
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        body += f"{value}\r\n".encode()
+    for name, (filename, content, content_type) in (files or {}).items():
+        body += f"--{boundary}\r\n".encode()
+        body += (f'Content-Disposition: form-data; name="{name}"; '
+                 f'filename="{filename}"\r\n').encode()
+        body += f"Content-Type: {content_type}\r\n\r\n".encode()
+        body += content if isinstance(content, bytes) else str(content).encode()
+        body += b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+
+    request_headers = dict(headers or {})
+    request_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    req = urlrequest.Request(url, data=bytes(body), method="POST", headers=request_headers)
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urlerror.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
 
 
 def http_bytes(url: str, method: str = "GET", payload=None, timeout: int = 300):

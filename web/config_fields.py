@@ -72,6 +72,63 @@ BUILTIN_CHAT_VARIANTS = [
 BUILTIN_CHAT_VARIANT_IDS = {item["id"] for item in BUILTIN_CHAT_VARIANTS}
 BUILTIN_CHAT_VARIANT_BY_ID = {item["id"]: item for item in BUILTIN_CHAT_VARIANTS}
 BUILTIN_CHAT_VARIANT_BY_SERVICE = {item["service"]: item for item in BUILTIN_CHAT_VARIANTS}
+
+# Whisper's own model names, used by any engine whose runtime resolves them.
+# `faster-whisper` downloads these from its own cache by bare name; the NeMo and
+# transformers engines name full repo ids instead, which is why the presets are
+# per-engine below rather than one global list.
+WHISPER_MODEL_PRESETS = [
+    "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+    "medium", "medium.en", "large-v1", "large-v2", "large-v3",
+    "distil-large-v2", "distil-large-v3", "turbo",
+]
+
+# The transcription engines the sidecar can host.
+#
+# An engine is a *runtime* plus the config slot that selects a model for it —
+# not a model. The two names this replaced conflated the two: `whisperkit` is an
+# Apple-only runtime this host cannot run, and `large-v3` is a model, so the slot
+# could never hold turbo or distil without lying about its own name. Naming the
+# runtime and letting the model be config is what lets one slot serve every
+# Whisper variant, and what makes `hf-asr` a usable "anything I download" slot.
+#
+# `runtime` is what the sidecar dispatches on and what decides which pip extra
+# has to be installed; `install_extra` is the `--engines` token for
+# scripts/install-transcribe.sh. `legacy_ids` keeps already-downloaded weights
+# reachable after the rename — see `models.transcription_engine_models_dir`.
+TRANSCRIPTION_ENGINES = [
+    {
+        "id": "faster-whisper", "label": "Faster-Whisper", "env_prefix": "FASTER_WHISPER",
+        "runtime": "faster-whisper", "install_extra": "faster-whisper", "default_install": True,
+        "presets": list(WHISPER_MODEL_PRESETS), "legacy_ids": ["whisperkit-large-v3"],
+    },
+    {
+        "id": "parakeet-v3", "label": "Parakeet TDT 0.6B v3 (NeMo)", "env_prefix": "PARAKEET_V3",
+        "runtime": "nemo", "install_extra": "nemo", "default_install": False,
+        "presets": ["nvidia/parakeet-tdt-0.6b-v3"], "legacy_ids": [],
+    },
+    {
+        "id": "canary-qwen", "label": "Canary-Qwen 2.5B (NeMo)", "env_prefix": "CANARY_QWEN",
+        "runtime": "nemo", "install_extra": "nemo", "default_install": False,
+        "presets": ["nvidia/canary-qwen-2.5b"], "legacy_ids": [],
+    },
+    {
+        "id": "hf-asr", "label": "HF Transformers (any ASR model)", "env_prefix": "HF_ASR",
+        "runtime": "hf", "install_extra": "hf", "default_install": False,
+        "presets": [], "legacy_ids": [],
+    },
+    # Holds no weights of its own: it forwards to llama-router, where an
+    # audio-capable GGUF is pooled with embed/ocr/rank/task and evicted by the
+    # same LRU. The only engine that genuinely shares the router's model space.
+    {
+        "id": "router", "label": "Audio LLM via Model Router", "env_prefix": "ROUTER_ASR",
+        "runtime": "router", "install_extra": "", "default_install": True,
+        "presets": [], "legacy_ids": [],
+    },
+]
+TRANSCRIPTION_ENGINE_IDS = [item["id"] for item in TRANSCRIPTION_ENGINES]
+TRANSCRIPTION_ENGINE_BY_ID = {item["id"]: item for item in TRANSCRIPTION_ENGINES}
+
 LEGACY_ENV_KEY_MAP = {
     "CHAT_MODEL_27B_PATH": "CHAT_PRIMARY_MODEL_PATH",
     "CHAT_MMPROJ_27B_PATH": "CHAT_PRIMARY_MMPROJ_PATH",
@@ -89,6 +146,18 @@ LEGACY_ENV_KEY_MAP = {
     "CHAT_MOE_MODEL_PATH": "CHAT_SECONDARY_MODEL_PATH",
     "CHAT_MOE_MMPROJ_PATH": "CHAT_SECONDARY_MMPROJ_PATH",
     "CHAT_MOE_CTX_SIZE": "CHAT_SECONDARY_CTX_SIZE",
+    "WHISPERKIT_LARGE_V3_BACKEND_TYPE": "FASTER_WHISPER_BACKEND_TYPE",
+    "WHISPERKIT_LARGE_V3_LOCAL_MODEL": "FASTER_WHISPER_LOCAL_MODEL",
+    "WHISPERKIT_LARGE_V3_UPSTREAM_URL": "FASTER_WHISPER_UPSTREAM_URL",
+    "WHISPERKIT_LARGE_V3_MODEL": "FASTER_WHISPER_MODEL",
+    "WHISPERKIT_LARGE_V3_API_KEY": "FASTER_WHISPER_API_KEY",
+    "WHISPERKIT_LARGE_V3_TRANSCRIBE_PATH": "FASTER_WHISPER_TRANSCRIBE_PATH",
+    "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_ENABLED": "FASTER_WHISPER_STREAM_OUTPUT_ENABLED",
+    "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_TARGET": "FASTER_WHISPER_STREAM_OUTPUT_TARGET",
+    "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_FORMAT": "FASTER_WHISPER_STREAM_OUTPUT_FORMAT",
+    "WHISPERKIT_LARGE_V3_SPEAKER_DETECTION": "FASTER_WHISPER_SPEAKER_DETECTION",
+    "WHISPERKIT_LARGE_V3_SPEAKER_MODE": "FASTER_WHISPER_SPEAKER_MODE",
+    "WHISPERKIT_LARGE_V3_SPEAKER_COUNT": "FASTER_WHISPER_SPEAKER_COUNT",
 }
 NEW_ENV_KEY_LEGACY_ALIASES = defaultdict(list)
 for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
@@ -130,6 +199,11 @@ DEPRECATED_ENV_KEY_NOTES = {
     "CHAT_MODEL_35B_PATH": "named for a model size that the slot no longer implies",
     "CHAT_MMPROJ_35B_PATH": "named for a model size that the slot no longer implies",
     "CHAT_35B_CTX_SIZE": "named for a model size that the slot no longer implies",
+    **{
+        _legacy: "named for WhisperKit, an Apple-only runtime this host does not run"
+        for _legacy in LEGACY_ENV_KEY_MAP
+        if _legacy.startswith("WHISPERKIT_")
+    },
 }
 DEFAULT_DEPRECATION_NOTE = "named for the model architecture a slot happened to hold"
 
@@ -150,6 +224,7 @@ CORE_CONFIG_SECTIONS = {
     "Model Router",
     "SearXNG",
     "Playwright",
+    "Transcription",
     "Ports",
     "State API",
 }
@@ -641,6 +716,24 @@ CONFIG_FIELDS = [
     {"section": "Model Router", "key": "MODEL_ROUTER_MEMBERS",       "label": "Pooled Models",        "type": "text",   "hint": "Comma-separated env prefixes to pool, e.g. EMBED,OCR,RERANK,TASK"},
     {"section": "Model Router", "key": "MODEL_ROUTER_SLEEP_IDLE_SECONDS", "label": "Idle Unload (s)", "type": "number", "hint": "Unload a resident model's weights and KV after this much idleness; the next request reloads it. -1 disables."},
     {"section": "Model Router", "key": "MODEL_ROUTER_GPU_VISIBLE_DEVICES", "label": "GPU Devices",    "type": "text",   "hint": "CUDA_VISIBLE_DEVICES for the router. Every pooled model inherits it, so per-model placement uses real device indices in Main GPU / Tensor Split."},
+    # The pooled audio model, served on the router's own /v1/audio/transcriptions
+    # and reached by the transcription sidecar's `router` engine. Configured
+    # here rather than under Transcription because it is a router child: it is
+    # loaded and evicted by the same LRU as embed, ocr, rank and task, and it
+    # only exists at all when ASR is listed in Pooled Models above.
+    {"section": "Model Router", "key": "ASR_MODEL_NAME",         "label": "Audio Model Alias",    "type": "text",   "hint": "The models.ini section name the router serves it under, and the model string the sidecar sends. Default: asr"},
+    {"section": "Model Router", "key": "ASR_MODEL_PATH",         "label": "Audio Model Path",     "type": "path",   "hint": "An audio-capable GGUF, e.g. Voxtral, Qwen3-Audio or Granite-Speech. Whisper and Parakeet are not llama.cpp models — use a local engine for those."},
+    {"section": "Model Router", "key": "ASR_MMPROJ_PATH",        "label": "Audio MMProj Path",    "type": "path",   "hint": "Required, not optional: llama.cpp refuses transcription unless the model carries an audio projector"},
+    {"section": "Model Router", "key": "ASR_CTX_SIZE",           "label": "Audio Context Size",   "type": "number"},
+    {"section": "Model Router", "key": "ASR_N_GPU_LAYERS",       "label": "Audio GPU Layers",     "type": "number"},
+    {"section": "Model Router", "key": "ASR_MAIN_GPU",           "label": "Audio Main GPU",       "type": "number"},
+    {"section": "Model Router", "key": "ASR_TENSOR_SPLIT",       "label": "Audio Tensor Split",   "type": "text"},
+    {"section": "Model Router", "key": "ASR_SPLIT_MODE",         "label": "Audio Split Mode",     "type": "select", "options": ["none", "layer", "row", "tensor"]},
+    {"section": "Model Router", "key": "ASR_FLASH_ATTN",         "label": "Audio Flash Attention","type": "select", "options": ["on", "off", "auto"]},
+    {"section": "Model Router", "key": "ASR_MMPROJ_OFFLOAD",     "label": "Audio MMProj Offload", "type": "select", "options": ["on", "off"]},
+    {"section": "Model Router", "key": "ASR_JINJA",              "label": "Audio Native Templates","type": "select","options": ["on", "off"], "hint": "Leave on: llama.cpp builds the ASR prompt from the model's chat template"},
+    {"section": "Model Router", "key": "ASR_GPU_VISIBLE_DEVICES","label": "Audio GPU Devices",    "type": "text"},
+    {"section": "Model Router", "key": "ASR_CUSTOM_ARGS_JSON",   "label": "Audio Custom Arguments","type": "custom_args"},
     # Ports
     {"section": "Ports",       "key": "THINK_PORT",                 "label": "Thinking Port",        "type": "number"},
     {"section": "Ports",       "key": "NOTHINK_PORT",               "label": "Chat Port",            "type": "number"},
@@ -691,39 +784,75 @@ CONFIG_FIELDS = [
     {"section": "TTS Backends","key": "VIBEVOICE_RUNTIME_PORT",     "label": "VibeVoice Runtime Port","type": "number"},
     {"section": "TTS Backends","key": "VIBEVOICE_CFG_SCALE",        "label": "VibeVoice CFG Scale",  "type": "text"},
     {"section": "TTS Backends","key": "VIBEVOICE_DDPM_STEPS",       "label": "VibeVoice DDPM Steps", "type": "number"},
-    # Transcription
+    # Transcription. The gateway keys are written out; the per-engine ones are
+    # generated from TRANSCRIPTION_ENGINES below, because five engines times
+    # twelve keys is sixty fields that differ only in their prefix.
+    {"section": "Transcription", "key": "TRANSCRIPT_ENABLED",           "label": "Enable Transcription",   "type": "select", "options": ["off", "on"], "hint": "Off means the start script exits without launching, so the unit being down is not a fault"},
     {"section": "Transcription", "key": "TRANSCRIPT_PUBLIC_URL",        "label": "Public Transcript URL",   "type": "text",   "hint": "Stable URL clients should use"},
-    {"section": "Transcription", "key": "TRANSCRIPT_HOST",              "label": "Listen Host",            "type": "text"},
+    {"section": "Transcription", "key": "TRANSCRIPT_HOST",              "label": "Listen Host",            "type": "text",   "hint": "A Tailscale IP keeps it on the tailnet; 0.0.0.0 exposes it to the LAN"},
     {"section": "Transcription", "key": "TRANSCRIPT_PORT",              "label": "Port",                   "type": "number"},
-    {"section": "Transcription", "key": "TRANSCRIPT_ACTIVE_ENGINE",     "label": "Default Engine",         "type": "select", "options": ["parakeet-v3", "whisperkit-large-v3"]},
-    {"section": "Transcription", "key": "TRANSCRIPT_TIMEOUT_SECONDS",   "label": "Request Timeout (sec)",  "type": "number"},
+    {"section": "Transcription", "key": "TRANSCRIPT_API_TOKEN",         "label": "Access Token",           "type": "text",   "hint": "Blank means no authentication. Set it and requests need Authorization: Bearer <token>"},
+    {"section": "Transcription", "key": "TRANSCRIPT_ACTIVE_ENGINE",     "label": "Default Engine",         "type": "select", "options": list(TRANSCRIPTION_ENGINE_IDS), "hint": "Used when a request names no engine"},
+    {"section": "Transcription", "key": "TRANSCRIPT_ENGINES",           "label": "Installed Engines",      "type": "text",   "hint": "Comma-separated --engines tokens for scripts/install-transcribe.sh"},
+    {"section": "Transcription", "key": "TRANSCRIPT_TIMEOUT_SECONDS",   "label": "Request Timeout (sec)",  "type": "number", "hint": "Must cover a cold model load, not just the decode"},
     {"section": "Transcription", "key": "TRANSCRIPT_LOCAL_DEVICE",      "label": "Local Device",           "type": "select", "options": ["cuda", "cpu"]},
     {"section": "Transcription", "key": "TRANSCRIPT_LOCAL_COMPUTE_TYPE","label": "Local Compute Type",     "type": "select", "options": ["float16", "int8", "int8_float16", "float32"]},
-    {"section": "Transcription", "key": "PARAKEET_V3_BACKEND_TYPE",     "label": "Parakeet Backend Type",  "type": "select", "options": ["local", "upstream"]},
-    {"section": "Transcription", "key": "PARAKEET_V3_LOCAL_MODEL",      "label": "Parakeet Local Model",   "type": "transcript_model", "engine_id": "parakeet-v3", "hint": "Model used when Parakeet backend type is local"},
-    {"section": "Transcription", "key": "PARAKEET_V3_UPSTREAM_URL",     "label": "Parakeet v3 Upstream URL","type": "text",  "hint": "Upstream OpenAI-compatible transcription endpoint host"},
-    {"section": "Transcription", "key": "PARAKEET_V3_MODEL",            "label": "Parakeet v3 Model Name", "type": "text",   "hint": "Model string sent upstream"},
-    {"section": "Transcription", "key": "PARAKEET_V3_API_KEY",          "label": "Parakeet v3 API Key",    "type": "text"},
-    {"section": "Transcription", "key": "PARAKEET_V3_TRANSCRIBE_PATH",  "label": "Parakeet v3 Path",       "type": "text",   "hint": "Default: /v1/audio/transcriptions"},
-    {"section": "Transcription", "key": "PARAKEET_V3_STREAM_OUTPUT_ENABLED", "label": "Parakeet Streaming Output", "type": "select", "options": ["off", "on"]},
-    {"section": "Transcription", "key": "PARAKEET_V3_STREAM_OUTPUT_TARGET",  "label": "Parakeet Stream Target",   "type": "text", "hint": "Future scaffold: webhook/SSE/WebSocket destination"},
-    {"section": "Transcription", "key": "PARAKEET_V3_STREAM_OUTPUT_FORMAT",  "label": "Parakeet Stream Format",   "type": "select", "options": ["webhook", "sse", "websocket"]},
-    {"section": "Transcription", "key": "PARAKEET_V3_SPEAKER_DETECTION",     "label": "Parakeet Speaker Detection", "type": "select", "options": ["off", "on"]},
-    {"section": "Transcription", "key": "PARAKEET_V3_SPEAKER_MODE",          "label": "Parakeet Speaker Mode",      "type": "select", "options": ["auto", "fixed"]},
-    {"section": "Transcription", "key": "PARAKEET_V3_SPEAKER_COUNT",         "label": "Parakeet Speaker Count",     "type": "number"},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_BACKEND_TYPE",  "label": "WhisperKit Backend Type", "type": "select", "options": ["local", "upstream"]},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_LOCAL_MODEL", "label": "WhisperKit Local Model", "type": "transcript_model", "engine_id": "whisperkit-large-v3", "hint": "Model used when WhisperKit backend type is local"},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_UPSTREAM_URL",    "label": "WhisperKit Large v3 Upstream URL", "type": "text", "hint": "Upstream OpenAI-compatible transcription endpoint host"},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_MODEL",           "label": "WhisperKit Large v3 Model Name",   "type": "text", "hint": "Model string sent upstream"},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_API_KEY",         "label": "WhisperKit Large v3 API Key",      "type": "text"},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_TRANSCRIBE_PATH", "label": "WhisperKit Large v3 Path",         "type": "text", "hint": "Default: /v1/audio/transcriptions"},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_ENABLED", "label": "WhisperKit Streaming Output", "type": "select", "options": ["off", "on"]},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_TARGET",  "label": "WhisperKit Stream Target",   "type": "text", "hint": "Future scaffold: webhook/SSE/WebSocket destination"},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_FORMAT",  "label": "WhisperKit Stream Format",   "type": "select", "options": ["webhook", "sse", "websocket"]},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_SPEAKER_DETECTION",     "label": "WhisperKit Speaker Detection", "type": "select", "options": ["off", "on"]},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_SPEAKER_MODE",          "label": "WhisperKit Speaker Mode",      "type": "select", "options": ["auto", "fixed"]},
-    {"section": "Transcription", "key": "WHISPERKIT_LARGE_V3_SPEAKER_COUNT",         "label": "WhisperKit Speaker Count",     "type": "number"},
+    {"section": "Transcription", "key": "TRANSCRIPT_IDLE_UNLOAD_SECONDS","label": "Idle Unload (sec)",     "type": "number", "hint": "Free the model's VRAM after this long unused. 0 or -1 keeps it resident"},
+    {"section": "Transcription", "key": "TRANSCRIPT_ROUTER_YIELD",      "label": "Yield to Model Router",  "type": "select", "options": ["asr", "all", "off"], "hint": "Unload router models before loading locally so the two never stack. asr drops only the pooled audio model; all drops every resident one"},
+    {"section": "Transcription", "key": "TRANSCRIPT_ROUTER_ALLOW_DEGRADED", "label": "Allow Degraded Router Output", "type": "select", "options": ["off", "on"], "hint": "The router engine returns no timestamps. Off refuses srt/vtt/verbose_json rather than emitting a fabricated timeline"},
+    {"section": "Transcription", "key": "TRANSCRIPT_MAX_CONCURRENCY",   "label": "Concurrent Decodes",     "type": "number", "hint": "1 is correct for a single resident model; NeMo is not thread-safe"},
+    {"section": "Transcription", "key": "TRANSCRIPT_MAX_UPLOAD_MB",     "label": "Max Upload (MB)",        "type": "number"},
+    {"section": "Transcription", "key": "TRANSCRIPT_ASYNC_THRESHOLD_SECONDS", "label": "Async Threshold (sec)", "type": "number", "hint": "Audio longer than this returns a job id from /transcribe instead of blocking"},
+    {"section": "Transcription", "key": "TRANSCRIPT_JOB_TTL_SECONDS",   "label": "Job Retention (sec)",    "type": "number"},
+    {"section": "Transcription", "key": "TRANSCRIPT_URL_ALLOW_HOSTS",   "label": "URL Fetch Allow-List",   "type": "text",   "hint": "Comma-separated hosts /transcribe may fetch audio from. Blank denies all, because this process can reach the whole tailnet"},
+    {"section": "Transcription", "key": "TRANSCRIPT_DEFAULT_FORMAT",    "label": "Default Response Format","type": "select", "options": ["json", "verbose_json", "text", "srt", "vtt", "markdown"]},
+    {"section": "Transcription", "key": "TRANSCRIPT_LOG_LEVEL",         "label": "Log Level",              "type": "select", "options": ["INFO", "DEBUG", "WARNING", "ERROR"]},
 ]
+
+
+def _transcription_engine_fields() -> list[dict]:
+    """One identical block of config per engine, keyed on its env prefix.
+
+    Written as a generator for the same reason `_clone_chat_backend_field`
+    exists: the per-engine keys differ only in their prefix, and a hand-written
+    copy per engine is how one of them comes to be missing a field.
+    """
+    fields = []
+    for engine in TRANSCRIPTION_ENGINES:
+        prefix, label = engine["env_prefix"], engine["label"]
+        is_router = engine["runtime"] == "router"
+        fields.extend([
+            {"section": "Transcription", "key": f"{prefix}_BACKEND_TYPE", "label": f"{label} Backend Type",
+             "type": "select", "options": ["local", "upstream"],
+             "hint": "local runs the model here; upstream forwards to another OpenAI-compatible server"},
+            {"section": "Transcription", "key": f"{prefix}_LOCAL_MODEL", "label": f"{label} Local Model",
+             "type": "transcript_model", "engine_id": engine["id"],
+             "hint": ("The model alias the router serves, normally asr" if is_router
+                      else f"Model used when {label} backend type is local")},
+            {"section": "Transcription", "key": f"{prefix}_UPSTREAM_URL", "label": f"{label} Upstream URL",
+             "type": "text", "hint": "Upstream OpenAI-compatible transcription endpoint host"},
+            {"section": "Transcription", "key": f"{prefix}_MODEL", "label": f"{label} Model Name",
+             "type": "text", "hint": "Model string sent upstream"},
+            {"section": "Transcription", "key": f"{prefix}_API_KEY", "label": f"{label} API Key", "type": "text"},
+            {"section": "Transcription", "key": f"{prefix}_TRANSCRIBE_PATH", "label": f"{label} Path",
+             "type": "text", "hint": "Default: /v1/audio/transcriptions"},
+            {"section": "Transcription", "key": f"{prefix}_STREAM_OUTPUT_ENABLED", "label": f"{label} Streaming Output",
+             "type": "select", "options": ["off", "on"]},
+            {"section": "Transcription", "key": f"{prefix}_STREAM_OUTPUT_TARGET", "label": f"{label} Stream Target",
+             "type": "text", "hint": "Future scaffold: webhook/SSE/WebSocket destination"},
+            {"section": "Transcription", "key": f"{prefix}_STREAM_OUTPUT_FORMAT", "label": f"{label} Stream Format",
+             "type": "select", "options": ["webhook", "sse", "websocket"]},
+            {"section": "Transcription", "key": f"{prefix}_SPEAKER_DETECTION", "label": f"{label} Speaker Detection",
+             "type": "select", "options": ["off", "on"]},
+            {"section": "Transcription", "key": f"{prefix}_SPEAKER_MODE", "label": f"{label} Speaker Mode",
+             "type": "select", "options": ["auto", "fixed"]},
+            {"section": "Transcription", "key": f"{prefix}_SPEAKER_COUNT", "label": f"{label} Speaker Count",
+             "type": "number"},
+        ])
+    return fields
+
+
+CONFIG_FIELDS.extend(_transcription_engine_fields())
 
 CHAT_BACKEND_IDENTITY_KEYS = {
     "primary": {
@@ -1120,38 +1249,10 @@ RESTART_HINTS = {
     "VIBEVOICE_RUNTIME_PORT":    ["tts-backend-vibevoice"],
     "VIBEVOICE_CFG_SCALE":       ["tts-backend-vibevoice"],
     "VIBEVOICE_DDPM_STEPS":      ["tts-backend-vibevoice"],
-    "TRANSCRIPT_PUBLIC_URL":     ["transcript-backend"],
-    "TRANSCRIPT_HOST":           ["transcript-backend"],
-    "TRANSCRIPT_PORT":           ["transcript-backend"],
-    "TRANSCRIPT_ACTIVE_ENGINE":  ["transcript-backend"],
-    "TRANSCRIPT_TIMEOUT_SECONDS":["transcript-backend"],
+    # Read-side legacy only: a backfill source for TRANSCRIPT_LOCAL_MODEL with no
+    # CONFIG_FIELDS entry, so it needs naming here to stay writable at all. Every
+    # other transcription key is covered by the prefix rules below.
     "TRANSCRIPT_LOCAL_MODEL_SIZE":  ["transcript-backend"],
-    "TRANSCRIPT_LOCAL_DEVICE":      ["transcript-backend"],
-    "TRANSCRIPT_LOCAL_COMPUTE_TYPE":["transcript-backend"],
-    "PARAKEET_V3_BACKEND_TYPE":  ["transcript-backend"],
-    "PARAKEET_V3_LOCAL_MODEL":   ["transcript-backend"],
-    "PARAKEET_V3_UPSTREAM_URL":  ["transcript-backend"],
-    "PARAKEET_V3_MODEL":         ["transcript-backend"],
-    "PARAKEET_V3_API_KEY":       ["transcript-backend"],
-    "PARAKEET_V3_TRANSCRIBE_PATH": ["transcript-backend"],
-    "PARAKEET_V3_STREAM_OUTPUT_ENABLED": ["transcript-backend"],
-    "PARAKEET_V3_STREAM_OUTPUT_TARGET": ["transcript-backend"],
-    "PARAKEET_V3_STREAM_OUTPUT_FORMAT": ["transcript-backend"],
-    "PARAKEET_V3_SPEAKER_DETECTION": ["transcript-backend"],
-    "PARAKEET_V3_SPEAKER_MODE": ["transcript-backend"],
-    "PARAKEET_V3_SPEAKER_COUNT": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_BACKEND_TYPE": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_LOCAL_MODEL": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_UPSTREAM_URL": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_MODEL": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_API_KEY": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_TRANSCRIBE_PATH": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_ENABLED": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_TARGET": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_STREAM_OUTPUT_FORMAT": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_SPEAKER_DETECTION": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_SPEAKER_MODE": ["transcript-backend"],
-    "WHISPERKIT_LARGE_V3_SPEAKER_COUNT": ["transcript-backend"],
 }
 
 for _field in CONFIG_FIELDS:
@@ -1172,3 +1273,11 @@ for _field in CONFIG_FIELDS:
         RESTART_HINTS.setdefault(_key, ["searxng"])
     if _key.startswith("PLAYWRIGHT_"):
         RESTART_HINTS.setdefault(_key, ["playwright-server"])
+    if _key.startswith("TRANSCRIPT_") or any(
+        _key.startswith(_engine["env_prefix"] + "_") for _engine in TRANSCRIPTION_ENGINES
+    ):
+        RESTART_HINTS.setdefault(_key, ["transcript-backend"])
+    # The pooled audio model is a router child, not a unit, so this cannot go
+    # through `apply_router_restart_hints` — that only redirects pooled *units*.
+    if _key.startswith("ASR_"):
+        RESTART_HINTS.setdefault(_key, ["llama-router"])

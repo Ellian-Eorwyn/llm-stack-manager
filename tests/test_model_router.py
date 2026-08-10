@@ -337,6 +337,33 @@ class PooledUnitTests(unittest.TestCase):
         reported as stopped-on-purpose while the router was serving it."""
         self.assertEqual(set(renderer.MEMBERS), set(telemetry.ROUTER_MEMBER_UNITS))
 
+    def test_the_audio_model_is_pooled_only_when_asked_for(self):
+        """ASR is opt-in, like EMBED2: being in MEMBERS is not being in the pool."""
+        self.assertIn("ASR", renderer.MEMBERS)
+        self.assertNotIn("asr", telemetry.pooled_units(BASE_ENV))
+        env = dict(BASE_ENV, MODEL_ROUTER_MEMBERS="EMBED,OCR,RERANK,TASK,ASR")
+        self.assertIn("asr", telemetry.pooled_units(env))
+
+    def test_the_audio_model_renders_with_its_projector(self):
+        """llama.cpp refuses transcription without an audio projector, so a
+        section that omits mmproj would load and then fail every request."""
+        env = dict(
+            BASE_ENV,
+            MODEL_ROUTER_MEMBERS="ASR",
+            ASR_MODEL_PATH="/models/voxtral.gguf",
+            ASR_MMPROJ_PATH="/models/voxtral-mmproj.gguf",
+            ASR_JINJA="on",
+        )
+        rendered = renderer.render(env)
+        self.assertIn("[asr]", rendered)
+        self.assertIn("model = /models/voxtral.gguf", rendered)
+        self.assertIn("mmproj = /models/voxtral-mmproj.gguf", rendered)
+        self.assertIn("jinja = on", rendered)
+        self.assertIn("load-on-startup = false", rendered)
+
+    def test_the_audio_model_is_absent_from_a_default_render(self):
+        self.assertNotIn("[asr]", renderer.render(BASE_ENV))
+
 
 class PlacementBudgetTests(unittest.TestCase):
     """A pooled model must not be charged for memory it never holds."""

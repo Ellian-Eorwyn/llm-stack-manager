@@ -61,6 +61,11 @@ declare -A MEMBER_PORTS=(
     [RERANK]="${RERANK_PORT:-}"
     [TASK]="${TASK_PORT:-}"
     [OCR]="${OCR_PORT:-}"
+    # Intentionally blank: the audio model has no public port of its own. Its
+    # only caller is the transcription sidecar, which posts to the router on
+    # 127.0.0.1 with model=asr, so a shim would be a second door to the same
+    # room. The loop below logs and skips a member with no port.
+    [ASR]="${ASR_PORT:-}"
 )
 
 MEMBERS="${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}"

@@ -138,6 +138,14 @@ SERVICE_PROBES = _llama_probes() | {
         "kind": "http", "path": "/health",
         "host_key": "MODEL_ROUTER_HOST", "port_key": "MODEL_ROUTER_PORT", "default_port": "8013",
     },
+    # Answers before any engine is imported and while no model is resident,
+    # which is the point: readiness here means "can take a request", not "is
+    # holding weights". The sidecar is idle-unloaded most of the time.
+    "transcript-backend": {
+        "kind": "http", "path": "/health",
+        "host_key": "TRANSCRIPT_HOST", "port_key": "TRANSCRIPT_PORT", "default_port": "8014",
+        "expect_field": ("status", "ok"),
+    },
 }
 
 
@@ -170,6 +178,14 @@ ROUTER_DEPENDENCY_OVERRIDES = {
     "honcho-api": [["chat-proxy"], ["llama-router", "embed", "embed2"]],
 }
 
+# `transcript-backend` deliberately appears in neither map. Its local engines —
+# faster-whisper, NeMo, transformers — need no upstream at all, and only the
+# optional `router` engine talks to llama-router. `dependencies_for` is static
+# and cannot switch on TRANSCRIPT_ACTIVE_ENGINE, so naming llama-router here
+# would report the sidecar as degraded on every host that runs Whisper locally
+# with the router off. Router reachability is reported by the sidecar's own
+# GET /engines instead, where it can be answered per engine.
+
 
 def dependencies_for(name: str, env: dict) -> list:
     """The upstream groups to judge `name` against, given the current mode."""
@@ -189,6 +205,7 @@ ENABLED_FLAGS = {
     "playwright-server": "PLAYWRIGHT_ENABLED",
     "honcho-api": "HONCHO_ENABLED",
     "honcho-deriver": "HONCHO_ENABLED",
+    "transcript-backend": "TRANSCRIPT_ENABLED",
 }
 
 

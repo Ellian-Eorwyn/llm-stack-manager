@@ -85,6 +85,24 @@ class ProbeTargetTests(unittest.TestCase):
         host, port = health.endpoint_for("glmocr-sdk", {})
         self.assertEqual((host, port), ("127.0.0.1", "5002"))
 
+    def test_the_transcription_sidecar_is_probed_on_its_own_port(self):
+        probe = health.SERVICE_PROBES["transcript-backend"]
+        self.assertEqual(probe["port_key"], "TRANSCRIPT_PORT")
+        self.assertEqual(probe["default_port"], "8014")
+        self.assertEqual(probe["expect_field"], ("status", "ok"))
+
+    def test_a_disabled_sidecar_is_not_a_fault(self):
+        self.assertEqual(health.ENABLED_FLAGS["transcript-backend"], "TRANSCRIPT_ENABLED")
+
+    def test_the_transcription_sidecar_declares_no_upstream(self):
+        """Its local engines need nothing, and `dependencies_for` is static: it
+        cannot switch on the active engine, so naming llama-router here would
+        mark the sidecar degraded on every host running Whisper with the router
+        off. Router reachability is reported by the sidecar's own /engines."""
+        self.assertNotIn("transcript-backend", health.SERVICE_DEPENDENCIES)
+        self.assertNotIn("transcript-backend", health.ROUTER_DEPENDENCY_OVERRIDES)
+        self.assertEqual(health.dependencies_for("transcript-backend", {}), [])
+
     def test_probe_reports_an_http_error_distinctly_from_no_answer(self):
         with patch.object(health.telemetry, "_http_text", return_value=(None, 503)):
             result = health.probe("glmocr-sdk", {})

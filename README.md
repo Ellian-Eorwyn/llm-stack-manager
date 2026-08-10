@@ -211,6 +211,28 @@ Callers are unaffected. nginx fronts 8005/8006/8007/8009 onto the router, which 
 
 `MODEL_ROUTER_MAX` is a count, not a memory budget: the router evicts least-recently-used but does not know how large the survivors are. Size it against measured free VRAM, or use `1` for strict one-at-a-time. Off by default; turning it off and re-running the installer restores the four units. See [docs/model-router.md](docs/model-router.md).
 
+## Transcription (speech-to-text)
+
+A sidecar on **port 8014** (`transcript-backend`) that turns audio into
+structured JSON, for agents on the tailnet that transcribe files and store the
+result. `POST /v1/audio/transcriptions` is byte-compatible with OpenAI, so an
+existing SDK works by changing `base_url`; `POST /transcribe` adds segments,
+word timings, provenance, and `json`/`verbose_json`/`text`/`srt`/`vtt`/`markdown`
+output.
+
+Four runtimes are pluggable and lazily imported: **faster-whisper** (Whisper
+large-v3, turbo, distil — installed by default), **NeMo** (Parakeet v3,
+Canary-Qwen), **transformers** for anything else you download, and a **router**
+engine that forwards to `llama-router` for an audio-capable GGUF pooled with
+embed/ocr/rank/task. An engine that is not installed answers 503 with the flag
+that would install it rather than taking the service down.
+
+It is built not to compete with the pooled models for VRAM: nothing loads until
+the first request, one model is resident at a time, idle models are released
+after `TRANSCRIPT_IDLE_UNLOAD_SECONDS`, and the router is asked to unload first
+so the two never stack. Off by default. See
+[docs/transcription.md](docs/transcription.md).
+
 ## Read-only state API
 
 Other applications can read live stack state over HTTP: GPU utilisation, VRAM

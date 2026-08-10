@@ -7,7 +7,7 @@ SELECTED=",${LLM_STACK_SELECTED_COMPONENTS:-primary,embedding,task,ocr,glmocr-sd
 
 has_component() { [[ "${SELECTED}" == *",$1,"* ]]; }
 
-declare -a ALL_UNITS=(chat-backend-dense chat-proxy chat-backend2 chat-proxy2 embed embed2 task ocr glmocr-sdk rerank llama-router playwright-server honcho-api honcho-deriver)
+declare -a ALL_UNITS=(chat-backend-dense chat-proxy chat-backend2 chat-proxy2 embed embed2 task ocr glmocr-sdk rerank llama-router transcript-backend playwright-server honcho-api honcho-deriver)
 declare -a START_UNITS=()
 
 # In router mode the pooled models are the router's children, not units. Start
@@ -27,6 +27,7 @@ has_component reranker && ! router_owns RERANK && START_UNITS+=(rerank)
 has_component task && ! router_owns TASK && START_UNITS+=(task)
 has_component ocr && ! router_owns OCR && START_UNITS+=(ocr)
 has_component glmocr-sdk && START_UNITS+=(glmocr-sdk)
+has_component transcribe && [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]] && START_UNITS+=(transcript-backend)
 has_component playwright && START_UNITS+=(playwright-server)
 has_component honcho && START_UNITS+=(honcho-api honcho-deriver)
 
@@ -59,6 +60,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
     has_component task && PORTS+=(8007)
     has_component ocr && PORTS+=(8009)
     has_component glmocr-sdk && PORTS+=(5002)
+    has_component transcribe && PORTS+=(8014)
     (has_component searxng || has_component playwright) && PORTS+=(80)
     for port in "${PORTS[@]}"; do
       ufw allow from "${LAN_CIDR}" to any port "${port}" proto tcp >/dev/null

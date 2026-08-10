@@ -101,7 +101,9 @@ DEPLOY_WATCHER = deploy.DriftWatcher(core.STACK_DIR)
 
 TTS_BACKEND_SERVICES = []
 TTS_MANAGED_SERVICES = []
-TRANSCRIPT_MANAGED_SERVICE = ""
+# Named, so `should_use_local_transcript_manager` can fall back to
+# scripts/manage-transcript-service.sh on a host with no systemd unit installed.
+TRANSCRIPT_MANAGED_SERVICE = "transcript-backend"
 SERVICES = [
     {"group": "chat",      "name": "chat-backend-dense", "label": "Primary Backend", "desc": "Primary model backend", "ports": "8010 internal / llms:8010", "config_section": "Primary Backend"},
     {"group": "chat",      "name": "chat-proxy",       "label": "Primary Proxy",   "desc": "Routes primary think/chat/code", "ports": "8003 / 8004 / 8008 / 8012"},
@@ -114,6 +116,7 @@ SERVICES = [
     {"group": "auxiliary", "name": "ocr",              "label": "OCR Model",    "desc": "GLM-OCR llama.cpp model backend",      "ports": "8009", "config_section": "OCR"},
     {"group": "auxiliary", "name": "glmocr-sdk",       "label": "OCR SDK",      "desc": "Local GLM-OCR layout/PDF parser",       "ports": "5002", "config_section": "GLM-OCR SDK"},
     {"group": "auxiliary", "name": "llama-router",     "label": "Model Router", "desc": "Loads the auxiliary models on demand",  "ports": "8013", "config_section": "Model Router"},
+    {"group": "auxiliary", "name": "transcript-backend", "label": "Transcription", "desc": "Speech-to-text: faster-whisper, NeMo, HF, router", "ports": "8014", "config_section": "Transcription"},
     {"group": "auxiliary", "name": "honcho-api",       "label": "Honcho API",   "desc": "Local Honcho memory API",           "ports": "8090"},
     {"group": "auxiliary", "name": "honcho-deriver",   "label": "Honcho Worker", "desc": "Local Honcho background deriver",   "ports": "worker"},
     {"group": "auxiliary", "name": "searxng",          "label": "SearXNG",      "desc": "Local metasearch engine via uWSGI/nginx", "ports": "/searxng", "config_section": "SearXNG"},
@@ -1195,6 +1198,7 @@ def index():
                            config_sections=dict(sections),
                            custom_models=models.load_custom_models(),
                            builtin_chat_variants=builtin_chat_variants(env),
+                           transcription_engines=config_fields.TRANSCRIPTION_ENGINES,
                            models_dir=str(core.MODELS_DIR),
                            asset_version=asset_version())
 
@@ -1659,6 +1663,85 @@ def api_model_router_action(action):
     if not ok:
         return jsonify(ok=False, error=result), 502
     return jsonify(ok=True, result=result)
+
+
+def _transcribe_base_url(env: dict) -> str:
+    """Where the manager reaches the sidecar.
+
+    Same host-cleaning as the OCR SDK's: `TRANSCRIPT_HOST` may be a wildcard or
+    the literal `${LISTEN_HOST}` (systemd's EnvironmentFile does not expand it),
+    and neither is dialable.
+    """
+    host = (env.get("TRANSCRIPT_HOST") or "127.0.0.1").strip()
+    if host in {"${LISTEN_HOST}", "$LISTEN_HOST"} or host.startswith("$"):
+        host = env.get("LISTEN_HOST") or "127.0.0.1"
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    return f"http://{host}:{env.get('TRANSCRIPT_PORT', '8014')}"
+
+
+def _transcribe_headers(env: dict) -> dict:
+    token = (env.get("TRANSCRIPT_API_TOKEN") or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+@app.route('/api/transcribe/overview')
+def api_transcribe_overview():
+    env = config_env.read_env()
+    if (env.get("TRANSCRIPT_ENABLED") or "off").strip().lower() != "on":
+        return jsonify(ok=True, enabled=False, reachable=False,
+                       error="Transcription is disabled (TRANSCRIPT_ENABLED=off)")
+    try:
+        data = core.http_json(f'{_transcribe_base_url(env)}/engines', timeout=10,
+                              headers=_transcribe_headers(env))
+    except Exception as exc:
+        return jsonify(ok=True, enabled=True, reachable=False, error=str(exc))
+    # Merged rather than splatted: the sidecar's own body carries `ok`, and
+    # `jsonify(ok=True, **data)` is a TypeError the moment it does.
+    return jsonify({**data, "ok": True, "enabled": True, "reachable": True})
+
+
+@app.route('/api/transcribe/unload', methods=['POST'])
+def api_transcribe_unload():
+    env = config_env.read_env()
+    try:
+        data = core.http_json(f'{_transcribe_base_url(env)}/unload', method='POST',
+                              payload={}, timeout=30, headers=_transcribe_headers(env))
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 502
+    return jsonify({**data, "ok": True})
+
+
+@app.route('/api/transcribe/test', methods=['POST'])
+def api_transcribe_test():
+    """Forward one uploaded clip to the sidecar so the panel can prove it works.
+
+    Streamed through rather than reimplemented: the sidecar owns every decision
+    about engines, formats and residency, and a second copy of that logic here
+    would be a second thing to keep in step with it.
+    """
+    env = config_env.read_env()
+    upload = request.files.get('file')
+    if upload is None or not upload.filename:
+        return jsonify(ok=False, error='file is required'), 400
+    fields = {key: request.form[key] for key in ('engine', 'model', 'language',
+                                                 'response_format', 'word_timestamps')
+              if request.form.get(key)}
+    fields.setdefault('response_format', 'json')
+    timeout = int(float(env.get('TRANSCRIPT_TIMEOUT_SECONDS', '600') or 600))
+    try:
+        status, body = core.http_multipart(
+            f'{_transcribe_base_url(env)}/transcribe',
+            fields=fields,
+            files={'file': (upload.filename, upload.read(),
+                            upload.mimetype or 'application/octet-stream')},
+            timeout=timeout, headers=_transcribe_headers(env))
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 502
+    try:
+        return jsonify(ok=status < 400, status=status, result=json.loads(body))
+    except ValueError:
+        return jsonify(ok=status < 400, status=status, text=body)
 
 
 def _glmocr_backend_url(env: dict) -> str:

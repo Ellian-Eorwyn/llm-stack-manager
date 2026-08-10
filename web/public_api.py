@@ -85,6 +85,10 @@ SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 CONFIG_SECTIONS = (
     "Primary Backend", "Secondary Backend", "Shared Backend", "Task Model",
     "Embedding", "Embedding 2", "Reranker", "OCR", "Model Router", "Ports",
+    # Agents on the tailnet call the sidecar directly, so which engine and model
+    # it is set to is exactly the sort of thing they need to read first.
+    # `SECRET_KEY_RE` already redacts TRANSCRIPT_API_TOKEN and every *_API_KEY.
+    "Transcription",
 )
 
 # Which env key holds the model each unit was configured to load, in the order

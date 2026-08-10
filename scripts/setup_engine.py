@@ -31,7 +31,7 @@ MODELS_DIR = ROOT / "models"
 LOG_DIR = ROOT / "logs" / "setup"
 
 CORE_DEFAULTS = ["primary", "embedding", "task", "ocr", "glmocr-sdk", "searxng", "playwright"]
-OPTIONAL_COMPONENTS = ["secondary", "embedding2", "reranker", "honcho"]
+OPTIONAL_COMPONENTS = ["secondary", "embedding2", "reranker", "honcho", "transcribe"]
 ALL_COMPONENTS = CORE_DEFAULTS + OPTIONAL_COMPONENTS
 MODEL_COMPONENTS = ["primary", "secondary", "embedding", "embedding2", "task", "ocr", "reranker"]
 COMPONENT_DEPENDENCIES = {
@@ -51,12 +51,14 @@ COMPONENT_SERVICES = {
     "reranker": ["rerank"],
     "playwright": ["playwright-server"],
     "honcho": ["honcho-api", "honcho-deriver"],
+    "transcribe": ["transcript-backend"],
 }
 COMPONENT_PORTS = {
     "primary": [8003, 8004, 8008], "secondary": [8103, 8104, 8108],
     "embedding": [8005], "embedding2": [8011], "reranker": [8006],
     "task": [8007], "ocr": [8009], "glmocr-sdk": [5002],
     "searxng": [80], "playwright": [80], "honcho": [8090],
+    "transcribe": [8014],
 }
 MODEL_ENV_KEYS = {
     "primary": ("CHAT_PRIMARY_MODEL_PATH", "CHAT_PRIMARY_MMPROJ_PATH"),

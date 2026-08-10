@@ -41,6 +41,9 @@ __pycache__/
 # Generated local config/state
 /config/default-saved-config
 /config/glmocr-sdk.json
+# The transcription sidecar's config, rendered from the env keys on every start
+# by scripts/start-transcribe.sh. Same reasoning as models.ini below.
+/config/transcribe.json
 # The model router's preset, rendered from the env keys on every service start
 # by scripts/render-models-ini.py. Committing it would put a build artefact in
 # the tree, and — because the installed stack is a checkout — every router start

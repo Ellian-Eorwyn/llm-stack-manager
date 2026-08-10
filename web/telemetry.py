@@ -83,6 +83,12 @@ ROUTER_MEMBER_UNITS = {
     "RERANK": "rerank",
     "TASK": "task",
     "OCR": "ocr",
+    # No unit of this name exists or is wanted: the audio model is only ever a
+    # router child, reached by the transcription sidecar's `router` engine. The
+    # entry is here because `tests/test_model_router.py` requires this map and
+    # `render-models-ini.MEMBERS` to carry the same keys, and because a name
+    # here is what keeps `pooled_units` from reporting it as a stopped unit.
+    "ASR": "asr",
 }
 
 ROUTER_UNIT = "llama-router"

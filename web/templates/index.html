@@ -946,6 +946,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     <button class="tab-btn active" data-tab="services"><span class="nav-icon">S</span><span class="nav-label">Services</span></button>
     <button class="tab-btn" data-tab="searxng"><span class="nav-icon">X</span><span class="nav-label">SearXNG</span></button>
     <button class="tab-btn" data-tab="playwright"><span class="nav-icon">P</span><span class="nav-label">Playwright</span></button>
+    <button class="tab-btn" data-tab="transcribe"><span class="nav-icon">T</span><span class="nav-label">Transcription</span></button>
     <button class="tab-btn" data-tab="config"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
     <button class="tab-btn" data-tab="logs"><span class="nav-icon">L</span><span class="nav-label">Logs</span></button>
   </div>
@@ -990,6 +991,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       <label><input type="checkbox" value="embedding2"> Second embedding backend</label>
       <label><input type="checkbox" value="reranker"> Reranker</label>
       <label><input type="checkbox" value="honcho"> Honcho memory</label>
+      <label><input type="checkbox" value="transcribe"> Transcription (speech-to-text)</label>
     </div>
   </div>
 
@@ -1320,6 +1322,65 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   <div class="svc-group">
     <div class="group-hdr">Endpoints</div>
     <div class="meta-list" id="playwright-endpoint-list"></div>
+  </div>
+</div>
+
+<!-- ====== Transcription tab ====== -->
+<div id="tab-transcribe" class="tab-panel">
+  <div class="quick-bar">
+    <span class="qlabel">Transcription</span>
+    <button class="btn btn-primary btn-sm" onclick="loadTranscribeOverview()">Refresh</button>
+    <button class="btn btn-success btn-sm" onclick="svcAction('transcript-backend','start',this)">Start</button>
+    <button class="btn btn-danger btn-sm" onclick="svcAction('transcript-backend','stop',this)">Stop</button>
+    <button class="btn btn-ghost btn-sm" onclick="svcAction('transcript-backend','restart',this)">Restart</button>
+    <button class="btn btn-ghost btn-sm" onclick="unloadTranscribeModel(this)">Free VRAM</button>
+    <button class="btn btn-ghost btn-sm" onclick="openServiceConfig('Transcription')">Config</button>
+    <span id="transcribe-last-refresh" class="active-indicator">Last refresh: -</span>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Resident Model</div>
+    <p class="hint">One model is resident at a time and is released once idle, so transcription does not sit on the GPU beside the pooled models. No resident model is the normal steady state, not a fault.</p>
+    <div class="meta-list" id="transcribe-resident"></div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Engines</div>
+    <div class="meta-list" id="transcribe-engines"></div>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Try It</div>
+    <div class="hf-grid" style="margin-bottom:0;">
+      <div class="field">
+        <label>Audio File</label>
+        <input type="file" id="transcribe-test-file" accept="audio/*,video/*">
+      </div>
+      <div class="field">
+        <label>Engine</label>
+        <select id="transcribe-test-engine"><option value="">Default</option></select>
+      </div>
+      <div class="field">
+        <label>Format</label>
+        <select id="transcribe-test-format">
+          <option value="json">json</option>
+          <option value="verbose_json">verbose_json</option>
+          <option value="text">text</option>
+          <option value="srt">srt</option>
+          <option value="vtt">vtt</option>
+          <option value="markdown">markdown</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Word Timestamps</label>
+        <select id="transcribe-test-words"><option value="">off</option><option value="true">on</option></select>
+      </div>
+    </div>
+    <div class="hf-inline">
+      <button class="btn btn-primary btn-sm" onclick="runTranscribeTest(this)">Transcribe</button>
+      <span class="hf-status" id="transcribe-test-status"></span>
+    </div>
+    <pre class="mono" id="transcribe-test-output" style="margin-top:12px;max-height:420px;overflow:auto;"></pre>
   </div>
 </div>
 
@@ -1971,14 +2032,24 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
       </div>
       {% elif section == 'Transcription' %}
-      {% set transcript_gateway_keys = ['TRANSCRIPT_PUBLIC_URL', 'TRANSCRIPT_HOST', 'TRANSCRIPT_PORT', 'TRANSCRIPT_ACTIVE_ENGINE', 'TRANSCRIPT_TIMEOUT_SECONDS'] %}
-      {% set transcript_runtime_keys = ['TRANSCRIPT_LOCAL_DEVICE', 'TRANSCRIPT_LOCAL_COMPUTE_TYPE'] %}
-      {% set transcript_parakeet_core_keys = ['PARAKEET_V3_BACKEND_TYPE', 'PARAKEET_V3_LOCAL_MODEL', 'PARAKEET_V3_UPSTREAM_URL', 'PARAKEET_V3_MODEL', 'PARAKEET_V3_API_KEY', 'PARAKEET_V3_TRANSCRIBE_PATH'] %}
-      {% set transcript_parakeet_stream_keys = ['PARAKEET_V3_STREAM_OUTPUT_ENABLED', 'PARAKEET_V3_STREAM_OUTPUT_TARGET', 'PARAKEET_V3_STREAM_OUTPUT_FORMAT'] %}
-      {% set transcript_parakeet_speaker_keys = ['PARAKEET_V3_SPEAKER_DETECTION', 'PARAKEET_V3_SPEAKER_MODE', 'PARAKEET_V3_SPEAKER_COUNT'] %}
-      {% set transcript_whisperkit_core_keys = ['WHISPERKIT_LARGE_V3_BACKEND_TYPE', 'WHISPERKIT_LARGE_V3_LOCAL_MODEL', 'WHISPERKIT_LARGE_V3_UPSTREAM_URL', 'WHISPERKIT_LARGE_V3_MODEL', 'WHISPERKIT_LARGE_V3_API_KEY', 'WHISPERKIT_LARGE_V3_TRANSCRIBE_PATH'] %}
-      {% set transcript_whisperkit_stream_keys = ['WHISPERKIT_LARGE_V3_STREAM_OUTPUT_ENABLED', 'WHISPERKIT_LARGE_V3_STREAM_OUTPUT_TARGET', 'WHISPERKIT_LARGE_V3_STREAM_OUTPUT_FORMAT'] %}
-      {% set transcript_whisperkit_speaker_keys = ['WHISPERKIT_LARGE_V3_SPEAKER_DETECTION', 'WHISPERKIT_LARGE_V3_SPEAKER_MODE', 'WHISPERKIT_LARGE_V3_SPEAKER_COUNT'] %}
+      {# Engine panels are generated from the registry rather than written out
+         per engine. The previous hand-written version covered two engines and
+         never set `curated`, so every key it did not name rendered nowhere and
+         did not reach the leftovers panel either. #}
+      {% set transcript_gateway_keys = ['TRANSCRIPT_ENABLED', 'TRANSCRIPT_PUBLIC_URL', 'TRANSCRIPT_HOST', 'TRANSCRIPT_PORT', 'TRANSCRIPT_API_TOKEN', 'TRANSCRIPT_ACTIVE_ENGINE', 'TRANSCRIPT_TIMEOUT_SECONDS', 'TRANSCRIPT_DEFAULT_FORMAT'] %}
+      {% set transcript_runtime_keys = ['TRANSCRIPT_ENGINES', 'TRANSCRIPT_LOCAL_DEVICE', 'TRANSCRIPT_LOCAL_COMPUTE_TYPE', 'TRANSCRIPT_MAX_CONCURRENCY', 'TRANSCRIPT_LOG_LEVEL'] %}
+      {% set transcript_vram_keys = ['TRANSCRIPT_IDLE_UNLOAD_SECONDS', 'TRANSCRIPT_ROUTER_YIELD', 'TRANSCRIPT_ROUTER_ALLOW_DEGRADED'] %}
+      {% set transcript_limit_keys = ['TRANSCRIPT_MAX_UPLOAD_MB', 'TRANSCRIPT_ASYNC_THRESHOLD_SECONDS', 'TRANSCRIPT_JOB_TTL_SECONDS', 'TRANSCRIPT_URL_ALLOW_HOSTS'] %}
+      {% set transcript_engine_suffixes = ['_BACKEND_TYPE', '_LOCAL_MODEL', '_UPSTREAM_URL', '_MODEL', '_API_KEY', '_TRANSCRIBE_PATH'] %}
+      {% set transcript_stream_suffixes = ['_STREAM_OUTPUT_ENABLED', '_STREAM_OUTPUT_TARGET', '_STREAM_OUTPUT_FORMAT'] %}
+      {% set transcript_ns = namespace(curated=transcript_gateway_keys + transcript_runtime_keys + transcript_vram_keys + transcript_limit_keys) %}
+      {% set transcript_speaker_suffixes = ['_SPEAKER_DETECTION', '_SPEAKER_MODE', '_SPEAKER_COUNT'] %}
+      {% for eng in transcription_engines %}
+      {% for suffix in transcript_engine_suffixes + transcript_stream_suffixes + transcript_speaker_suffixes %}
+      {% set transcript_ns.curated = transcript_ns.curated + [eng.env_prefix ~ suffix] %}
+      {% endfor %}
+      {% endfor %}
+      {% set curated = transcript_ns.curated %}
 
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
@@ -2004,118 +2075,96 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
-          <h4>Parakeet Engine</h4>
-          <p>Parakeet has its own backend type, its own model inventory, and its own future-capability scaffolding. If the selected local model or upstream target is wrong, requests fail instead of falling back to something else.</p>
-          <div class="cfg-grid tight">
-            {% for f in fields if f.key in transcript_parakeet_core_keys %}
+          <h4>VRAM Sharing</h4>
+          <p>One transcription model is resident at a time and is dropped once it goes unused, so it does not sit alongside the pooled embed, OCR, rank and task models. Yielding unloads the router's own models before a local one loads, which is what stops the two stacking on a full GPU.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in transcript_vram_keys %}
             {{ render_config_field(f, section) }}
             {% endfor %}
-          </div>
-          <div class="cfg-panel" style="margin-top:16px;">
-            <h4>Download Parakeet Models</h4>
-            <div class="hf-grid" style="margin-bottom:0;">
-              <div class="field wide">
-                <label>Repo URL</label>
-                <div class="hf-inline">
-                  <input type="text" id="transcript-hf-repo-url-parakeet-v3" class="mono" placeholder="https://huggingface.co/owner/repo or owner/repo">
-                  <button class="btn btn-primary btn-sm" onclick="loadTranscriptHuggingFaceRepoInfo(this, 'parakeet-v3')">Inspect Repo</button>
-                </div>
-              </div>
-              <div class="field">
-                <label>Target Folder</label>
-                <input type="text" id="transcript-hf-target-dir-parakeet-v3" class="mono" readonly>
-              </div>
-              <div class="field">
-                <label>Files To Download</label>
-                <input type="text" id="transcript-hf-file-count-parakeet-v3" class="mono" readonly>
-              </div>
-              <div class="field wide">
-                <label>Preview</label>
-                <input type="text" id="transcript-hf-preview-parakeet-v3" class="mono" readonly>
-              </div>
-            </div>
-            <div class="hf-inline">
-              <button class="btn btn-success btn-sm" id="transcript-hf-download-btn-parakeet-v3" onclick="downloadTranscriptHuggingFaceModel(this, 'parakeet-v3')" disabled>Download To Parakeet Models Folder</button>
-              <span class="hf-status" id="transcript-hf-status-text-parakeet-v3"></span>
-            </div>
-            <div class="hf-download-meta" id="transcript-hf-download-meta-parakeet-v3"></div>
-          </div>
-          <div class="cfg-panel transcript-capability-panel" data-engine-id="parakeet-v3" data-capability="supports_streaming" style="display:none;margin-top:16px;">
-            <h4>Streaming Output</h4>
-            <p>Scaffolding only. These settings stay hidden unless the configured Parakeet backend advertises streaming support.</p>
-            <div class="cfg-mini-grid">
-              {% for f in fields if f.key in transcript_parakeet_stream_keys %}
-              {{ render_config_field(f, section) }}
-              {% endfor %}
-            </div>
-          </div>
-          <div class="cfg-panel transcript-capability-panel" data-engine-id="parakeet-v3" data-capability="supports_speaker_detection" style="display:none;margin-top:16px;">
-            <h4>Speaker Detection</h4>
-            <p>Scaffolding only. These settings stay hidden unless the configured Parakeet backend advertises diarization or speaker-detection support.</p>
-            <div class="cfg-mini-grid">
-              {% for f in fields if f.key in transcript_parakeet_speaker_keys %}
-              {{ render_config_field(f, section) }}
-              {% endfor %}
-            </div>
           </div>
         </div>
 
         <div class="cfg-panel">
-          <h4>WhisperKit Engine</h4>
-          <p>WhisperKit also has its own backend type and its own model inventory. Its local dropdown only shows models downloaded for WhisperKit.</p>
-          <div class="cfg-grid tight">
-            {% for f in fields if f.key in transcript_whisperkit_core_keys %}
+          <h4>Request Limits</h4>
+          <p>Audio longer than the async threshold returns a job id from <code>/transcribe</code> instead of holding the connection open. The URL allow-list is blank by default, which denies every fetch.</p>
+          <div class="cfg-mini-grid">
+            {% for f in fields if f.key in transcript_limit_keys %}
             {{ render_config_field(f, section) }}
             {% endfor %}
           </div>
+        </div>
+      </div>
+
+      <div class="cfg-panel-grid">
+        {% for eng in transcription_engines %}
+        {% set core_keys = [eng.env_prefix ~ '_BACKEND_TYPE', eng.env_prefix ~ '_LOCAL_MODEL', eng.env_prefix ~ '_UPSTREAM_URL', eng.env_prefix ~ '_MODEL', eng.env_prefix ~ '_API_KEY', eng.env_prefix ~ '_TRANSCRIBE_PATH'] %}
+        {% set stream_keys = [eng.env_prefix ~ '_STREAM_OUTPUT_ENABLED', eng.env_prefix ~ '_STREAM_OUTPUT_TARGET', eng.env_prefix ~ '_STREAM_OUTPUT_FORMAT'] %}
+        {% set speaker_keys = [eng.env_prefix ~ '_SPEAKER_DETECTION', eng.env_prefix ~ '_SPEAKER_MODE', eng.env_prefix ~ '_SPEAKER_COUNT'] %}
+        <div class="cfg-panel">
+          <h4>{{ eng.label }}</h4>
+          <p>
+            {% if eng.runtime == 'router' %}
+            Forwards to the model router, where an audio-capable GGUF is pooled with embed, OCR, rank and task and evicted by the same LRU. It returns no timestamps, so subtitle formats are refused unless degraded output is allowed.
+            {% else %}
+            Runs on the <code>{{ eng.runtime }}</code> runtime. Its local dropdown only shows models downloaded for this engine, and a wrong model or upstream target fails the request rather than falling back to another engine.
+            {% endif %}
+          </p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in core_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+          {% if eng.runtime != 'router' %}
           <div class="cfg-panel" style="margin-top:16px;">
-            <h4>Download WhisperKit Models</h4>
+            <h4>Download {{ eng.label }} Models</h4>
             <div class="hf-grid" style="margin-bottom:0;">
               <div class="field wide">
                 <label>Repo URL</label>
                 <div class="hf-inline">
-                  <input type="text" id="transcript-hf-repo-url-whisperkit-large-v3" class="mono" placeholder="https://huggingface.co/owner/repo or owner/repo">
-                  <button class="btn btn-primary btn-sm" onclick="loadTranscriptHuggingFaceRepoInfo(this, 'whisperkit-large-v3')">Inspect Repo</button>
+                  <input type="text" id="transcript-hf-repo-url-{{ eng.id }}" class="mono" placeholder="https://huggingface.co/owner/repo or owner/repo">
+                  <button class="btn btn-primary btn-sm" onclick="loadTranscriptHuggingFaceRepoInfo(this, '{{ eng.id }}')">Inspect Repo</button>
                 </div>
               </div>
               <div class="field">
                 <label>Target Folder</label>
-                <input type="text" id="transcript-hf-target-dir-whisperkit-large-v3" class="mono" readonly>
+                <input type="text" id="transcript-hf-target-dir-{{ eng.id }}" class="mono" readonly>
               </div>
               <div class="field">
                 <label>Files To Download</label>
-                <input type="text" id="transcript-hf-file-count-whisperkit-large-v3" class="mono" readonly>
+                <input type="text" id="transcript-hf-file-count-{{ eng.id }}" class="mono" readonly>
               </div>
               <div class="field wide">
                 <label>Preview</label>
-                <input type="text" id="transcript-hf-preview-whisperkit-large-v3" class="mono" readonly>
+                <input type="text" id="transcript-hf-preview-{{ eng.id }}" class="mono" readonly>
               </div>
             </div>
             <div class="hf-inline">
-              <button class="btn btn-success btn-sm" id="transcript-hf-download-btn-whisperkit-large-v3" onclick="downloadTranscriptHuggingFaceModel(this, 'whisperkit-large-v3')" disabled>Download To WhisperKit Models Folder</button>
-              <span class="hf-status" id="transcript-hf-status-text-whisperkit-large-v3"></span>
+              <button class="btn btn-success btn-sm" id="transcript-hf-download-btn-{{ eng.id }}" onclick="downloadTranscriptHuggingFaceModel(this, '{{ eng.id }}')" disabled>Download To {{ eng.label }} Models Folder</button>
+              <span class="hf-status" id="transcript-hf-status-text-{{ eng.id }}"></span>
             </div>
-            <div class="hf-download-meta" id="transcript-hf-download-meta-whisperkit-large-v3"></div>
+            <div class="hf-download-meta" id="transcript-hf-download-meta-{{ eng.id }}"></div>
           </div>
-          <div class="cfg-panel transcript-capability-panel" data-engine-id="whisperkit-large-v3" data-capability="supports_streaming" style="display:none;margin-top:16px;">
+          {% endif %}
+          <div class="cfg-panel transcript-capability-panel" data-engine-id="{{ eng.id }}" data-capability="supports_streaming" style="display:none;margin-top:16px;">
             <h4>Streaming Output</h4>
-            <p>Scaffolding only. These settings stay hidden unless the configured WhisperKit backend advertises streaming support.</p>
+            <p>Scaffolding only. These settings stay hidden unless the configured {{ eng.label }} backend advertises streaming support.</p>
             <div class="cfg-mini-grid">
-              {% for f in fields if f.key in transcript_whisperkit_stream_keys %}
+              {% for f in fields if f.key in stream_keys %}
               {{ render_config_field(f, section) }}
               {% endfor %}
             </div>
           </div>
-          <div class="cfg-panel transcript-capability-panel" data-engine-id="whisperkit-large-v3" data-capability="supports_speaker_detection" style="display:none;margin-top:16px;">
+          <div class="cfg-panel transcript-capability-panel" data-engine-id="{{ eng.id }}" data-capability="supports_speaker_detection" style="display:none;margin-top:16px;">
             <h4>Speaker Detection</h4>
-            <p>Scaffolding only. These settings stay hidden unless the configured WhisperKit backend advertises diarization or speaker-detection support.</p>
+            <p>Scaffolding only. These settings stay hidden unless the configured {{ eng.label }} backend advertises diarization or speaker-detection support.</p>
             <div class="cfg-mini-grid">
-              {% for f in fields if f.key in transcript_whisperkit_speaker_keys %}
+              {% for f in fields if f.key in speaker_keys %}
               {{ render_config_field(f, section) }}
               {% endfor %}
             </div>
           </div>
         </div>
+        {% endfor %}
       </div>
       {% else %}
       <div class="cfg-grid">
@@ -2198,6 +2247,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 <script src="{{ url_for('static', filename='js/config.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/setup.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/tts.js') }}?v={{ asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/transcribe.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduling.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/logs.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/boot.js') }}?v={{ asset_version }}"></script>

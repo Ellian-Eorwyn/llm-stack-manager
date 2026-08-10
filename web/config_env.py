@@ -45,6 +45,7 @@ from config_fields import (
     LEGACY_ENV_KEY_MAP,
     NEW_ENV_KEY_LEGACY_ALIASES,
     RESTART_HINTS,
+    TRANSCRIPTION_ENGINES,
 )
 
 
@@ -370,32 +371,94 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("LLM_API_STREAM_INTERVAL", "2")
     normalized.setdefault("LLM_API_WEBHOOK_URL", "")
     normalized.setdefault("LLM_API_WEBHOOK_EVENTS", "service_state,alert")
+    # Transcription sidecar. Off by default and bound to loopback for the same
+    # reason as the state API: an upgrade should not start putting audio on the
+    # network on someone's behalf.
+    normalized.setdefault("TRANSCRIPT_ENABLED", "off")
+    normalized.setdefault("TRANSCRIPT_HOST", "127.0.0.1")
+    normalized.setdefault("TRANSCRIPT_PORT", "8014")
+    normalized.setdefault("TRANSCRIPT_API_TOKEN", "")
+    normalized.setdefault(
+        "TRANSCRIPT_PUBLIC_URL",
+        f"http://{normalized['TRANSCRIPT_HOST']}:{normalized['TRANSCRIPT_PORT']}",
+    )
+    normalized.setdefault("TRANSCRIPT_ACTIVE_ENGINE", "faster-whisper")
+    normalized.setdefault("TRANSCRIPT_ENGINES", "faster-whisper")
+    # Generous because a cold model load happens inside the first request.
+    normalized.setdefault("TRANSCRIPT_TIMEOUT_SECONDS", "600")
+    normalized.setdefault("TRANSCRIPT_LOCAL_DEVICE", "cuda")
+    normalized.setdefault("TRANSCRIPT_LOCAL_COMPUTE_TYPE", "float16")
+    normalized.setdefault("TRANSCRIPT_IDLE_UNLOAD_SECONDS", "300")
+    normalized.setdefault("TRANSCRIPT_ROUTER_YIELD", "asr")
+    normalized.setdefault("TRANSCRIPT_ROUTER_ALLOW_DEGRADED", "off")
+    normalized.setdefault("TRANSCRIPT_MAX_CONCURRENCY", "1")
+    normalized.setdefault("TRANSCRIPT_MAX_UPLOAD_MB", "512")
+    normalized.setdefault("TRANSCRIPT_ASYNC_THRESHOLD_SECONDS", "900")
+    normalized.setdefault("TRANSCRIPT_JOB_TTL_SECONDS", "3600")
+    # Blank denies every fetch. This process can reach the whole tailnet, so the
+    # allow-list is opt-in rather than something a default quietly opens up.
+    normalized.setdefault("TRANSCRIPT_URL_ALLOW_HOSTS", "")
+    normalized.setdefault("TRANSCRIPT_DEFAULT_FORMAT", "json")
+    normalized.setdefault("TRANSCRIPT_LOG_LEVEL", "INFO")
+    normalized.setdefault("TRANSCRIPT_VENV_DIR", str(core.STACK_DIR / "deps" / "transcribe-venv"))
+    normalized.setdefault("TRANSCRIPT_WORK_DIR", str(core.STACK_DIR / "logs" / "transcript" / "work"))
+
+    # Per-engine defaults, looped rather than written out per engine. The engine
+    # registry lives in config_fields because this module cannot import models.
     shared_transcript_model = normalized.get("TRANSCRIPT_LOCAL_MODEL")
     shared_transcript_legacy = normalized.get("TRANSCRIPT_LOCAL_MODEL_SIZE", "large-v3")
-    normalized.setdefault("PARAKEET_V3_BACKEND_TYPE", "upstream")
-    normalized.setdefault("WHISPERKIT_LARGE_V3_BACKEND_TYPE", "upstream")
+    for engine in TRANSCRIPTION_ENGINES:
+        prefix = engine["env_prefix"]
+        default_preset = (engine.get("presets") or [None])[0]
+        if engine["runtime"] == "router":
+            # Not a preset: the router serves it under the alias the models.ini
+            # section name sets, which is `asr`.
+            fallback_model = "preset:asr"
+        elif default_preset:
+            fallback_model = f"preset:{default_preset}"
+        else:
+            fallback_model = ""
+        normalized.setdefault(f"{prefix}_BACKEND_TYPE", "local")
+        normalized.setdefault(
+            f"{prefix}_LOCAL_MODEL",
+            shared_transcript_model
+            or (f"preset:{normalized[f'{prefix}_LOCAL_MODEL_SIZE']}"
+                if normalized.get(f"{prefix}_LOCAL_MODEL_SIZE")
+                else (f"preset:{shared_transcript_legacy}"
+                      if engine["runtime"] == "faster-whisper" else fallback_model)),
+        )
+        normalized.setdefault(f"{prefix}_UPSTREAM_URL", "")
+        normalized.setdefault(f"{prefix}_MODEL", "")
+        normalized.setdefault(f"{prefix}_API_KEY", "")
+        normalized.setdefault(f"{prefix}_TRANSCRIBE_PATH", "/v1/audio/transcriptions")
+        normalized.setdefault(f"{prefix}_STREAM_OUTPUT_ENABLED", "off")
+        normalized.setdefault(f"{prefix}_STREAM_OUTPUT_TARGET", "")
+        normalized.setdefault(f"{prefix}_STREAM_OUTPUT_FORMAT", "webhook")
+        normalized.setdefault(f"{prefix}_SPEAKER_DETECTION", "off")
+        normalized.setdefault(f"{prefix}_SPEAKER_MODE", "auto")
+        normalized.setdefault(f"{prefix}_SPEAKER_COUNT", "2")
+
+    # The audio GGUF the router pools, reached by the `router` engine. Named
+    # under the Model Router section because it is a router child, not a sidecar
+    # setting — nothing here is read unless ASR joins MODEL_ROUTER_MEMBERS.
+    normalized.setdefault("ASR_MODEL_NAME", "asr")
+    normalized.setdefault("ASR_MODEL_PATH", "")
+    normalized.setdefault("ASR_MMPROJ_PATH", "")
+    normalized.setdefault("ASR_CTX_SIZE", "32768")
+    normalized.setdefault("ASR_N_GPU_LAYERS", "-1")
+    normalized.setdefault("ASR_MAIN_GPU", "0")
+    normalized.setdefault("ASR_TENSOR_SPLIT", "")
+    normalized.setdefault("ASR_SPLIT_MODE", "layer")
+    normalized.setdefault("ASR_FLASH_ATTN", "on")
+    normalized.setdefault("ASR_MMPROJ_OFFLOAD", "on")
+    # llama.cpp refuses transcription unless the model carries an audio
+    # projector and a chat template it can build an ASR prompt from.
+    normalized.setdefault("ASR_JINJA", "on")
     normalized.setdefault(
-        "PARAKEET_V3_LOCAL_MODEL",
-        shared_transcript_model
-        or f"preset:{normalized.get('PARAKEET_V3_LOCAL_MODEL_SIZE', shared_transcript_legacy)}",
+        "ASR_GPU_VISIBLE_DEVICES",
+        normalized.get("OCR_GPU_VISIBLE_DEVICES", normalized.get("TASK_GPU_VISIBLE_DEVICES", "0")),
     )
-    normalized.setdefault(
-        "WHISPERKIT_LARGE_V3_LOCAL_MODEL",
-        shared_transcript_model
-        or f"preset:{normalized.get('WHISPERKIT_LARGE_V3_LOCAL_MODEL_SIZE', shared_transcript_legacy)}",
-    )
-    normalized.setdefault("PARAKEET_V3_STREAM_OUTPUT_ENABLED", "off")
-    normalized.setdefault("PARAKEET_V3_STREAM_OUTPUT_TARGET", "")
-    normalized.setdefault("PARAKEET_V3_STREAM_OUTPUT_FORMAT", "webhook")
-    normalized.setdefault("PARAKEET_V3_SPEAKER_DETECTION", "off")
-    normalized.setdefault("PARAKEET_V3_SPEAKER_MODE", "auto")
-    normalized.setdefault("PARAKEET_V3_SPEAKER_COUNT", "2")
-    normalized.setdefault("WHISPERKIT_LARGE_V3_STREAM_OUTPUT_ENABLED", "off")
-    normalized.setdefault("WHISPERKIT_LARGE_V3_STREAM_OUTPUT_TARGET", "")
-    normalized.setdefault("WHISPERKIT_LARGE_V3_STREAM_OUTPUT_FORMAT", "webhook")
-    normalized.setdefault("WHISPERKIT_LARGE_V3_SPEAKER_DETECTION", "off")
-    normalized.setdefault("WHISPERKIT_LARGE_V3_SPEAKER_MODE", "auto")
-    normalized.setdefault("WHISPERKIT_LARGE_V3_SPEAKER_COUNT", "2")
+    normalized.setdefault("ASR_CUSTOM_ARGS_JSON", "[]")
     return normalized
 
 def read_env_raw() -> dict:

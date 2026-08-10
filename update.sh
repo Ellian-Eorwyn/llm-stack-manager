@@ -16,7 +16,9 @@ MANAGER_ONLY=0
 # manager-only update can always do it. Model backends are deliberately absent:
 # restarting one reloads tens of GB of weights and discards its warm prompt
 # cache, which is far too expensive to do on every code update.
-CHEAP_RESTART_SERVICES=(llm-manager chat-proxy chat-proxy2 glmocr-sdk playwright-server)
+# transcript-backend belongs here: it idle-unloads anyway, so a restart
+# discards nothing a request would not have discarded a few minutes later.
+CHEAP_RESTART_SERVICES=(llm-manager chat-proxy chat-proxy2 glmocr-sdk playwright-server transcript-backend)
 # Changes under these paths mean a model backend really is running stale code.
 # web/deploy.py holds the same list so the manager's drift badge and this
 # post-update report agree about what costs a model reload; tests/test_deploy.py
@@ -260,14 +262,14 @@ if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
     elif [[ "${SKIP_RESTART}" != "1" ]]; then
         source "${STACK_DIR}/scripts/cross-platform.sh"
         if is_linux; then
-            mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'playwright-server.service' 'think.service' 'nothink.service' 'qwen-*' 'honcho-*.service' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
+            mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'transcript-backend.service' 'playwright-server.service' 'think.service' 'nothink.service' 'qwen-*' 'honcho-*.service' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
         else
-            active=(llm-manager chat-backend chat-backend-dense chat-backend-moe chat-proxy embed rerank task ocr glmocr-sdk honcho-api honcho-deriver think nothink)
+            active=(llm-manager chat-backend chat-backend-dense chat-backend-moe chat-proxy embed rerank task ocr glmocr-sdk transcript-backend honcho-api honcho-deriver think nothink)
         fi
         
         for svc in "${active[@]}"; do
             case "${svc}" in
-                llm-manager|chat-backend|chat-backend-dense|chat-backend-moe|chat-proxy|embed|rerank|task|ocr|glmocr-sdk|playwright-server|honcho-api|honcho-deriver|think|nothink)
+                llm-manager|chat-backend|chat-backend-dense|chat-backend-moe|chat-proxy|embed|rerank|task|ocr|glmocr-sdk|transcript-backend|playwright-server|honcho-api|honcho-deriver|think|nothink)
                     if is_mac || svc_is_active "${svc}"; then
                         svc_restart "${svc}"
                     fi

@@ -29,6 +29,7 @@ ALL_SERVICES=(
     ocr
     llama-router
     glmocr-sdk
+    transcript-backend
     honcho-api
     honcho-deriver
     qwen-think
@@ -154,6 +155,7 @@ if [[ -n "${LLM_STACK_SELECTED_COMPONENTS:-}" ]]; then
     selected glmocr-sdk && DEFAULT_SERVICES+=(glmocr-sdk)
     selected playwright && DEFAULT_SERVICES+=(playwright-server)
     selected honcho && DEFAULT_SERVICES+=(honcho-api honcho-deriver)
+    selected transcribe && [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]] && DEFAULT_SERVICES+=(transcript-backend)
 else
     DEFAULT_SERVICES=("${DEFAULT_CHAT_BACKEND}" chat-proxy chat-backend2 chat-proxy2)
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
@@ -163,6 +165,9 @@ else
     fi
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_SERVICES+=(honcho-api honcho-deriver)
+    fi
+    if [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]]; then
+        DEFAULT_SERVICES+=(transcript-backend)
     fi
 fi
 

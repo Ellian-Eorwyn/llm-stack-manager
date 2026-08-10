@@ -8,11 +8,14 @@ async function loadConfig() {
   try {
     if (!ggufFiles.length) await loadGgufFiles();
     if (!chatTemplates.length) await loadChatTemplates();
-    if (!Object.keys(transcriptionModelsByEngine).length) {
-      await loadTranscriptionModels('parakeet-v3');
-      await loadTranscriptionModels('whisperkit-large-v3');
-    }
     if (!Object.keys(transcriptionCapabilities).length) await loadTranscriptionCapabilities();
+    // Driven by the engine registry rather than a hardcoded pair, so adding an
+    // engine server-side populates its dropdown without a matching edit here.
+    if (!Object.keys(transcriptionModelsByEngine).length) {
+      for (const engineId of Object.keys(transcriptionCapabilities)) {
+        await loadTranscriptionModels(engineId);
+      }
+    }
     cfgCurrent = await fetchJSON('/api/config');
     for (const [key, val] of Object.entries(cfgCurrent)) {
       const el = document.getElementById('cfg-' + key);

@@ -170,6 +170,19 @@ else
     skip "OCR SDK"
 fi
 
+if [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]] && should_check transcript-backend; then
+    echo ""
+    echo "--- Transcription sidecar (port ${TRANSCRIPT_PORT:-8014}) ---"
+    TRANSCRIPT_RESP=$(curl -sf "http://${TRANSCRIPT_HOST:-127.0.0.1}:${TRANSCRIPT_PORT:-8014}/health" 2>&1 || true)
+    check "Transcription health endpoint responds" "${TRANSCRIPT_RESP}" '"ok"'
+    # Healthy means "can take a request", not "is holding a model": the sidecar
+    # idle-unloads on purpose, so no resident model is the expected steady state.
+    TRANSCRIPT_ENGINES_RESP=$(curl -sf "http://${TRANSCRIPT_HOST:-127.0.0.1}:${TRANSCRIPT_PORT:-8014}/engines" 2>&1 || true)
+    check "Transcription reports its engines" "${TRANSCRIPT_ENGINES_RESP}" "${TRANSCRIPT_ACTIVE_ENGINE:-faster-whisper}"
+else
+    skip "Transcription sidecar"
+fi
+
 if [[ "${HONCHO_ENABLED:-off}" == "on" ]] && should_check honcho-api; then
     echo ""
     echo "--- Honcho endpoint (port ${HONCHO_PORT}) ---"

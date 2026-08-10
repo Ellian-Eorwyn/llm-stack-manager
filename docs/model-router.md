@@ -160,3 +160,34 @@ as background work. With Honcho running, that is a continuous unattended load
 trigger that will evict OCR seconds after it loads. Pointing Honcho at `embed2`
 on 8011 — outside the pool, 639 MB, and already the right 1024 dimensions —
 keeps it out of the way.
+
+## 8. Adding a member
+
+Three tables are keyed by the same env prefix and must agree, or the panel and
+the router disagree about what exists:
+
+| File | Table | What it decides |
+|---|---|---|
+| `scripts/render-models-ini.py` | `MEMBERS` | the model path, projector, and section name the router serves it under |
+| `web/telemetry.py` | `ROUTER_MEMBER_UNITS` | which unit the member replaces, so the panel does not report it as stopped-on-purpose |
+| `scripts/install-model-router-nginx.sh` | `MEMBER_PORTS` | the public port shimmed onto the router, if it has one |
+
+`tests/test_model_router.py` asserts the first two carry the same keys.
+
+Being in `MEMBERS` is **not** being in the pool. `MODEL_ROUTER_MEMBERS` decides
+that, and its default — `EMBED,OCR,RERANK,TASK` — is duplicated in seven places
+(`render-models-ini.py`, `web/config_env.py`, `web/telemetry.py`,
+`install-model-router-nginx.sh`, `restore-active-stack.sh`,
+`activate-selected-stack.sh`, `install.sh`). A member left out of that string is
+opt-in and none of the seven change: `EMBED2` and `ASR` are both in this state.
+
+A member with no entry in `MEMBER_PORTS` is logged and skipped rather than
+defaulted, which is right for one that has no public port. `ASR` is the example:
+its only caller is the transcription sidecar, which posts to the router on
+loopback with `model=asr`, so a shim would be a second door to the same room.
+
+Section names are the routing key — `server_model_meta::update_args` overwrites
+the child's `--alias` with them — which is why `RERANK_MODEL_NAME` is `rank`.
+
+See `docs/transcription.md` for `ASR`, the one member that is an audio model and
+serves the router's own `/v1/audio/transcriptions`.

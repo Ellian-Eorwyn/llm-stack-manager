@@ -75,6 +75,7 @@ function showTab(tab) {
   if (tab === 'graphiti') initGraphitiTab();
   if (tab === 'searxng') initSearxngTab();
   if (tab === 'playwright') initPlaywrightTab();
+  if (tab === 'transcribe') initTranscribeTab();
   if (tab === 'setup') initSetupWizard();
 }
 

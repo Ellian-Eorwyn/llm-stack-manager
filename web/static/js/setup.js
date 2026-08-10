@@ -218,6 +218,7 @@ async function setupShowCompletion() {
   if (selected.includes('task')) endpoints.push(['Task', `http://${host}:8007/v1`]);
   if (selected.includes('ocr')) endpoints.push(['OCR model', `http://${host}:8009/v1`]);
   if (selected.includes('glmocr-sdk')) endpoints.push(['GLM-OCR SDK', `http://${host}:5002/glmocr/parse`]);
+  if (selected.includes('transcribe')) endpoints.push(['Transcription', `http://${host}:8014/v1/audio/transcriptions`]);
   if (selected.includes('searxng')) endpoints.push(['SearXNG JSON', `http://${host}/searxng/search?q=test&format=json`]);
   if (selected.includes('playwright')) endpoints.push(['Playwright remote protocol', `ws://${host}/playwright/`]);
   const modelSummary = Object.entries(setupSelection.models || {}).filter(([name]) => selected.includes(name)).map(([name,model]) => `<div><strong>${escapeHtml(setupModelLabels[name] || name)}</strong>: ${escapeHtml((model.path || '').split('/').pop())}</div>`).join('');

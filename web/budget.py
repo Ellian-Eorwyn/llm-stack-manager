@@ -713,6 +713,10 @@ BACKEND_PREFIXES = {
     "rerank": "RERANK",
     "task": "TASK",
     "ocr": "OCR",
+    # Only pooled when ASR is in MODEL_ROUTER_MEMBERS, but priced either way:
+    # an audio GGUF the budget cannot see is one the pre-flight check silently
+    # leaves out of the VRAM total.
+    "asr": "ASR",
 }
 
 # Settings key -> env suffix. Absent suffixes fall back to the defaults in

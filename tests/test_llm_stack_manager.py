@@ -281,6 +281,45 @@ class OcrExtractTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["start_page_id"], 2)
         self.assertEqual(captured["payload"]["end_page_id"], 3)
 
+    def test_transcribe_overview_merges_the_sidecar_body(self):
+        """The sidecar's own reply carries `ok`, so splatting it into
+        `jsonify(ok=True, **data)` is a TypeError and a 500 on every call."""
+        sidecar = {"ok": True, "active_engine": "faster-whisper", "resident": None,
+                   "engines": [{"id": "faster-whisper", "runtime": "faster-whisper"}]}
+        env = {"TRANSCRIPT_ENABLED": "on", "TRANSCRIPT_HOST": "127.0.0.1",
+               "TRANSCRIPT_PORT": "8014"}
+        with (
+            manager.app.test_client() as client,
+            patch.object(config_env, "read_env", return_value=env),
+            patch.object(core, "http_json", return_value=sidecar),
+        ):
+            resp = client.get("/api/transcribe/overview")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertTrue(body["ok"] and body["enabled"] and body["reachable"])
+        self.assertEqual(body["active_engine"], "faster-whisper")
+
+    def test_transcribe_overview_does_not_dial_a_disabled_sidecar(self):
+        with (
+            manager.app.test_client() as client,
+            patch.object(config_env, "read_env", return_value={"TRANSCRIPT_ENABLED": "off"}),
+            patch.object(core, "http_json", side_effect=AssertionError("must not be called")),
+        ):
+            body = client.get("/api/transcribe/overview").get_json()
+        self.assertFalse(body["enabled"])
+        self.assertFalse(body["reachable"])
+
+    def test_transcribe_url_rewrites_an_unreachable_bind_address(self):
+        """`TRANSCRIPT_HOST` may be a wildcard or the literal ${LISTEN_HOST},
+        which systemd's EnvironmentFile does not expand. Neither is dialable."""
+        self.assertEqual(
+            manager._transcribe_base_url({"TRANSCRIPT_HOST": "0.0.0.0", "TRANSCRIPT_PORT": "8014"}),
+            "http://127.0.0.1:8014")
+        self.assertEqual(
+            manager._transcribe_base_url({"TRANSCRIPT_HOST": "${LISTEN_HOST}",
+                                          "LISTEN_HOST": "10.0.0.5", "TRANSCRIPT_PORT": "8014"}),
+            "http://10.0.0.5:8014")
+
     def test_ocr_parse_wraps_base64_input(self):
         captured = {}
 
@@ -1391,6 +1430,9 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/setup/validation", ("GET",), "api_setup_validation"),
         ("/api/status", ("GET",), "api_status"),
         ("/api/switch/<variant>", ("POST",), "api_switch"),
+        ("/api/transcribe/overview", ("GET",), "api_transcribe_overview"),
+        ("/api/transcribe/test", ("POST",), "api_transcribe_test"),
+        ("/api/transcribe/unload", ("POST",), "api_transcribe_unload"),
         ("/api/transcription-capabilities", ("GET",), "api_transcription_capabilities"),
         ("/api/transcription-models/<engine_id>", ("GET",), "api_transcription_models"),
         ("/api/tts/activate/<backend_id>", ("POST",), "api_tts_activate"),
