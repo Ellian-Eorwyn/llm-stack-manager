@@ -88,39 +88,56 @@ model that sits resident is the thing that breaks everything else.
 
 ## Measured on this host
 
-70.5 minutes of lecture audio (64 kbps mono MP3), one RTX 3090, both runs
-back to back with `TRANSCRIPT_ROUTER_YIELD=all` so neither competed with the
-pooled models. Weights already cached.
+70.5 minutes of lecture audio (64 kbps mono MP3), one RTX 3090. Peak VRAM is
+sampled from `nvidia-smi` for the whole process, so it includes the CUDA
+context and the allocator's cached pool, not just live tensors.
 
 | | faster-whisper large-v3 | parakeet-tdt-0.6b-v3 |
 |---|---|---|
-| Wall clock | 371 s | **45 s** |
-| Decode | 363 s | **24 s** |
-| Realtime factor | 11.6× | **177×** |
-| Model load | 7 s | 20 s |
-| Peak VRAM | **5,496 MiB** | 6,490 MiB |
-| Peak host RSS | 3,616 MiB | 2,048 MiB |
-| Segments | **876** | 15 |
-| Transcript | 56,418 chars | 55,917 chars |
+| Wall clock | 371 s | **47 s** |
+| Realtime factor | 11.6× | **192×** |
+| Peak VRAM | 5,496 MiB | **1,909 MiB** |
+| Segments | **876** | 71 |
+| Transcript | 56,418 chars | 55,477 chars |
 
-Parakeet is **8× faster wall-clock** for a transcript of near-identical length,
-which is the headline. Two things the table does not say:
+Parakeet is **8× faster on a fifth of the VRAM** for a transcript of
+near-identical length. Two caveats the table does not carry:
 
 **Segment granularity is not comparable.** Whisper returns real utterance
 boundaries. NeMo returns none unless `word_timestamps=true` is requested, so
-those 15 "segments" are just the 15 decode windows and their timings are
-window-granular. Ask for word timestamps if you need subtitles or alignment;
-without it, Parakeet's timeline is only as fine as `TRANSCRIPT_NEMO_CHUNK_SECONDS`.
+Parakeet's segments are just its decode windows and their timings are
+window-granular. Ask for word timestamps if you need subtitles or alignment.
 
-**Parakeet's VRAM is a dial, not a constant.** The same file at 100-second
-windows peaked at **1,552 MiB** and took 60 s; at 300-second windows it peaked
-at 6,490 MiB and took 45 s. Activation memory scales with window length, so
-`TRANSCRIPT_NEMO_CHUNK_SECONDS` trades VRAM against speed. Lower it on a busy
-GPU — Parakeet still beats Whisper on both axes at 100 s.
+**Whisper applies inverse text normalisation more consistently** — "July 21st,
+1969" against Parakeet's "July twenty first, nineteen sixty nine" on one clip.
+That matters if agents parse dates or figures out of the transcript.
 
-Whisper also applies inverse text normalisation more consistently
-("July 21st, 1969" against Parakeet's "July twenty first, nineteen sixty nine"
-on one clip), which matters if agents parse dates or figures out of the text.
+### Getting Parakeet into 2 GB
+
+The 1,909 MiB figure needs three settings together, and each was worth roughly
+a factor on its own:
+
+```
+TRANSCRIPT_LOCAL_COMPUTE_TYPE=float16
+TRANSCRIPT_NEMO_CHUNK_SECONDS=60
+TRANSCRIPT_MAX_VRAM_MB=2500
+```
+
+Left at fp32 with 300-second windows the same file peaks at 6,490 MiB. The
+precision setting is the big one: NeMo restores checkpoints in fp32 onto the
+GPU by default, so the engine restores on the **CPU**, casts, and only then
+moves — casting after the move still pays a 2.4 GB fp32 peak for a 0.6B model,
+which is enough to make a 2.5 GB budget unloadable.
+
+Window size trades VRAM against nothing much below ~100 s: 60 s and 100 s
+windows land within 20 MiB of each other, while 150 s costs a further gigabyte.
+Shorter windows also mean finer segment timings when word timestamps are off.
+
+**`TRANSCRIPT_MAX_VRAM_MB` only binds torch.** It works by capping torch's
+allocator, so it constrains the `nemo` and `hf` engines and is inert for
+`faster-whisper` — CTranslate2 allocates outside torch entirely and was
+measured at 2,532 MiB under a 2,500 MiB budget. Treat it as a guard for the
+torch engines, not a guarantee for the process.
 
 ## The `router` engine
 

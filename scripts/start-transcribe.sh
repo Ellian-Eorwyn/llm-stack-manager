@@ -161,6 +161,7 @@ config = {
         "url_allow_hosts": getenv("TRANSCRIPT_URL_ALLOW_HOSTS", ""),
         "oai_allow_long": getenv("TRANSCRIPT_OAI_ALLOW_LONG", "off"),
         "nemo_chunk_seconds": as_float("TRANSCRIPT_NEMO_CHUNK_SECONDS", 300),
+        "max_vram_mb": as_float("TRANSCRIPT_MAX_VRAM_MB", 0),
         "work_dir": getenv("TRANSCRIPT_WORK_DIR", os.path.join(stack_dir, "logs", "transcript", "work")),
     },
     "engines": engines,

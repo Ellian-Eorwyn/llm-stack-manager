@@ -395,6 +395,10 @@ def normalize_env_keys(env: dict) -> dict:
     # NeMo treats its input as one utterance and buffers it in host RAM; 70
     # minutes took 12.7 GB and was OOM-killed while the GPU sat under 5 GB.
     normalized.setdefault("TRANSCRIPT_NEMO_CHUNK_SECONDS", "300")
+    # 0 means no ceiling. Set it and the allocator refuses to go past the
+    # budget, so an overrun is a failed request rather than VRAM taken from
+    # whatever the router was holding.
+    normalized.setdefault("TRANSCRIPT_MAX_VRAM_MB", "0")
     normalized.setdefault("TRANSCRIPT_MAX_UPLOAD_MB", "512")
     normalized.setdefault("TRANSCRIPT_ASYNC_THRESHOLD_SECONDS", "900")
     normalized.setdefault("TRANSCRIPT_JOB_TTL_SECONDS", "3600")

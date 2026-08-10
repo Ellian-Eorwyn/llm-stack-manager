@@ -377,6 +377,54 @@ class VramDisciplineTests(_StubMixin, unittest.TestCase):
         self.assertIsNone(self.client.get("/engines").get_json()["resident"])
 
 
+class VramBudgetTests(_StubMixin, unittest.TestCase):
+    """A window size moves peak usage; only a budget bounds it."""
+
+    def _manager_with_budget(self, budget_mb, recorder):
+        cfg = dict(self.cfg)
+        cfg["limits"] = dict(cfg["limits"], max_vram_mb=budget_mb)
+        fake = type(sys)("torch")
+        fake.cuda = type(sys)("torch.cuda")
+        fake.cuda.is_available = lambda: True
+        fake.cuda.empty_cache = lambda: None
+        fake.cuda.ipc_collect = lambda: None
+        fake.cuda.set_per_process_memory_fraction = lambda f, d=0: recorder.append((f, d))
+        fake.cuda.get_device_properties = lambda i: type(
+            "P", (), {"total_memory": 24 * 1024 * 1024 * 1024})()
+        sys.modules["torch"] = fake
+        self.addCleanup(sys.modules.pop, "torch", None)
+        return tsrv.ModelManager(cfg)
+
+    def test_a_budget_caps_the_allocator(self):
+        calls = []
+        self._manager_with_budget(2500, calls).acquire("stub", "preset:a")
+        self.assertEqual(len(calls), 1)
+        fraction, device = calls[0]
+        # The CUDA context is outside torch's allocator, so it comes off the top.
+        expected = (2500 - tsrv.CUDA_CONTEXT_MB) / (24 * 1024)
+        self.assertAlmostEqual(fraction, expected, places=4)
+        self.assertEqual(device, 0)
+
+    def test_zero_means_no_budget(self):
+        calls = []
+        self._manager_with_budget(0, calls).acquire("stub", "preset:a")
+        self.assertEqual(calls, [])
+
+    def test_a_budget_below_the_context_cost_is_refused_not_applied(self):
+        """Setting a fraction of zero would fail every allocation instead."""
+        calls = []
+        self._manager_with_budget(tsrv.CUDA_CONTEXT_MB - 50, calls).acquire("stub", "preset:a")
+        self.assertEqual(calls, [])
+
+    def test_a_budget_never_blocks_a_load_when_torch_is_absent(self):
+        cfg = dict(self.cfg)
+        cfg["limits"] = dict(cfg["limits"], max_vram_mb=2500)
+        sys.modules["torch"] = None      # import raises
+        self.addCleanup(sys.modules.pop, "torch", None)
+        manager = tsrv.ModelManager(cfg)
+        self.assertIsNotNone(manager.acquire("stub", "preset:a"))
+
+
 class RouterYieldTests(_StubMixin, unittest.TestCase):
     class _FakeResponse:
         def __init__(self, status=200, text="", payload=None):

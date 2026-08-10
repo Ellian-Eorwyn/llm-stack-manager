@@ -58,6 +58,10 @@ RESPONSE_FORMATS = ("json", "verbose_json", "text", "srt", "vtt", "markdown")
 # worse than one that refuses them, so /v1/* takes only OpenAI's five.
 OPENAI_RESPONSE_FORMATS = ("json", "verbose_json", "text", "srt", "vtt")
 
+# What the CUDA context costs before any tensor is allocated. Sits outside
+# torch's allocator, so a VRAM budget has to account for it separately.
+CUDA_CONTEXT_MB = 300
+
 TRUTHY = {"1", "true", "yes", "on"}
 
 
@@ -271,13 +275,28 @@ class _NemoEngine(Engine):
         if not value:
             raise ModelLoadFailed(f"no model configured for {self.engine_id}", engine=self.engine_id)
         try:
+            # Restored onto the CPU on purpose. Left to itself NeMo puts the
+            # checkpoint straight onto the GPU in fp32, so the fp32 peak is
+            # paid before any cast of ours can run — 2.4 GB of weights for a
+            # 0.6B model, which is what made a 2.5 GB budget unloadable.
             if kind == "local" and value.endswith(".nemo"):
-                self.model = ASRModel.restore_from(value)
+                self.model = ASRModel.restore_from(value, map_location="cpu")
             elif kind == "local":
-                self.model = ASRModel.restore_from(str(next(Path(value).glob("*.nemo"))))
+                self.model = ASRModel.restore_from(str(next(Path(value).glob("*.nemo"))),
+                                                   map_location="cpu")
             else:
-                self.model = ASRModel.from_pretrained(value)
+                self.model = ASRModel.from_pretrained(value, map_location="cpu")
             device = self.cfg["runtime"]["device"]
+            # Cast before the move, not after. NeMo restores checkpoints in
+            # fp32 whatever the stack is configured for, so
+            # `TRANSCRIPT_LOCAL_COMPUTE_TYPE=float16` was being ignored
+            # entirely — and casting once the weights are already on the GPU
+            # still pays the full fp32 peak on the way in. For a 0.6B model
+            # that peak is 2.4 GB of weights alone, which is what made a
+            # 2.5 GB budget impossible to load inside.
+            dtype = self._torch_dtype(self.cfg["runtime"].get("compute_type"))
+            if dtype is not None:
+                self.model = self.model.to(dtype=dtype)
             if device.startswith("cuda"):
                 self.model = self.model.cuda()
             self.model.eval()
@@ -289,6 +308,25 @@ class _NemoEngine(Engine):
 
     def unload(self) -> None:
         self.model = None
+
+    @staticmethod
+    def _torch_dtype(compute_type: str | None):
+        """Map the stack's compute-type names onto torch dtypes.
+
+        `int8` and `int8_float16` are CTranslate2 quantisation schemes with no
+        torch equivalent for this model, so they fall back to fp16 rather than
+        failing — the intent behind both is "smaller than fp32".
+        """
+        try:
+            import torch
+        except Exception:
+            return None
+        return {
+            "float16": torch.float16, "fp16": torch.float16,
+            "int8": torch.float16, "int8_float16": torch.float16,
+            "bfloat16": torch.bfloat16, "bf16": torch.bfloat16,
+            "float32": torch.float32, "fp32": torch.float32,
+        }.get((compute_type or "").strip().lower())
 
     def transcribe(self, path: str, req: "TranscribeRequest") -> dict:
         """Decode in windows, because NeMo will not do it for us.
@@ -641,6 +679,7 @@ class ModelManager:
                 pass
             else:
                 self._router_yield()
+            self._apply_vram_cap()
             inst = cls(self.cfg, self.cfg["engines"].get(engine_id, {}))
             try:
                 inst.load(model_ref)
@@ -685,6 +724,39 @@ class ModelManager:
         self._resident, self._resident_key = None, None
         self._free_device_memory()
         log.info("released %s", engine_id)
+
+    def _apply_vram_cap(self) -> None:
+        """Hold the process to a VRAM budget, rather than hoping a window size does.
+
+        `TRANSCRIPT_NEMO_CHUNK_SECONDS` moves peak usage but does not bound it:
+        a longer file, a different sample rate or a model change all move it
+        again. This makes the budget explicit — torch's allocator refuses to go
+        past it and raises OOM, which the caller sees as a clean 503 rather than
+        as the sidecar quietly taking VRAM the router was relying on.
+
+        The CUDA context (roughly 250-300 MiB) is allocated by the driver
+        outside torch's allocator, so it is subtracted from the budget rather
+        than pretended away.
+        """
+        budget_mb = float(self.cfg["limits"].get("max_vram_mb") or 0)
+        if budget_mb <= 0:
+            return
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                return
+            total_mb = torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
+            usable = max(0.0, budget_mb - CUDA_CONTEXT_MB)
+            fraction = min(1.0, usable / total_mb)
+            if fraction <= 0:
+                log.warning("VRAM budget %.0f MiB is below the CUDA context cost; ignoring",
+                            budget_mb)
+                return
+            torch.cuda.set_per_process_memory_fraction(fraction, 0)
+            log.info("VRAM budget %.0f MiB (%.0f MiB to torch, %.1f%% of device)",
+                     budget_mb, usable, fraction * 100)
+        except Exception as exc:
+            log.warning("could not apply the VRAM budget: %s", exc)
 
     @staticmethod
     def _free_device_memory() -> None:
@@ -1076,6 +1148,7 @@ def default_config() -> dict:
             "url_allow_hosts": env("TRANSCRIPT_URL_ALLOW_HOSTS", ""),
             "oai_allow_long": env("TRANSCRIPT_OAI_ALLOW_LONG", "off"),
             "nemo_chunk_seconds": float(env("TRANSCRIPT_NEMO_CHUNK_SECONDS", "300")),
+            "max_vram_mb": float(env("TRANSCRIPT_MAX_VRAM_MB", "0")),
             "work_dir": env("TRANSCRIPT_WORK_DIR", tempfile.gettempdir()),
         },
         "engines": engines,
