@@ -801,6 +801,7 @@ CONFIG_FIELDS = [
     {"section": "Transcription", "key": "TRANSCRIPT_ROUTER_YIELD",      "label": "Yield to Model Router",  "type": "select", "options": ["asr", "all", "off"], "hint": "Unload router models before loading locally so the two never stack. asr drops only the pooled audio model; all drops every resident one"},
     {"section": "Transcription", "key": "TRANSCRIPT_ROUTER_ALLOW_DEGRADED", "label": "Allow Degraded Router Output", "type": "select", "options": ["off", "on"], "hint": "The router engine returns no timestamps. Off refuses srt/vtt/verbose_json rather than emitting a fabricated timeline"},
     {"section": "Transcription", "key": "TRANSCRIPT_MAX_CONCURRENCY",   "label": "Concurrent Decodes",     "type": "number", "hint": "1 is correct for a single resident model; NeMo is not thread-safe"},
+    {"section": "Transcription", "key": "TRANSCRIPT_NEMO_CHUNK_SECONDS", "label": "NeMo Window (sec)",     "type": "number", "hint": "NeMo buffers whatever it is handed in host RAM, so long audio is decoded in windows this size. 0 disables windowing"},
     {"section": "Transcription", "key": "TRANSCRIPT_MAX_UPLOAD_MB",     "label": "Max Upload (MB)",        "type": "number"},
     {"section": "Transcription", "key": "TRANSCRIPT_ASYNC_THRESHOLD_SECONDS", "label": "Async Threshold (sec)", "type": "number", "hint": "Audio longer than this returns a job id from /transcribe instead of blocking"},
     {"section": "Transcription", "key": "TRANSCRIPT_JOB_TTL_SECONDS",   "label": "Job Retention (sec)",    "type": "number"},

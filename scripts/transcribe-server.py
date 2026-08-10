@@ -291,20 +291,99 @@ class _NemoEngine(Engine):
         self.model = None
 
     def transcribe(self, path: str, req: "TranscribeRequest") -> dict:
+        """Decode in windows, because NeMo will not do it for us.
+
+        `ASRModel.transcribe` treats whatever it is handed as one utterance and
+        buffers it whole in *host* RAM. A 70-minute file took 12.7 GB and was
+        killed by the kernel OOM-killer while the GPU sat at under 5 GB — the
+        failure looks like a crashed service, not like a model that needs
+        chunking. faster-whisper never shows this because it windows internally.
+        """
+        chunk_seconds = float(self.cfg["limits"].get("nemo_chunk_seconds") or 300)
+        duration = probe_duration(path) or 0.0
         try:
-            kwargs: dict[str, Any] = {"batch_size": 1}
-            if req.word_timestamps:
-                kwargs["timestamps"] = True
-            results = self.model.transcribe([path], **kwargs)
-            item = results[0] if results else None
-            text = getattr(item, "text", None)
-            if text is None:
-                text = item if isinstance(item, str) else ""
-            segments = self._segments_from(item, text)
+            if chunk_seconds <= 0 or (duration and duration <= chunk_seconds):
+                return self._decode_window(path, req, offset=0.0, duration=duration)
+            return self._decode_chunked(path, req, chunk_seconds, duration)
+        except TranscribeError:
+            raise
         except Exception as exc:
             raise DecodeFailed(f"{self.engine_id} failed: {exc}", engine=self.engine_id) from exc
-        return {"segments": segments, "language": req.language or "", "language_probability": 0.0,
-                "duration": segments[-1]["end"] if segments else 0.0}
+
+    def _decode_window(self, path: str, req: "TranscribeRequest", offset: float,
+                       duration: float) -> dict:
+        kwargs: dict[str, Any] = {"batch_size": 1}
+        if req.word_timestamps:
+            kwargs["timestamps"] = True
+        results = self.model.transcribe([path], **kwargs)
+        item = results[0] if results else None
+        text = getattr(item, "text", None)
+        if text is None:
+            text = item if isinstance(item, str) else ""
+        segments = self._segments_from(item, text)
+        for seg in segments:
+            seg["start"] = round(seg["start"] + offset, 3)
+            seg["end"] = round(seg["end"] + offset, 3)
+        return {"segments": segments, "language": req.language or "",
+                "language_probability": 0.0,
+                "duration": duration or (segments[-1]["end"] if segments else 0.0)}
+
+    def _decode_chunked(self, path: str, req: "TranscribeRequest",
+                        chunk_seconds: float, duration: float) -> dict:
+        import soundfile as sf
+
+        target_rate = 16000
+        work_dir = Path(self.cfg["limits"]["work_dir"])
+        work_dir.mkdir(parents=True, exist_ok=True)
+        segments: list[dict] = []
+        offset = 0.0
+        index = 0
+        # Streamed rather than decoded whole: holding 70 minutes of float32 as
+        # well as the model is what we are avoiding, so read one window, write
+        # it, decode it, drop it.
+        for start, samples in self._iter_windows(path, chunk_seconds, target_rate):
+            chunk_path = work_dir / f"nemo-chunk-{os.getpid()}-{index}.wav"
+            try:
+                sf.write(str(chunk_path), samples, target_rate, subtype="PCM_16")
+                window = self._decode_window(str(chunk_path), req, offset=start,
+                                             duration=len(samples) / target_rate)
+                for seg in window["segments"]:
+                    seg["id"] = len(segments)
+                    segments.append(seg)
+            finally:
+                try:
+                    chunk_path.unlink()
+                except Exception:
+                    pass
+            index += 1
+            offset = start
+        log.info("%s decoded %d windows of %.0fs", self.engine_id, index, chunk_seconds)
+        return {"segments": segments, "language": req.language or "",
+                "language_probability": 0.0,
+                "duration": duration or (segments[-1]["end"] if segments else 0.0)}
+
+    @staticmethod
+    def _iter_windows(path: str, chunk_seconds: float, target_rate: int):
+        """Yield (start_seconds, mono float32 samples) without holding the file."""
+        import librosa
+
+        # Sized in the file's own sample rate, not the target: `librosa.stream`
+        # reads before any resampling, so sizing the block at 16 kHz gave 100s
+        # windows out of a 48 kHz file and made the configured value mean a
+        # third of what it says.
+        native = librosa.get_samplerate(path)
+        block = max(1, int(chunk_seconds * native))
+        stream = librosa.stream(path, block_length=1, frame_length=block, hop_length=block,
+                                mono=True, dtype="float32")
+        start = 0.0
+        for samples in stream:
+            if samples.size == 0:
+                continue
+            # Resampled per window, so only one window is ever held at once.
+            if native != target_rate:
+                samples = librosa.resample(samples, orig_sr=native, target_sr=target_rate)
+            yield start, samples
+            start += len(samples) / float(target_rate)
 
     @staticmethod
     def _segments_from(item: Any, text: str) -> list[dict]:
@@ -556,7 +635,21 @@ class ModelManager:
             else:
                 self._router_yield()
             inst = cls(self.cfg, self.cfg["engines"].get(engine_id, {}))
-            inst.load(model_ref)
+            try:
+                inst.load(model_ref)
+            except Exception:
+                # A load that dies partway — most often CUDA OOM — has usually
+                # allocated something already. `_resident` was never assigned,
+                # so nothing else will ever free it, and the memory stays
+                # pinned until the process exits: the next attempt then fails
+                # for the same reason with less room than before.
+                try:
+                    inst.unload()
+                except Exception:
+                    pass
+                del inst
+                self._free_device_memory()
+                raise
             self._resident, self._resident_key = inst, key
             self._loaded_at = time.monotonic()
             self._last_used = self._loaded_at
@@ -583,6 +676,11 @@ class ModelManager:
         except Exception as exc:  # a failed unload must not wedge the manager
             log.warning("unload of %s raised: %s", engine_id, exc)
         self._resident, self._resident_key = None, None
+        self._free_device_memory()
+        log.info("released %s", engine_id)
+
+    @staticmethod
+    def _free_device_memory() -> None:
         gc.collect()
         # Imported opportunistically: a faster-whisper-only install is
         # CTranslate2 and has no torch, and must not be made to grow one.
@@ -593,7 +691,6 @@ class ModelManager:
                 torch.cuda.ipc_collect()
         except Exception:
             pass
-        log.info("released %s", engine_id)
 
     # -- router ------------------------------------------------------------
     def _router_yield(self) -> None:
@@ -971,6 +1068,7 @@ def default_config() -> dict:
             "default_format": env("TRANSCRIPT_DEFAULT_FORMAT", "json"),
             "url_allow_hosts": env("TRANSCRIPT_URL_ALLOW_HOSTS", ""),
             "oai_allow_long": env("TRANSCRIPT_OAI_ALLOW_LONG", "off"),
+            "nemo_chunk_seconds": float(env("TRANSCRIPT_NEMO_CHUNK_SECONDS", "300")),
             "work_dir": env("TRANSCRIPT_WORK_DIR", tempfile.gettempdir()),
         },
         "engines": engines,

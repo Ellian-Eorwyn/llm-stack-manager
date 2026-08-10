@@ -325,6 +325,44 @@ class VramDisciplineTests(_StubMixin, unittest.TestCase):
         finally:
             manager.stop()
 
+    def test_a_failed_load_releases_what_it_allocated(self):
+        """A load that dies partway has usually allocated something already.
+
+        `_resident` is never assigned in that case, so nothing else will free
+        it — the memory stays pinned until the process exits and the next
+        attempt fails for the same reason with less room than before.
+        """
+        released = []
+
+        class HalfLoadingEngine(StubEngine):
+            def load(self, model_ref):
+                raise tsrv.ModelLoadFailed("CUDA out of memory")
+
+            def unload(self):
+                released.append(True)
+
+        tsrv.ENGINES["half"] = HalfLoadingEngine
+        self.addCleanup(tsrv.ENGINES.pop, "half", None)
+        manager = tsrv.ModelManager(self.cfg)
+        with self.assertRaises(tsrv.ModelLoadFailed):
+            manager.acquire("half", "preset:a")
+        self.assertEqual(released, [True], "the half-loaded engine was not unloaded")
+        self.assertIsNone(manager.snapshot()["resident"])
+
+    def test_a_failed_load_leaves_the_manager_usable(self):
+        class BrokenEngine(StubEngine):
+            def load(self, model_ref):
+                raise tsrv.ModelLoadFailed("nope")
+
+        tsrv.ENGINES["broken"] = BrokenEngine
+        self.addCleanup(tsrv.ENGINES.pop, "broken", None)
+        manager = tsrv.ModelManager(self.cfg)
+        with self.assertRaises(tsrv.ModelLoadFailed):
+            manager.acquire("broken", "preset:a")
+        engine = manager.acquire("stub", "preset:a")   # must still work
+        manager.release()
+        self.assertIsNotNone(engine)
+
     def test_unload_reports_whether_anything_was_resident(self):
         manager = tsrv.ModelManager(self.cfg)
         self.assertFalse(manager.unload())

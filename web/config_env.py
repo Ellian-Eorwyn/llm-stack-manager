@@ -392,6 +392,9 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("TRANSCRIPT_ROUTER_YIELD", "asr")
     normalized.setdefault("TRANSCRIPT_ROUTER_ALLOW_DEGRADED", "off")
     normalized.setdefault("TRANSCRIPT_MAX_CONCURRENCY", "1")
+    # NeMo treats its input as one utterance and buffers it in host RAM; 70
+    # minutes took 12.7 GB and was OOM-killed while the GPU sat under 5 GB.
+    normalized.setdefault("TRANSCRIPT_NEMO_CHUNK_SECONDS", "300")
     normalized.setdefault("TRANSCRIPT_MAX_UPLOAD_MB", "512")
     normalized.setdefault("TRANSCRIPT_ASYNC_THRESHOLD_SECONDS", "900")
     normalized.setdefault("TRANSCRIPT_JOB_TTL_SECONDS", "3600")
