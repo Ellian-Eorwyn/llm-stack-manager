@@ -432,19 +432,43 @@ class _NemoEngine(Engine):
 
     @staticmethod
     def _segments_from(item: Any, text: str) -> list[dict]:
-        """NeMo returns a timestamp dict only when asked; fall back to one span."""
+        """NeMo returns a timestamp dict only when asked; fall back to one span.
+
+        It populates `segment`, `word` and `char` independently. Reading only
+        `segment` left every `words` list empty while the engine advertised
+        `word_timestamps: true` — the capability said one thing and the payload
+        another. Words are distributed into the segment whose span contains
+        them, so both levels agree.
+        """
         stamps = getattr(item, "timestamp", None) or {}
         rows = stamps.get("segment") or stamps.get("word") or []
+        word_rows = stamps.get("word") or []
         segments = []
         for idx, row in enumerate(rows):
+            start = round(float(row.get("start", 0.0)), 3)
+            end = round(float(row.get("end", 0.0)), 3)
             segments.append({
                 "id": idx,
-                "start": round(float(row.get("start", 0.0)), 3),
-                "end": round(float(row.get("end", 0.0)), 3),
+                "start": start,
+                "end": end,
                 "text": str(row.get("segment") or row.get("word") or "").strip(),
                 "speaker": None, "avg_logprob": 0.0, "no_speech_prob": 0.0,
-                "compression_ratio": 0.0, "words": [],
+                "compression_ratio": 0.0,
+                "words": [],
             })
+        # Skipped when the rows *are* the words: they would each contain themselves.
+        if word_rows and stamps.get("segment"):
+            for word in word_rows:
+                w_start = round(float(word.get("start", 0.0)), 3)
+                entry = {"start": w_start, "end": round(float(word.get("end", 0.0)), 3),
+                         "word": str(word.get("word", "")), "probability": 0.0}
+                for seg in segments:
+                    if seg["start"] <= w_start <= seg["end"]:
+                        seg["words"].append(entry)
+                        break
+                else:
+                    if segments:
+                        segments[-1]["words"].append(entry)
         if not segments and text:
             segments = [{"id": 0, "start": 0.0, "end": 0.0, "text": text.strip(), "speaker": None,
                          "avg_logprob": 0.0, "no_speech_prob": 0.0, "compression_ratio": 0.0,

@@ -98,6 +98,46 @@ class EngineRegistryTests(unittest.TestCase):
         self.assertEqual(config_fields.RESTART_HINTS.get("ASR_MODEL_PATH"), ["llama-router"])
 
 
+class NemoTimestampTests(unittest.TestCase):
+    """NeMo fills `segment`, `word` and `char` independently.
+
+    Reading only `segment` left every `words` list empty while the engine
+    advertised `word_timestamps: true` — a capability the payload contradicted.
+    """
+
+    @staticmethod
+    def _item(**stamps):
+        return type("Hyp", (), {"text": "hello there world", "timestamp": stamps})()
+
+    SEGMENTS = [{"segment": "hello there", "start": 0.0, "end": 1.0},
+                {"segment": "world", "start": 1.0, "end": 2.0}]
+    WORDS = [{"word": "hello", "start": 0.0, "end": 0.4},
+             {"word": "there", "start": 0.4, "end": 1.0},
+             {"word": "world", "start": 1.2, "end": 2.0}]
+
+    def test_words_are_attached_to_their_segment(self):
+        segments = tsrv._NemoEngine._segments_from(
+            self._item(segment=self.SEGMENTS, word=self.WORDS), "hello there world")
+        self.assertEqual([w["word"] for w in segments[0]["words"]], ["hello", "there"])
+        self.assertEqual([w["word"] for w in segments[1]["words"]], ["world"])
+
+    def test_a_word_past_every_span_still_lands_somewhere(self):
+        stray = self.WORDS + [{"word": "trailing", "start": 99.0, "end": 99.5}]
+        segments = tsrv._NemoEngine._segments_from(
+            self._item(segment=self.SEGMENTS, word=stray), "x")
+        self.assertEqual(segments[-1]["words"][-1]["word"], "trailing")
+
+    def test_word_only_stamps_do_not_nest_words_inside_themselves(self):
+        segments = tsrv._NemoEngine._segments_from(self._item(word=self.WORDS), "x")
+        self.assertEqual(len(segments), 3)
+        self.assertEqual([s["words"] for s in segments], [[], [], []])
+
+    def test_no_stamps_falls_back_to_one_span(self):
+        segments = tsrv._NemoEngine._segments_from(self._item(), "hello there world")
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["text"], "hello there world")
+
+
 class LegacyRenameTests(unittest.TestCase):
     LEGACY = [k for k in config_fields.LEGACY_ENV_KEY_MAP if k.startswith("WHISPERKIT_")]
 
