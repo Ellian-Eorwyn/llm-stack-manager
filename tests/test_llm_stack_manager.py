@@ -1430,6 +1430,8 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/setup/validation", ("GET",), "api_setup_validation"),
         ("/api/status", ("GET",), "api_status"),
         ("/api/switch/<variant>", ("POST",), "api_switch"),
+        ("/api/transcribe/install", ("POST",), "api_transcribe_install"),
+        ("/api/transcribe/install/<job_id>", ("GET",), "api_transcribe_install_status"),
         ("/api/transcribe/overview", ("GET",), "api_transcribe_overview"),
         ("/api/transcribe/test", ("POST",), "api_transcribe_test"),
         ("/api/transcribe/unload", ("POST",), "api_transcribe_unload"),

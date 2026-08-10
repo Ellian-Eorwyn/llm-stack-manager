@@ -72,6 +72,53 @@ function renderTranscribeOverview() {
   if (current) engineSelect.value = current;
 }
 
+async function installTranscribeEngines(btn) {
+  const engines = ['faster-whisper', 'nemo', 'hf']
+    .filter(id => document.getElementById('transcribe-install-' + id).checked);
+  if (!engines.length) {
+    toast('Pick at least one engine', 'err');
+    return;
+  }
+  const status = document.getElementById('transcribe-install-status');
+  const output = document.getElementById('transcribe-install-output');
+  const recreate = document.getElementById('transcribe-install-recreate').checked;
+  if (recreate && !confirm('Rebuild the venv from scratch? Every installed engine is reinstalled.')) return;
+
+  if (btn) btn.disabled = true;
+  output.style.display = 'block';
+  output.textContent = '';
+  status.textContent = 'Starting…';
+  try {
+    const started = await fetchJSON('/api/transcribe/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engines: engines.join(','), recreate }),
+    });
+    // Polled rather than awaited: a torch install runs for minutes, well past
+    // any reasonable request timeout.
+    const jobId = started.job_id;
+    const startedAt = Date.now();
+    while (true) {
+      await new Promise(r => setTimeout(r, 3000));
+      const job = await fetchJSON('/api/transcribe/install/' + jobId);
+      const mins = ((Date.now() - startedAt) / 60000).toFixed(1);
+      status.textContent = `${job.status} — ${job.stage} (${mins} min)`;
+      if (job.output) output.textContent = job.output;
+      if (job.status === 'done' || job.status === 'error') {
+        toast(job.status === 'done' ? 'Engines installed' : 'Install failed', job.status === 'done' ? 'ok' : 'err');
+        if (job.status === 'done') await loadTranscribeOverview(true);
+        break;
+      }
+    }
+  } catch (e) {
+    status.textContent = 'Failed';
+    output.textContent = String(e);
+    toast('Install failed: ' + e, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function unloadTranscribeModel(btn) {
   if (btn) btn.disabled = true;
   try {

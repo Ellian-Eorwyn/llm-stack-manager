@@ -474,12 +474,27 @@ def probe_duration(path: str) -> float | None:
     Used to decide whether a request goes async, so guessing is worse than
     admitting ignorance: an unknown duration runs synchronously, which is the
     behaviour the caller already asked for.
+
+    PyAV is tried before `ffprobe` because it is a library in this venv rather
+    than a binary on `$PATH`, and the unit's PATH is systemd's — bare
+    `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin`. An ffmpeg
+    installed under /home/linuxbrew, /opt or a user profile is invisible there,
+    so an ffprobe-only probe answers None inside the service while working
+    perfectly from a developer's shell, and every long file silently runs
+    synchronously instead of returning a job.
     """
     try:
         with wave.open(path, "rb") as handle:
             rate = handle.getframerate()
             if rate:
                 return handle.getnframes() / float(rate)
+    except Exception:
+        pass
+    try:
+        import av
+        with av.open(path) as container:
+            if container.duration:
+                return container.duration / 1_000_000.0
     except Exception:
         pass
     ffprobe = shutil.which("ffprobe")

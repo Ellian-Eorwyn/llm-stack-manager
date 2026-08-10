@@ -1347,6 +1347,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   <div class="svc-group">
     <div class="group-hdr">Engines</div>
     <div class="meta-list" id="transcribe-engines"></div>
+    <p class="hint">faster-whisper is installed by default. NeMo brings Parakeet v3 and Canary-Qwen and needs torch, so it is a multi-GB install and needs a Python 3.13 or older interpreter; the installer picks one. An engine that is not installed answers 503 rather than failing the service.</p>
+    <div class="hf-inline">
+      <label><input type="checkbox" id="transcribe-install-faster-whisper" checked> faster-whisper</label>
+      <label><input type="checkbox" id="transcribe-install-nemo"> nemo (Parakeet, Canary)</label>
+      <label><input type="checkbox" id="transcribe-install-hf"> hf (transformers)</label>
+      <label><input type="checkbox" id="transcribe-install-recreate"> rebuild venv</label>
+      <button class="btn btn-ghost btn-sm" onclick="installTranscribeEngines(this)">Install / Update</button>
+      <span class="hf-status" id="transcribe-install-status"></span>
+    </div>
+    <pre class="mono" id="transcribe-install-output" style="margin-top:10px;max-height:240px;overflow:auto;display:none;"></pre>
   </div>
 
   <div class="svc-group">

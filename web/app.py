@@ -1712,6 +1712,87 @@ def api_transcribe_unload():
     return jsonify({**data, "ok": True})
 
 
+# Engine installs are minutes long and multi-GB, so they run as a job rather
+# than a request: a synchronous install would sit past every sane HTTP timeout
+# and give the page nothing to show while it waited. Same dict+lock+poll shape
+# as `models.HF_DOWNLOAD_JOBS`, so there is one job pattern in the manager.
+TRANSCRIBE_INSTALL_JOBS: dict = {}
+TRANSCRIBE_INSTALL_LOCK = threading.Lock()
+TRANSCRIBE_INSTALL_ENGINES = ('faster-whisper', 'nemo', 'hf')
+
+
+def update_transcribe_install_job(job_id: str, **changes):
+    with TRANSCRIBE_INSTALL_LOCK:
+        job = TRANSCRIBE_INSTALL_JOBS.get(job_id)
+        if job:
+            job.update(changes)
+            job['updated_at'] = int(time.time())
+
+
+def run_transcribe_install(job_id: str, engines: str, recreate: bool):
+    cmd = ['bash', str(core.SCRIPTS_DIR / 'install-transcribe.sh'), '--engines', engines]
+    if recreate:
+        cmd.append('--recreate')
+    # The venv belongs to the stack owner, not root: the manager runs as root,
+    # and a root-owned venv is one the launcher (running as the owner) cannot
+    # write to. Same guard as the Playwright installer.
+    try:
+        if os.geteuid() == 0 and pwd is not None:
+            user, _ = stack_owner_user_group()
+            cmd = ['sudo', '-u', user, *cmd]
+    except Exception:
+        pass
+    update_transcribe_install_job(job_id, status='running', stage='installing')
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        output = (r.stdout + r.stderr).strip()
+        update_transcribe_install_job(
+            job_id,
+            status='done' if r.returncode == 0 else 'error',
+            stage='complete' if r.returncode == 0 else 'failed',
+            returncode=r.returncode,
+            # Tail only: a pip install of torch is tens of thousands of lines,
+            # and the part that says what went wrong is at the end.
+            output='\n'.join(output.splitlines()[-80:]),
+        )
+    except subprocess.TimeoutExpired:
+        update_transcribe_install_job(job_id, status='error', stage='failed',
+                                      output='Install timed out after 3600s')
+    except Exception as exc:
+        update_transcribe_install_job(job_id, status='error', stage='failed', output=str(exc))
+
+
+@app.route('/api/transcribe/install', methods=['POST'])
+def api_transcribe_install():
+    body = request.get_json(silent=True) or {}
+    requested = [e.strip() for e in str(body.get('engines') or '').split(',') if e.strip()]
+    unknown = [e for e in requested if e not in TRANSCRIBE_INSTALL_ENGINES]
+    if not requested or unknown:
+        return jsonify(ok=False,
+                       error=f"engines must be a comma-separated subset of "
+                             f"{', '.join(TRANSCRIBE_INSTALL_ENGINES)}"), 400
+    engines = ','.join(requested)
+    job_id = uuid.uuid4().hex[:16]
+    with TRANSCRIBE_INSTALL_LOCK:
+        TRANSCRIBE_INSTALL_JOBS[job_id] = {
+            'id': job_id, 'status': 'queued', 'stage': 'queued', 'engines': engines,
+            'created_at': int(time.time()), 'updated_at': int(time.time()), 'output': '',
+        }
+    threading.Thread(target=run_transcribe_install,
+                     args=(job_id, engines, bool(body.get('recreate'))),
+                     daemon=True, name=f'transcribe-install-{job_id}').start()
+    return jsonify(ok=True, job_id=job_id, engines=engines)
+
+
+@app.route('/api/transcribe/install/<job_id>')
+def api_transcribe_install_status(job_id):
+    with TRANSCRIBE_INSTALL_LOCK:
+        job = TRANSCRIBE_INSTALL_JOBS.get(job_id)
+    if not job:
+        return jsonify(ok=False, error='Unknown install job'), 404
+    return jsonify({**job, 'ok': True})
+
+
 @app.route('/api/transcribe/test', methods=['POST'])
 def api_transcribe_test():
     """Forward one uploaded clip to the sidecar so the panel can prove it works.
