@@ -362,6 +362,14 @@ class _NemoEngine(Engine):
         for seg in segments:
             seg["start"] = round(seg["start"] + offset, 3)
             seg["end"] = round(seg["end"] + offset, 3)
+            # The words carry window-relative times too. Offsetting only the
+            # segment bounds leaves every word inside the first window's range,
+            # so a 70-minute file reports all 9,603 of them between 0 and 60
+            # seconds — non-monotonic, and useless for alignment — while the
+            # segments around them look perfectly correct.
+            for word in seg["words"]:
+                word["start"] = round(word["start"] + offset, 3)
+                word["end"] = round(word["end"] + offset, 3)
             # Without `timestamps=True` NeMo returns text and no timeline, so
             # the synthetic segment is zero-length. Left alone it produces
             # subtitle cues that start and end at the same instant — valid

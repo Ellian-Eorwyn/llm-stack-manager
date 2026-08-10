@@ -138,6 +138,51 @@ class NemoTimestampTests(unittest.TestCase):
         self.assertEqual(segments[0]["text"], "hello there world")
 
 
+class WindowOffsetTests(unittest.TestCase):
+    """Window-relative times have to be lifted onto the real timeline.
+
+    Each decode window restarts at zero. Offsetting the segment bounds but not
+    the words inside them leaves every word in the first window's range — a
+    70-minute file reporting all its words between 0 and 60 seconds, while the
+    segments around them look entirely correct.
+    """
+
+    class _Engine(tsrv._NemoEngine):
+        def __init__(self):
+            pass
+
+        def _decode(self):
+            return None
+
+    def _decode_window(self, offset):
+        engine = self._Engine()
+        engine.model = type("M", (), {
+            "transcribe": staticmethod(lambda paths, **kw: [type("Hyp", (), {
+                "text": "hello world",
+                "timestamp": {
+                    "segment": [{"segment": "hello world", "start": 1.0, "end": 3.0}],
+                    "word": [{"word": "hello", "start": 1.0, "end": 2.0},
+                             {"word": "world", "start": 2.0, "end": 3.0}],
+                },
+            })()])
+        })()
+        req = type("R", (), {"word_timestamps": True, "language": ""})()
+        return engine._decode_window("ignored.wav", req, offset=offset, duration=60.0)
+
+    def test_segment_bounds_are_offset(self):
+        seg = self._decode_window(600.0)["segments"][0]
+        self.assertEqual((seg["start"], seg["end"]), (601.0, 603.0))
+
+    def test_word_bounds_are_offset_too(self):
+        seg = self._decode_window(600.0)["segments"][0]
+        self.assertEqual([(w["word"], w["start"]) for w in seg["words"]],
+                         [("hello", 601.0), ("world", 602.0)])
+
+    def test_the_first_window_is_unchanged(self):
+        seg = self._decode_window(0.0)["segments"][0]
+        self.assertEqual(seg["words"][0]["start"], 1.0)
+
+
 class LegacyRenameTests(unittest.TestCase):
     LEGACY = [k for k in config_fields.LEGACY_ENV_KEY_MAP if k.startswith("WHISPERKIT_")]
 
