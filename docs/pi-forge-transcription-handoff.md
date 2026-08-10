@@ -5,8 +5,8 @@ transcription sidecar instead of whatever it uses today. This document is the
 whole contract. You do not need access to the llm-stack repository or the host
 it runs on — everything here is reachable over the tailnet.
 
-Written 2026-08-10 against llm-stack commit `a2a2d3c`, verified against the
-running service on that date.
+Written 2026-08-10 against llm-stack commit `acbad35`. Every claim in it was
+checked against the running service on that date, not against the source.
 
 ---
 
@@ -55,8 +55,10 @@ presence of `job_id`, before touching `text`.**
 answers `413` for long audio with a message pointing at `/transcribe`. That is
 the whole reason to prefer the native route.
 
-A 70-minute file currently completes in about 20 seconds of wall time, so
-polling every 2–3 seconds is reasonable. Do not poll faster than 1s.
+A 70-minute file currently completes in about 20 seconds of decode, so polling
+every 2-3 seconds is reasonable. Do not poll faster than 1s. Rates vary with
+what else is on the GPU — measured between 208x and 240x realtime on the same
+file — so treat `estimated_seconds` as a hint, not a deadline.
 
 ---
 
@@ -124,7 +126,7 @@ works — mp3, m4a, wav, flac, opus, and video containers.
      "avg_logprob": -0.21, "no_speech_prob": 0.004, "compression_ratio": 1.38,
      "words": [{"start": 0.0, "end": 0.22, "word": "The", "probability": 0.98}]}
   ],
-  "words": [],
+  "words": [{"start": 0.0, "end": 0.22, "word": "The", "probability": 0.98}],
   "engine": "parakeet-v3",
   "model": "preset:nvidia/parakeet-tdt-0.6b-v3",
   "device": "cuda",
@@ -132,8 +134,8 @@ works — mp3, m4a, wav, flac, opus, and video containers.
   "translated": false,
   "degraded": false,
   "capabilities": {"word_timestamps": true, "diarization": false, "translate": false},
-  "timings": {"queued_ms": 2, "load_ms": 0, "decode_ms": 214, "total_ms": 218,
-              "audio_seconds": 4230.9, "realtime_factor": 240.1}
+  "timings": {"queued_ms": 2, "load_ms": 0, "decode_ms": 20304, "total_ms": 20511,
+              "audio_seconds": 4230.9, "realtime_factor": 208.4}
 }
 ```
 
@@ -213,8 +215,8 @@ Measured on 70.5 minutes of speech on the host's RTX 3090:
 
 | | faster-whisper large-v3 | **parakeet-v3** (default) |
 |---|---|---|
-| Realtime factor | 11.6× | **240×** |
-| VRAM | 5,496 MiB | **1,912 MiB** |
+| Realtime factor | 11.6× | **~210×** |
+| VRAM | 5,496 MiB | **~1,950 MiB** |
 | Segments | 876 | 71 |
 
 **Trap 1 — `word_timestamps` is not optional if you need a timeline.** Whisper
