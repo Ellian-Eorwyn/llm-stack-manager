@@ -97,6 +97,20 @@ def parse_model_value(value):
     return f"preset:{raw}" if raw else ""
 
 
+def repair_model_value(engine_id, value):
+    return value
+
+
+try:
+    sys.path.insert(0, os.path.join(stack_dir, "web"))
+    import config_fields as _manager_fields
+
+    def repair_model_value(engine_id, value):  # noqa: F811
+        engine = _manager_fields.TRANSCRIPTION_ENGINE_BY_ID.get(engine_id)
+        return _manager_fields.repair_transcription_model(engine, value) if engine else value
+except Exception:
+    pass
+
 try:
     sys.path.insert(0, os.path.join(stack_dir, "web"))
     import models as _manager_models
@@ -121,7 +135,7 @@ ENGINE_PREFIXES = {
 engines = {}
 for engine_id, prefix in ENGINE_PREFIXES.items():
     engines[engine_id] = {
-        "model": parse_model_value(getenv(f"{prefix}_LOCAL_MODEL", "")),
+        "model": repair_model_value(engine_id, parse_model_value(getenv(f"{prefix}_LOCAL_MODEL", ""))),
         "backend_type": getenv(f"{prefix}_BACKEND_TYPE", "local"),
         "upstream_url": getenv(f"{prefix}_UPSTREAM_URL", ""),
         "api_key": getenv(f"{prefix}_API_KEY", ""),

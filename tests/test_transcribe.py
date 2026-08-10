@@ -122,6 +122,57 @@ class LegacyRenameTests(unittest.TestCase):
             self.assertIn("WhisperKit", config_fields.DEPRECATED_ENV_KEY_NOTES[legacy])
 
 
+class StaleModelRepairTests(unittest.TestCase):
+    """Whisper sizes left on NeMo slots by the old shared default.
+
+    Every engine's model once defaulted off one `TRANSCRIPT_LOCAL_MODEL_SIZE`,
+    so configs written then carry `PARAKEET_V3_LOCAL_MODEL=preset:large-v3`.
+    NeMo can never load that, and the failure names the model rather than the
+    setting — with parakeet as the default engine it breaks every request.
+    """
+
+    def _engine(self, engine_id):
+        return config_fields.TRANSCRIPTION_ENGINE_BY_ID[engine_id]
+
+    def test_a_whisper_preset_on_a_nemo_slot_is_replaced(self):
+        self.assertEqual(
+            config_fields.repair_transcription_model(self._engine("parakeet-v3"), "preset:large-v3"),
+            "preset:nvidia/parakeet-tdt-0.6b-v3")
+
+    def test_every_whisper_preset_is_caught(self):
+        engine = self._engine("canary-qwen")
+        for preset in config_fields.WHISPER_MODEL_PRESETS:
+            self.assertEqual(
+                config_fields.repair_transcription_model(engine, f"preset:{preset}"),
+                "preset:nvidia/canary-qwen-2.5b", preset)
+
+    def test_whisper_keeps_its_own_presets(self):
+        engine = self._engine("faster-whisper")
+        for preset in ("preset:large-v3", "preset:turbo", "preset:distil-large-v3"):
+            self.assertEqual(config_fields.repair_transcription_model(engine, preset), preset)
+
+    def test_a_deliberate_choice_is_never_overwritten(self):
+        """Only bare Whisper presets are residue; paths and repo ids are intent."""
+        engine = self._engine("parakeet-v3")
+        for value in ("local:/models/custom.nemo", "preset:nvidia/parakeet-tdt-1.1b",
+                      "preset:some-org/some-model"):
+            self.assertEqual(config_fields.repair_transcription_model(engine, value), value)
+
+    def test_the_repair_runs_on_read(self):
+        repaired = config_env.normalize_env_keys({"PARAKEET_V3_LOCAL_MODEL": "preset:large-v3"})
+        self.assertEqual(repaired["PARAKEET_V3_LOCAL_MODEL"],
+                         "preset:nvidia/parakeet-tdt-0.6b-v3")
+
+    def test_no_engine_defaults_to_another_runtimes_model(self):
+        defaults = config_env.normalize_env_keys({})
+        for engine in config_fields.TRANSCRIPTION_ENGINES:
+            value = defaults[f"{engine['env_prefix']}_LOCAL_MODEL"]
+            if engine["runtime"] == "faster-whisper" or not value.startswith("preset:"):
+                continue
+            self.assertNotIn(value.split(":", 1)[1], config_fields.WHISPER_MODEL_PRESETS,
+                             f"{engine['id']} defaults to a Whisper model")
+
+
 class LazyImportTests(unittest.TestCase):
     """An uninstalled runtime must not be able to take the service down."""
 

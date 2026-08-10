@@ -46,6 +46,7 @@ from config_fields import (
     NEW_ENV_KEY_LEGACY_ALIASES,
     RESTART_HINTS,
     TRANSCRIPTION_ENGINES,
+    repair_transcription_model,
 )
 
 
@@ -434,6 +435,10 @@ def normalize_env_keys(env: dict) -> dict:
                 else (f"preset:{shared_transcript_legacy}"
                       if engine["runtime"] == "faster-whisper" else fallback_model)),
         )
+        # Repaired, not just defaulted: the stale value is already written to
+        # the file, so `setdefault` above never sees it.
+        normalized[f"{prefix}_LOCAL_MODEL"] = repair_transcription_model(
+            engine, normalized.get(f"{prefix}_LOCAL_MODEL", ""))
         normalized.setdefault(f"{prefix}_UPSTREAM_URL", "")
         normalized.setdefault(f"{prefix}_MODEL", "")
         normalized.setdefault(f"{prefix}_API_KEY", "")

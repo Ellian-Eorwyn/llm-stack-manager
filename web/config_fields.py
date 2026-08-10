@@ -129,6 +129,37 @@ TRANSCRIPTION_ENGINES = [
 TRANSCRIPTION_ENGINE_IDS = [item["id"] for item in TRANSCRIPTION_ENGINES]
 TRANSCRIPTION_ENGINE_BY_ID = {item["id"]: item for item in TRANSCRIPTION_ENGINES}
 
+
+def default_transcription_model(engine: dict) -> str:
+    """The model ref an engine should hold when nothing has been chosen."""
+    presets = engine.get("presets") or []
+    if engine.get("runtime") == "router":
+        # Served under the models.ini section name, not downloaded from anywhere.
+        return "preset:asr"
+    return f"preset:{presets[0]}" if presets else ""
+
+
+def repair_transcription_model(engine: dict, value: str) -> str:
+    """Replace a model ref that belongs to a different runtime.
+
+    Every engine's model used to default off one shared
+    `TRANSCRIPT_LOCAL_MODEL_SIZE`, so configs written then carry Whisper sizes
+    on the NeMo slots — `PARAKEET_V3_LOCAL_MODEL=preset:large-v3`. Those values
+    are still sitting in env files, and a Whisper size is not a thing NeMo can
+    ever load, so the engine fails on every request with "Model large-v3 was not
+    found" rather than anything pointing at the config.
+
+    Only bare preset names are touched. A `local:` path or an explicit repo id
+    is a choice someone made, and is left exactly as written.
+    """
+    raw = (value or "").strip()
+    if not raw.startswith("preset:") or engine.get("runtime") == "faster-whisper":
+        return raw
+    name = raw.split(":", 1)[1]
+    if name in WHISPER_MODEL_PRESETS:
+        return default_transcription_model(engine)
+    return raw
+
 LEGACY_ENV_KEY_MAP = {
     "CHAT_MODEL_27B_PATH": "CHAT_PRIMARY_MODEL_PATH",
     "CHAT_MMPROJ_27B_PATH": "CHAT_PRIMARY_MMPROJ_PATH",
