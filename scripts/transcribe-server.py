@@ -324,6 +324,13 @@ class _NemoEngine(Engine):
         for seg in segments:
             seg["start"] = round(seg["start"] + offset, 3)
             seg["end"] = round(seg["end"] + offset, 3)
+            # Without `timestamps=True` NeMo returns text and no timeline, so
+            # the synthetic segment is zero-length. Left alone it produces
+            # subtitle cues that start and end at the same instant — valid
+            # files that display nothing. Span the window instead, which is the
+            # true extent of what this text covers.
+            if seg["end"] <= seg["start"] and duration:
+                seg["end"] = round(offset + duration, 3)
         return {"segments": segments, "language": req.language or "",
                 "language_probability": 0.0,
                 "duration": duration or (segments[-1]["end"] if segments else 0.0)}

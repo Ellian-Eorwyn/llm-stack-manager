@@ -86,6 +86,42 @@ model that sits resident is the thing that breaks everything else.
 
 `POST /unload` frees the model immediately — the panel's **Free VRAM** button.
 
+## Measured on this host
+
+70.5 minutes of lecture audio (64 kbps mono MP3), one RTX 3090, both runs
+back to back with `TRANSCRIPT_ROUTER_YIELD=all` so neither competed with the
+pooled models. Weights already cached.
+
+| | faster-whisper large-v3 | parakeet-tdt-0.6b-v3 |
+|---|---|---|
+| Wall clock | 371 s | **45 s** |
+| Decode | 363 s | **24 s** |
+| Realtime factor | 11.6× | **177×** |
+| Model load | 7 s | 20 s |
+| Peak VRAM | **5,496 MiB** | 6,490 MiB |
+| Peak host RSS | 3,616 MiB | 2,048 MiB |
+| Segments | **876** | 15 |
+| Transcript | 56,418 chars | 55,917 chars |
+
+Parakeet is **8× faster wall-clock** for a transcript of near-identical length,
+which is the headline. Two things the table does not say:
+
+**Segment granularity is not comparable.** Whisper returns real utterance
+boundaries. NeMo returns none unless `word_timestamps=true` is requested, so
+those 15 "segments" are just the 15 decode windows and their timings are
+window-granular. Ask for word timestamps if you need subtitles or alignment;
+without it, Parakeet's timeline is only as fine as `TRANSCRIPT_NEMO_CHUNK_SECONDS`.
+
+**Parakeet's VRAM is a dial, not a constant.** The same file at 100-second
+windows peaked at **1,552 MiB** and took 60 s; at 300-second windows it peaked
+at 6,490 MiB and took 45 s. Activation memory scales with window length, so
+`TRANSCRIPT_NEMO_CHUNK_SECONDS` trades VRAM against speed. Lower it on a busy
+GPU — Parakeet still beats Whisper on both axes at 100 s.
+
+Whisper also applies inverse text normalisation more consistently
+("July 21st, 1969" against Parakeet's "July twenty first, nineteen sixty nine"
+on one clip), which matters if agents parse dates or figures out of the text.
+
 ## The `router` engine
 
 `MODEL_ROUTER_MEMBERS=EMBED,OCR,RERANK,TASK,ASR` adds an audio GGUF to the
