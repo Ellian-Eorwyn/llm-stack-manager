@@ -203,16 +203,43 @@ model is behind the endpoint — returns a 500 rather than degrading. Two places
 guard against that:
 
 - `_normalize_reasoning_effort` in `llm-chat-proxy.py` maps the OpenAI names
-  onto the Qwen ones (`high`/`max` → `xhigh`, `minimal`/`none`/`off` → `low`) and
-  falls back to the endpoint default for anything else. It also **consumes** a
-  top-level `reasoning_effort` from the request, leaving the normalized value
-  only in `chat_template_kwargs`. That last part matters as of llama.cpp
-  `7e4c0a9`, which forwards a top-level `reasoning_effort` straight into the
-  template — before that commit the field was ignored, so the hazard only
-  appears once the pinned ref is new enough.
+  onto the Qwen ones (`high`/`max` → `xhigh`, `minimal` → `low`) and falls back
+  to the endpoint default for anything else. It also **consumes** a top-level
+  `reasoning_effort` from the request, leaving the normalized value only in
+  `chat_template_kwargs`. That last part matters as of llama.cpp `7e4c0a9`,
+  which forwards a top-level `reasoning_effort` straight into the template —
+  before that commit the field was ignored, so the hazard only appears once the
+  pinned ref is new enough.
 - `add_chat_template_kwargs_opt` in `scripts/lib/backend-preflight.sh` drops an
   out-of-range value with a note in the journal, rather than letting a typo in
   the env file fail every request against the backend.
+
+### Per-request levels, and opting out
+
+The endpoint keys above are defaults, not ceilings. A request may carry its own
+level, top-level the OpenAI way (`"reasoning_effort": "low"`) or inside
+`chat_template_kwargs`; the top-level field wins, and the endpoint default
+applies only when the caller says nothing.
+
+`none` and `off` are not levels. OpenAI spells "do not reason" as
+`reasoning_effort: "none"`, and llama.cpp reads it identically —
+`if (reasoning_effort == "none") { inputs.enable_thinking = false; }` in
+`server-common.cpp` — so the proxy turns thinking off for that one request
+rather than treating it as a synonym for `low`. An explicit
+`chat_template_kwargs.enable_thinking: false` does the same. `minimal` remains a
+level, because minimal reasoning is still reasoning.
+
+**A request may opt out of thinking, never into it.** An endpoint that
+advertises no thinking stays that way, so a caller can only ever ask for less
+work than the port promises. The point is that one port can then be measured
+across all four settings — xhigh, medium, low, none — without the no-think arm
+having to move to a port that also differs in temperature, model name and
+memory gateway.
+
+One caveat for benchmark harnesses: the steering text is injected at the *top of
+the system message*, so two levels diverge around character 46 of the prompt and
+share no cache prefix. Interleaving levels across one fixture reprocesses the
+prompt every time; batching by level keeps the prefix warm.
 
 **It only does anything under a template that reads it.** The model's own
 embedded template does; so does `Qwen3.8.jinja`. `Qwen3.6.jinja` and

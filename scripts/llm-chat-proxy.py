@@ -95,9 +95,14 @@ _REASONING_EFFORT_ALIASES = {
     "high": "xhigh",
     "max": "xhigh",
     "minimal": "low",
-    "none": "low",
-    "off": "low",
 }
+
+# `none` is not a level — OpenAI spells "do not reason" this way, and llama.cpp
+# reads it the same: `if (reasoning_effort == "none") { inputs.enable_thinking =
+# false; }` in server-common.cpp. Treating it as a synonym for `low` would be
+# the one reading nobody expects. `minimal` stays a level, because minimal
+# reasoning is still reasoning.
+REASONING_EFFORT_OPT_OUT = {"none", "off"}
 
 
 def _normalize_reasoning_effort(effort: Any, default: str = "xhigh") -> str:
@@ -1260,7 +1265,6 @@ def _inject_thinking(
     kwargs = payload.get("chat_template_kwargs")
     if not isinstance(kwargs, dict):
         kwargs = {}
-    kwargs["enable_thinking"] = enabled
     if preserve_thinking is not None:
         kwargs["preserve_thinking"] = preserve_thinking
 
@@ -1274,6 +1278,20 @@ def _inject_thinking(
         requested = payload.pop("reasoning_effort", None)
         if requested is None:
             requested = kwargs.get("reasoning_effort")
+
+        # A request may opt out of thinking entirely, but never into it: an
+        # endpoint that advertises no thinking stays that way, so a caller can
+        # only ever ask for less work than the port promises. That keeps one
+        # port comparable across all four settings — xhigh, medium, low and
+        # none — without a no-think arm having to move to a different port that
+        # also differs in temperature, model name and memory gateway.
+        opted_out = (
+            isinstance(requested, str) and requested.strip().lower() in REASONING_EFFORT_OPT_OUT
+        ) or kwargs.get("enable_thinking") is False
+        if enabled and opted_out:
+            enabled = False
+            requested = None
+
         if enabled:
             kwargs["reasoning_effort"] = _normalize_reasoning_effort(requested, reasoning_effort)
         else:
@@ -1283,6 +1301,7 @@ def _inject_thinking(
     else:
         payload.pop("reasoning_effort", None)
 
+    kwargs["enable_thinking"] = enabled
     payload["chat_template_kwargs"] = kwargs
 
 

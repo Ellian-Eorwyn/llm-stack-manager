@@ -133,7 +133,6 @@ class ReasoningEffortTests(unittest.TestCase):
     def test_openai_vocabulary_maps_onto_the_nearest_qwen_level(self):
         self.assertEqual(proxy._normalize_reasoning_effort("high"), "xhigh")
         self.assertEqual(proxy._normalize_reasoning_effort("minimal"), "low")
-        self.assertEqual(proxy._normalize_reasoning_effort("none"), "low")
 
     def test_unknown_and_non_string_values_fall_back_to_the_endpoint_default(self):
         for value in ("bogus", "", None, 7, {"a": 1}):
@@ -171,6 +170,39 @@ class ReasoningEffortTests(unittest.TestCase):
         proxy._inject_thinking(payload, True, True, None)
         self.assertNotIn("reasoning_effort", payload)
         self.assertNotIn("reasoning_effort", payload["chat_template_kwargs"])
+
+    def test_none_turns_thinking_off_for_one_request(self):
+        """OpenAI spells "do not reason" as reasoning_effort: none, and
+        llama.cpp reads it the same way. Honouring it here lets one port be
+        measured across xhigh/medium/low/none without the no-think arm moving
+        to a port that also differs in temperature and model name."""
+        for value in ("none", "off"):
+            payload = {"reasoning_effort": value}
+            proxy._inject_thinking(payload, True, True, "medium")
+            kwargs = payload["chat_template_kwargs"]
+            self.assertIs(kwargs["enable_thinking"], False, value)
+            self.assertNotIn("reasoning_effort", kwargs, value)
+
+    def test_minimal_is_still_a_level_not_an_opt_out(self):
+        payload = {"reasoning_effort": "minimal"}
+        proxy._inject_thinking(payload, True, True, "medium")
+        self.assertIs(payload["chat_template_kwargs"]["enable_thinking"], True)
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "low")
+
+    def test_explicit_enable_thinking_false_is_honoured(self):
+        payload = {"chat_template_kwargs": {"enable_thinking": False}}
+        proxy._inject_thinking(payload, True, True, "medium")
+        self.assertIs(payload["chat_template_kwargs"]["enable_thinking"], False)
+
+    def test_a_request_can_opt_out_of_thinking_but_never_into_it(self):
+        """An endpoint that advertises no thinking stays that way: a caller may
+        ask for less work than the port promises, never more."""
+        for payload in (
+            {"reasoning_effort": "xhigh"},
+            {"chat_template_kwargs": {"enable_thinking": True}},
+        ):
+            proxy._inject_thinking(payload, False, False, None)
+            self.assertIs(payload["chat_template_kwargs"]["enable_thinking"], False)
 
     def test_blank_configuration_means_leave_the_template_default_alone(self):
         with mock.patch.dict(os.environ, {"THINK_REASONING_EFFORT": ""}, clear=False):
