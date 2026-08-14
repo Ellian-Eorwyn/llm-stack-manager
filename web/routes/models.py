@@ -356,6 +356,10 @@ def api_chat_templates_create():
         return jsonify(ok=False, error='Name is required'), 400
     if not isinstance(content, str) or not content.strip():
         return jsonify(ok=False, error='Template content is required'), 400
+    try:
+        models.validate_chat_template_content(content)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
     template_id = models.chat_template_id_from_name(data.get('id') or name)
     existing_ids = {item['id'] for item in models.list_chat_templates() if item.get('id')}
     base_id = template_id
@@ -410,6 +414,10 @@ def api_chat_templates_update(template_id):
     content = data.get('content')
     if not isinstance(content, str) or not content.strip():
         return jsonify(ok=False, error='Template content is required'), 400
+    try:
+        models.validate_chat_template_content(content)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
     try:
         path.write_text(content)
         meta = models.load_chat_template_meta()

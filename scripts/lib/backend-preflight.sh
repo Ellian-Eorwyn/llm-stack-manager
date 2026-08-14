@@ -61,6 +61,38 @@ add_fit_ctx_opt() {
     fi
 }
 
+# Append the --chat-template-kwargs the backend should start with.
+#
+# These are defaults the template sees when a request carries no
+# chat_template_kwargs of its own; the proxy overrides them per endpoint. Both
+# settings are only meaningful under a template that reads them — Qwen 3.8 reads
+# all three of enable_thinking, preserve_thinking and reasoning_effort, older
+# Qwen templates read only the first two, and a template that reads none is
+# unaffected either way.
+#
+# reasoning_effort is validated here rather than passed through: the Qwen 3.8
+# template raises on an unrecognized level, which would fail every request
+# against this backend rather than degrade.
+add_chat_template_kwargs_opt() {
+    local prefix="$1" preserve="$2" effort="$3"
+    local -a pairs=()
+    [[ "${preserve}" == "on" ]] && pairs+=('"preserve_thinking": true')
+    if [[ -n "${effort}" ]]; then
+        case "${effort}" in
+            xhigh|medium|low)
+                pairs+=("\"reasoning_effort\": \"${effort}\"")
+                ;;
+            *)
+                echo "${prefix} Ignoring Reasoning Effort '${effort}': expected xhigh, medium, or low."
+                ;;
+        esac
+    fi
+    [[ ${#pairs[@]} -gt 0 ]] || return 0
+    local joined
+    printf -v joined '%s, ' "${pairs[@]}"
+    OPTS+=(--chat-template-kwargs "{${joined%, }}")
+}
+
 # Record the predicted memory footprint and any configuration warnings, so the
 # journal carries the prediction alongside llama-server's own allocation log.
 #

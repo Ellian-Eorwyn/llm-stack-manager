@@ -83,6 +83,43 @@ UPSTREAM_400_CAPTURE_MAX_BYTES = max(
     4096, int(os.environ.get("UPSTREAM_400_CAPTURE_MAX_BYTES", str(256 * 1024)))
 )
 
+# Qwen 3.8 accepts exactly three thinking levels and its template *raises* on
+# anything else, so an unmapped value is not a soft fallback — it is a 500 that
+# kills the request. OpenAI's own vocabulary (`high`, `minimal`) is the likely
+# source of one, since clients send it without knowing which model is behind the
+# endpoint, so both are mapped onto the nearest Qwen level rather than refused.
+# Note `medium` is not a midpoint: the template injects steering text for xhigh
+# and low only, leaving medium as the model's unsteered baseline.
+REASONING_EFFORT_LEVELS = {"xhigh", "medium", "low"}
+_REASONING_EFFORT_ALIASES = {
+    "high": "xhigh",
+    "max": "xhigh",
+    "minimal": "low",
+    "none": "low",
+    "off": "low",
+}
+
+
+def _normalize_reasoning_effort(effort: Any, default: str = "xhigh") -> str:
+    if not isinstance(effort, str):
+        return default
+    effort = effort.strip().lower()
+    if effort in REASONING_EFFORT_LEVELS:
+        return effort
+    return _REASONING_EFFORT_ALIASES.get(effort, default)
+
+
+def _reasoning_effort_env(name: str, default: str) -> str | None:
+    """Read an endpoint's configured level, where blank means "inject nothing".
+
+    Blank is how the UI spells "model default", and it has to stay distinct from
+    a level: injecting nothing leaves the template's own default in force, which
+    is the only way to run a template whose default we should not second-guess.
+    """
+    value = os.environ.get(name, default).strip().lower()
+    return value or None
+
+
 THINK_MODEL_NAME = os.environ.get("THINK_MODEL_NAME", "think")
 NOTHINK_MODEL_NAME = os.environ.get("NOTHINK_MODEL_NAME", "chat")
 CODE_MODEL_NAME = os.environ.get("CODE_MODEL_NAME", "code")
@@ -103,6 +140,7 @@ THINK_OVERRIDES = {
 }
 THINK_MAX_TOKENS = int(os.environ.get("THINK_MAX_TOKENS", "0"))
 THINK_REASONING_STREAM_MODE = os.environ.get("THINK_REASONING_STREAM_MODE", "hidden").strip().lower()
+THINK_REASONING_EFFORT = _reasoning_effort_env("THINK_REASONING_EFFORT", "xhigh")
 NOTHINK_PRESERVE_THINKING = os.environ.get("NOTHINK_PRESERVE_THINKING", "off").lower() == "on"
 NOTHINK_JINJA = os.environ.get("NOTHINK_JINJA", "on").lower() == "on"
 NOTHINK_OVERRIDES = {
@@ -121,6 +159,7 @@ NOTHINK_MAX_TOKENS = int(os.environ.get("NOTHINK_MAX_TOKENS", "0"))
 NOTHINK_REASONING_STREAM_MODE = os.environ.get("NOTHINK_REASONING_STREAM_MODE", "hidden").strip().lower()
 CODE_THINKING = os.environ.get("CODE_THINKING", "on").lower() == "on"
 CODE_PRESERVE_THINKING = os.environ.get("CODE_PRESERVE_THINKING", "on").lower() == "on"
+CODE_REASONING_EFFORT = _reasoning_effort_env("CODE_REASONING_EFFORT", "medium")
 CODE_JINJA = os.environ.get("CODE_JINJA", "on").lower() == "on"
 CODE_OVERRIDES = {
     "temperature": float(os.environ.get("CODE_TEMP", os.environ.get("CHAT_TEMP", "0.7"))),
@@ -1212,13 +1251,38 @@ def _enqueue_ingest(group_id: str, user_text: str, assistant_text: str):
     thread.start()
 
 
-def _inject_thinking(payload: dict[str, Any], enabled: bool, preserve_thinking: bool | None = None):
+def _inject_thinking(
+    payload: dict[str, Any],
+    enabled: bool,
+    preserve_thinking: bool | None = None,
+    reasoning_effort: str | None = None,
+):
     kwargs = payload.get("chat_template_kwargs")
     if not isinstance(kwargs, dict):
         kwargs = {}
     kwargs["enable_thinking"] = enabled
     if preserve_thinking is not None:
         kwargs["preserve_thinking"] = preserve_thinking
+
+    # A caller may ask for a level either the OpenAI way (top-level
+    # `reasoning_effort`) or the template way (inside chat_template_kwargs).
+    # Take whichever arrived, normalize it, and leave the result only in
+    # chat_template_kwargs: the top-level field is consumed here so an
+    # out-of-range value can never reach the template and raise. The endpoint
+    # default applies when the caller said nothing.
+    if reasoning_effort is not None:
+        requested = payload.pop("reasoning_effort", None)
+        if requested is None:
+            requested = kwargs.get("reasoning_effort")
+        if enabled:
+            kwargs["reasoning_effort"] = _normalize_reasoning_effort(requested, reasoning_effort)
+        else:
+            # The template ignores the level when thinking is off, and sending
+            # one anyway only risks tripping its validation.
+            kwargs.pop("reasoning_effort", None)
+    else:
+        payload.pop("reasoning_effort", None)
+
     payload["chat_template_kwargs"] = kwargs
 
 
@@ -1282,6 +1346,7 @@ def _profile_for_model(model_name: str) -> dict[str, Any] | None:
         return {
             "thinking_enabled": True,
             "preserve_thinking": THINK_PRESERVE_THINKING,
+            "reasoning_effort": THINK_REASONING_EFFORT,
             "model_name": THINK_MODEL_NAME,
             "port_label": "think",
             "inject_overrides": THINK_OVERRIDES,
@@ -1293,6 +1358,7 @@ def _profile_for_model(model_name: str) -> dict[str, Any] | None:
         return {
             "thinking_enabled": False,
             "preserve_thinking": NOTHINK_PRESERVE_THINKING,
+            "reasoning_effort": None,
             "model_name": NOTHINK_MODEL_NAME,
             "port_label": "chat",
             "inject_overrides": NOTHINK_OVERRIDES,
@@ -1304,6 +1370,7 @@ def _profile_for_model(model_name: str) -> dict[str, Any] | None:
         return {
             "thinking_enabled": CODE_THINKING,
             "preserve_thinking": CODE_PRESERVE_THINKING,
+            "reasoning_effort": CODE_REASONING_EFFORT,
             "model_name": CODE_MODEL_NAME,
             "port_label": "code",
             "inject_overrides": CODE_OVERRIDES,
@@ -1343,6 +1410,7 @@ def make_handler(
     *,
     thinking_enabled: bool | None,
     preserve_thinking: bool | None = None,
+    reasoning_effort: str | None = None,
     model_name: str,
     port_label: str,
     inject_overrides: dict[str, Any] | None = None,
@@ -1353,6 +1421,9 @@ def make_handler(
     class ProxyHandler(BaseHTTPRequestHandler):
         _thinking_enabled = thinking_enabled
         _preserve_thinking = preserve_thinking
+        _reasoning_effort = (
+            _normalize_reasoning_effort(reasoning_effort) if reasoning_effort is not None else None
+        )
         _model_name = model_name
         _port_label = port_label
         _overrides = inject_overrides
@@ -1424,7 +1495,12 @@ def make_handler(
                 elif kind == "responses":
                     payload = _normalize_responses_payload(payload)
                 if self._thinking_enabled is not None and is_generation_request:
-                    _inject_thinking(payload, self._thinking_enabled, self._preserve_thinking)
+                    _inject_thinking(
+                        payload,
+                        self._thinking_enabled,
+                        self._preserve_thinking,
+                        self._reasoning_effort,
+                    )
                 if self._strip_tools and is_generation_request:
                     _strip_tool_fields(payload)
                 if self._overrides and is_generation_request:
@@ -1680,6 +1756,7 @@ def make_aggregate_handler():
     base_handler = make_handler(
         thinking_enabled=False,
         preserve_thinking=NOTHINK_PRESERVE_THINKING,
+        reasoning_effort=None,
         model_name=NOTHINK_MODEL_NAME,
         port_label="aggregate",
         inject_overrides=NOTHINK_OVERRIDES,
@@ -1718,6 +1795,8 @@ def make_aggregate_handler():
         def _apply_profile(self, profile: dict[str, Any]):
             self._thinking_enabled = profile["thinking_enabled"]
             self._preserve_thinking = profile["preserve_thinking"]
+            effort = profile["reasoning_effort"]
+            self._reasoning_effort = _normalize_reasoning_effort(effort) if effort is not None else None
             self._model_name = profile["model_name"]
             self._port_label = profile["port_label"]
             self._overrides = profile["inject_overrides"]
@@ -1756,6 +1835,7 @@ if __name__ == "__main__":
     think_handler = make_handler(
         thinking_enabled=True,
         preserve_thinking=THINK_PRESERVE_THINKING,
+        reasoning_effort=THINK_REASONING_EFFORT,
         model_name=THINK_MODEL_NAME,
         port_label="think",
         inject_overrides=THINK_OVERRIDES,
@@ -1766,6 +1846,7 @@ if __name__ == "__main__":
     nothink_handler = make_handler(
         thinking_enabled=False,
         preserve_thinking=NOTHINK_PRESERVE_THINKING,
+        reasoning_effort=None,
         model_name=NOTHINK_MODEL_NAME,
         port_label="chat",
         inject_overrides=NOTHINK_OVERRIDES,
@@ -1776,6 +1857,7 @@ if __name__ == "__main__":
     code_handler = make_handler(
         thinking_enabled=CODE_THINKING,
         preserve_thinking=CODE_PRESERVE_THINKING,
+        reasoning_effort=CODE_REASONING_EFFORT,
         model_name=CODE_MODEL_NAME,
         port_label="code",
         inject_overrides=CODE_OVERRIDES,
@@ -1787,7 +1869,7 @@ if __name__ == "__main__":
 
     think_thread = threading.Thread(
         target=serve,
-        args=(THINK_PORT, think_handler, f"thinking (enable_thinking=true, preserve_thinking={THINK_PRESERVE_THINKING}, reasoning_stream={THINK_REASONING_STREAM_MODE} + overrides: {THINK_OVERRIDES} + optional memory gateway)"),
+        args=(THINK_PORT, think_handler, f"thinking (enable_thinking=true, preserve_thinking={THINK_PRESERVE_THINKING}, reasoning_effort={_normalize_reasoning_effort(THINK_REASONING_EFFORT) if THINK_REASONING_EFFORT else 'model default'}, reasoning_stream={THINK_REASONING_STREAM_MODE} + overrides: {THINK_OVERRIDES} + optional memory gateway)"),
         daemon=True,
     )
     nothink_thread = threading.Thread(
@@ -1797,7 +1879,7 @@ if __name__ == "__main__":
     )
     code_thread = threading.Thread(
         target=serve,
-        args=(CODE_PORT, code_handler, f"code (inject enable_thinking={CODE_THINKING}, preserve_thinking={CODE_PRESERVE_THINKING}, reasoning_stream={CODE_REASONING_STREAM_MODE} + overrides: {CODE_OVERRIDES} + optional memory gateway)"),
+        args=(CODE_PORT, code_handler, f"code (inject enable_thinking={CODE_THINKING}, preserve_thinking={CODE_PRESERVE_THINKING}, reasoning_effort={_normalize_reasoning_effort(CODE_REASONING_EFFORT, 'medium') if CODE_REASONING_EFFORT else 'model default'}, reasoning_stream={CODE_REASONING_STREAM_MODE} + overrides: {CODE_OVERRIDES} + optional memory gateway)"),
         daemon=True,
     )
     aggregate_thread = (

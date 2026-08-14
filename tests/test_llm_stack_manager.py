@@ -654,6 +654,40 @@ class MetricsFlagTests(unittest.TestCase):
             text = (root / script).read_text()
             self.assertIn(f'"${{{prefix}_METRICS:-on}}" == "on" ]] && OPTS+=(--metrics)', text, script)
 
+    def test_mtp_runs_without_a_draft_model(self):
+        """Most MTP GGUFs carry their own blk.N.nextn.* head, and llama.cpp
+        builds the MTP draft context against the *target* model when no draft
+        is given — the `else if (spec_mtp)` branch of
+        common_speculative_init_result. Demanding a draft path for draft-mtp
+        would exit 1 on precisely the models that need no sidecar.
+        """
+        root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+        for script in [
+            "start-chat-backend.sh",
+            "start-chat-backend2.sh",
+            "start-chat-backend-moe.sh",
+            "start-chat-backend-dense.sh",
+            "start-task.sh",
+        ]:
+            text = (root / script).read_text()
+            gate = next(
+                line for line in text.splitlines()
+                if 'SPEC_METHOD}" == "draft-simple"' in line
+            )
+            self.assertNotIn('"draft-mtp"', gate, script)
+
+    def test_thinking_level_reaches_every_chat_launcher(self):
+        root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+        for script, prefix in [
+            ("start-chat-backend.sh", "CHAT"),
+            ("start-chat-backend2.sh", "CHAT2"),
+            ("start-chat-backend-moe.sh", "CHAT"),
+            ("start-chat-backend-dense.sh", "CHAT"),
+        ]:
+            text = (root / script).read_text()
+            self.assertIn(f'"${{{prefix}_REASONING_EFFORT:-}}"', text, script)
+            self.assertIn("add_chat_template_kwargs_opt", text, script)
+
     def test_metrics_toggle_is_a_recognised_config_key(self):
         filtered = config_env.filter_config_updates({"CHAT_PRIMARY_METRICS": "off"}, env={})
         self.assertEqual(filtered, {"CHAT_PRIMARY_METRICS": "off"})

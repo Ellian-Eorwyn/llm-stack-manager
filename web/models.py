@@ -42,6 +42,8 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import quote, unquote, urlparse
 
+import jinja2
+
 import config_env
 import core
 import setup_engine
@@ -81,6 +83,33 @@ def validate_chat_template_id(template_id: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", template_id):
         raise ValueError("Template id may only contain letters, numbers, dot, underscore, and dash")
     return template_id
+
+
+def validate_chat_template_content(content: str) -> str:
+    """Reject template text that llama.cpp would load but silently mis-render.
+
+    A Jinja parse check alone is not enough. A chat template pasted from a
+    model card's web page carries the surrounding page chrome — "Hugging Face's
+    logo", "Files", "Community", the file size — and every line of that is
+    valid Jinja *literal text*, so it compiles clean and then prepends itself
+    to the prompt of every request. That is how `Qwen3.6.jinja` shipped with 56
+    lines of scraped page above the template and went unnoticed while serving.
+
+    Every real chat template starts with a Jinja tag, so requiring the first
+    non-whitespace character to open one catches the paste at the point it is
+    saved rather than in the model's output.
+    """
+    if not content.lstrip().startswith("{"):
+        raise ValueError(
+            "Template must begin with a Jinja tag ('{%' or '{{'). Text before the "
+            "first tag is emitted into every prompt — this usually means the model "
+            "card's page was copied along with the template."
+        )
+    try:
+        jinja2.Environment().parse(content)
+    except jinja2.TemplateSyntaxError as exc:
+        raise ValueError(f"Jinja syntax error on line {exc.lineno}: {exc.message}") from exc
+    return content
 
 
 def load_chat_template_meta() -> dict:
@@ -345,6 +374,8 @@ def validate_custom_arg_entries(values: list[str]):
 def infer_model_arg_family(*texts) -> str:
     merged = " ".join(str(text or "") for text in texts).lower()
     normalized = re.sub(r"[^a-z0-9]+", "", merged)
+    if re.search(r"qwen[\s._-]*3[\s._-]*8", merged) or "qwen38" in normalized:
+        return "qwen3.8"
     if re.search(r"qwen[\s._-]*3[\s._-]*6", merged) or "qwen36" in normalized:
         return "qwen3.6"
     if re.search(r"gemma[\s._-]*4\b", merged) or "gemma4" in normalized:
@@ -353,6 +384,8 @@ def infer_model_arg_family(*texts) -> str:
 
 
 def format_model_arg_family_label(family: str) -> str:
+    if family == "qwen3.8":
+        return "Qwen 3.8"
     if family == "qwen3.6":
         return "Qwen 3.6"
     if family == "gemma4":

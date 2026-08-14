@@ -276,7 +276,15 @@ def render_member(prefix: str, env: dict) -> tuple[str, dict]:
     thinking = _clean(env.get(f"{prefix}_THINKING"))
     if thinking:
         enabled = "true" if thinking == "on" else "false"
-        options["chat-template-kwargs"] = f'{{"enable_thinking":{enabled}}}'
+        kwargs = f'"enable_thinking":{enabled}'
+        # The thinking level only rides along while thinking is on: the template
+        # ignores it otherwise, and Qwen 3.8's raises on a level it does not
+        # recognize, so an unexpected value is dropped rather than failing every
+        # request the router sends to this member.
+        effort = _clean(env.get(f"{prefix}_REASONING_EFFORT"))
+        if enabled == "true" and effort in {"xhigh", "medium", "low"}:
+            kwargs += f', "reasoning_effort": "{effort}"'
+        options["chat-template-kwargs"] = f"{{{kwargs}}}"
 
     template_id = _clean(env.get(f"{prefix}_CHAT_TEMPLATE_ID"))
     if template_id:

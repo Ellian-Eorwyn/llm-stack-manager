@@ -5,7 +5,7 @@
       "name": "llama.cpp",
       "type": "git-cmake",
       "repo": "https://github.com/ggml-org/llama.cpp.git",
-      "ref": "846e991ec3c7ccec49112ff2c5b00b710e5f551d",
+      "ref": "7e4c0a96880dae4fc4268ad441f8a6446bd5460a",
       "path": "deps/llama.cpp",
       "patches": [
         "patches/llama.cpp/0001-json-object-implies-an-object-schema.patch"

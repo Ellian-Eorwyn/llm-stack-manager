@@ -286,6 +286,14 @@ CODE_TO_CHAT_MIRRORS = {
 LLAMA_SPEC_METHOD_OPTIONS = ["off", "draft-model", "draft-simple", "draft-eagle3", "draft-mtp", "draft-dflash", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"]
 LLAMA_CACHE_IDLE_OPTIONS = ["on", "off"]
 LLAMA_METRICS_OPTIONS = ["on", "off"]
+# Qwen 3.8's template accepts exactly these three levels and raises on anything
+# else, so the UI offers no free-text path to an invalid one.
+LLAMA_REASONING_EFFORT_OPTIONS = [
+    {"value": "", "label": "model default"},
+    {"value": "xhigh", "label": "xhigh — thorough"},
+    {"value": "medium", "label": "medium — unsteered"},
+    {"value": "low", "label": "low — brief"},
+]
 
 CONFIG_FIELDS = [
     {"section": "Chat Templates", "key": "CHAT_TEMPLATE_MANAGER", "label": "Template Manager", "type": "template_manager", "hint": "Create and edit reusable llama.cpp Jinja chat templates"},
@@ -328,6 +336,8 @@ CONFIG_FIELDS = [
     {"section": "Secondary Backend", "key": "CHAT2_MLOCK",                 "label": "Lock Memory",             "type": "select", "options": ["false", "true"]},
     {"section": "Secondary Backend", "key": "CHAT2_GPU_VISIBLE_DEVICES",   "label": "GPU Devices",             "type": "text",   "hint": "e.g. 0,1"},
     {"section": "Secondary Backend", "key": "CHAT2_JINJA",                 "label": "Backend Jinja Support",   "type": "select", "options": ["off", "on"], "hint": "Enables --jinja on the secondary backend so proxy ports can expose tool calling"},
+    {"section": "Secondary Backend", "key": "CHAT2_PRESERVE_THINKING",     "label": "Preserve Thinking",       "type": "select", "options": ["on", "off"], "hint": "Backend default for chat_template_kwargs.preserve_thinking on the secondary backend"},
+    {"section": "Secondary Backend", "key": "CHAT2_REASONING_EFFORT",      "label": "Thinking Level",          "type": "select", "options": LLAMA_REASONING_EFFORT_OPTIONS, "hint": "Backend default for templates that read reasoning_effort (Qwen 3.8+). medium adds no steering instruction — it is the model's unsteered baseline"},
     {"section": "Secondary Backend", "key": "CHAT2_TEMPLATE_ID",           "label": "Effective Chat Template", "type": "chat_template", "hint": "Custom Jinja template file passed to the secondary backend; model default leaves GGUF metadata unchanged"},
     {"section": "Secondary Backend", "key": "CHAT2_FIT",                   "label": "Auto-Fit to VRAM",        "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
     {"section": "Secondary Backend", "key": "CHAT2_FIT_TARGET",            "label": "Fit Target MiB",          "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
@@ -389,6 +399,8 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_GPU_VISIBLE_DEVICES",   "label": "GPU Devices",            "type": "text",   "hint": "e.g. 0,1"},
     {"section": "Shared Backend", "key": "CHAT_JINJA",                 "label": "Backend Jinja Support",  "type": "select", "options": ["off", "on"], "hint": "Enables --jinja on the shared backend so proxy ports can expose tool calling"},
     {"section": "Shared Backend", "key": "CHAT_TEMPLATE_ID",           "label": "Effective Chat Template", "type": "chat_template", "hint": "Custom Jinja template file passed to the shared backend; model default leaves GGUF metadata unchanged"},
+    {"section": "Shared Backend", "key": "CHAT_PRESERVE_THINKING",     "label": "Preserve Thinking",       "type": "select", "options": ["on", "off"], "hint": "Backend default for chat_template_kwargs.preserve_thinking; the proxy overrides it per endpoint"},
+    {"section": "Shared Backend", "key": "CHAT_REASONING_EFFORT",      "label": "Thinking Level",          "type": "select", "options": LLAMA_REASONING_EFFORT_OPTIONS, "hint": "Backend default for templates that read reasoning_effort (Qwen 3.8+). medium adds no steering instruction — it is the model's unsteered baseline. Ignored where thinking is off, and by templates that do not read it"},
     {"section": "Shared Backend", "key": "CHAT_FIT",                   "label": "Auto-Fit to VRAM",       "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
     {"section": "Shared Backend", "key": "CHAT_FIT_TARGET",            "label": "Fit Target MiB",         "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
     {"section": "Shared Backend", "key": "CHAT_FIT_CTX",               "label": "Minimum Fit Context",    "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
@@ -450,6 +462,7 @@ CONFIG_FIELDS = [
     {"section": "Task Model",  "key": "TASK_CHAT_TEMPLATE_ID",        "label": "Chat Template",        "type": "chat_template", "hint": "Custom Jinja template file passed to the standalone task model"},
     {"section": "Task Model",  "key": "TASK_THINKING",              "label": "Thinking",             "type": "select", "options": ["off", "on"], "hint": "Enable/disable thinking/reasoning for the task model"},
     {"section": "Task Model",  "key": "TASK_REASONING_FORMAT",      "label": "Reasoning Format",     "type": "select", "options": ["none", "deepseek", "deepseek-legacy"], "hint": "How thinking content appears in API responses"},
+    {"section": "Task Model",  "key": "TASK_REASONING_EFFORT",      "label": "Thinking Level",       "type": "select", "options": LLAMA_REASONING_EFFORT_OPTIONS, "hint": "Thinking level for templates that read reasoning_effort (Qwen 3.8+). Only applies when Thinking is on"},
     {"section": "Task Model",  "key": "TASK_FIT",                   "label": "Auto-Fit to VRAM",     "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
     {"section": "Task Model",  "key": "TASK_FIT_TARGET",            "label": "Fit Target MiB",       "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
     {"section": "Task Model",  "key": "TASK_FIT_CTX",               "label": "Minimum Fit Context",  "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
@@ -479,6 +492,7 @@ CONFIG_FIELDS = [
     {"section": "Thinking Endpoint", "key": "PROXY_STREAM_PASSTHROUGH",  "label": "Raw Stream Passthrough", "type": "select", "options": ["off", "on"], "hint": "When on, SSE responses bypass proxy JSON rewriting after request shaping"},
     {"section": "Thinking Endpoint", "key": "UPSTREAM_400_CAPTURE_ENABLED", "label": "Capture Upstream 400s", "type": "select", "options": ["off", "on"], "hint": "Diagnostic only: writes the request payload behind an upstream 400 — a whole conversation — to logs/upstream-400 at mode 0600, rotated"},
     {"section": "Thinking Endpoint", "key": "THINK_PRESERVE_THINKING",   "label": "Preserve Thinking",     "type": "select", "options": ["on", "off"], "hint": "Injects chat_template_kwargs.preserve_thinking into thinking requests"},
+    {"section": "Thinking Endpoint", "key": "THINK_REASONING_EFFORT",   "label": "Thinking Level",        "type": "select", "options": LLAMA_REASONING_EFFORT_OPTIONS, "hint": "Injects chat_template_kwargs.reasoning_effort for templates that read it (Qwen 3.8+). medium adds no steering instruction — it is the model's unsteered baseline. A client asking for an OpenAI level (high, minimal) is mapped onto the nearest of these rather than failing"},
     {"section": "Thinking Endpoint", "key": "THINK_REASONING_STREAM_MODE", "label": "Reasoning Stream", "type": "select", "options": ["hidden", "content", "mirror"], "hint": "hidden keeps thinking in reasoning_content; content streams it into the answer for clients that ignore that field"},
     {"section": "Thinking Endpoint", "key": "THINK_JINJA",               "label": "Expose Tool Calling",   "type": "select", "options": ["on", "off"], "hint": "When off, strips tools/tool_choice from thinking requests"},
     {"section": "Thinking Endpoint", "key": "THINK_TEMP",                "label": "Temperature",           "type": "text",   "hint": "e.g. 0.7"},
@@ -506,6 +520,7 @@ CONFIG_FIELDS = [
     {"section": "Coding Endpoint", "key": "CODE_MODEL_NAME",          "label": "Coding Model Name",     "type": "text",   "hint": "Advertised on /v1/models for the code endpoint"},
     {"section": "Coding Endpoint", "key": "CODE_THINKING",            "label": "Thinking",              "type": "select", "options": ["on", "off"], "hint": "Enable/disable thinking for the code endpoint"},
     {"section": "Coding Endpoint", "key": "CODE_PRESERVE_THINKING",   "label": "Preserve Thinking",     "type": "select", "options": ["on", "off"], "hint": "Injects chat_template_kwargs.preserve_thinking into code requests"},
+    {"section": "Coding Endpoint", "key": "CODE_REASONING_EFFORT",     "label": "Thinking Level",        "type": "select", "options": LLAMA_REASONING_EFFORT_OPTIONS, "hint": "Injects chat_template_kwargs.reasoning_effort for templates that read it (Qwen 3.8+). Only applies while Thinking is on"},
     {"section": "Coding Endpoint", "key": "CODE_REASONING_STREAM_MODE", "label": "Reasoning Stream", "type": "select", "options": ["hidden", "content", "mirror"], "hint": "hidden keeps thinking in reasoning_content; content streams it into the answer for clients that ignore that field"},
     {"section": "Coding Endpoint", "key": "CODE_JINJA",               "label": "Expose Tool Calling",   "type": "select", "options": ["on", "off"], "hint": "When off, strips tools/tool_choice from code requests"},
     {"section": "Coding Endpoint", "key": "CODE_TEMP",                "label": "Temperature",           "type": "text",   "hint": "e.g. 0.7"},
@@ -1002,6 +1017,7 @@ RESTART_HINTS = {
     "CHAT_TOP_K":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_MIN_P":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_PRESERVE_THINKING":    ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
+    "CHAT_REASONING_EFFORT":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_JINJA":                ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_REASONING_FORMAT":     ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
     "CHAT_FIT":                  ["chat-backend-dense", "chat-backend-moe", "chat-backend"],
@@ -1032,6 +1048,7 @@ RESTART_HINTS = {
     "CHAT2_CUSTOM_ARGS_JSON":    ["chat-backend2"],
     "CODE_THINKING":             ["chat-proxy"],
     "CODE_PRESERVE_THINKING":    ["chat-proxy"],
+    "CODE_REASONING_EFFORT":     ["chat-proxy"],
     "CODE_REASONING_STREAM_MODE": ["chat-proxy"],
     "CODE_JINJA":                ["chat-proxy"],
     "CODE_CTX_SIZE":             ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
@@ -1060,6 +1077,7 @@ RESTART_HINTS = {
     "CODE_FIT":                  ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
     "THINK_MODEL_NAME":          ["chat-proxy"],
     "THINK_PRESERVE_THINKING":   ["chat-proxy"],
+    "THINK_REASONING_EFFORT":    ["chat-proxy"],
     "THINK_REASONING_STREAM_MODE": ["chat-proxy"],
     "THINK_JINJA":               ["chat-proxy"],
     "THINK_TEMP":                ["chat-proxy"],
@@ -1118,6 +1136,7 @@ RESTART_HINTS = {
     "TASK_JINJA":                ["task"],
     "TASK_THINKING":             ["task"],
     "TASK_REASONING_FORMAT":     ["task"],
+    "TASK_REASONING_EFFORT":     ["task"],
     "TASK_FIT":                  ["task"],
     "TASK_CUSTOM_ARGS_JSON":     ["task"],
     "TASK_CHAT_TEMPLATE_ID":      ["task"],

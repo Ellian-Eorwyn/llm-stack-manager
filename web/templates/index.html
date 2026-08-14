@@ -1699,7 +1699,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set identity_keys = [backend_prefix ~ '_LABEL', backend_prefix ~ '_MODEL_NAME', backend_prefix ~ '_MODEL_PATH', backend_prefix ~ '_MMPROJ_PATH', backend_prefix ~ '_CTX_SIZE'] %}
       {% set shared_keys = [backend_prefix ~ '_N_PARALLEL', backend_prefix ~ '_BATCH_SIZE', backend_prefix ~ '_UBATCH_SIZE', backend_prefix ~ '_FLASH_ATTN', backend_prefix ~ '_JINJA', backend_prefix ~ '_TEMPLATE_ID', backend_prefix ~ '_FIT', backend_prefix ~ '_FIT_TARGET', backend_prefix ~ '_FIT_CTX'] %}
       {% set gpu_keys = [backend_prefix ~ '_GPU_VISIBLE_DEVICES', backend_prefix ~ '_DEVICE', backend_prefix ~ '_N_GPU_LAYERS', backend_prefix ~ '_MAIN_GPU', backend_prefix ~ '_TENSOR_SPLIT', backend_prefix ~ '_SPLIT_MODE', backend_prefix ~ '_KV_OFFLOAD', backend_prefix ~ '_OP_OFFLOAD', backend_prefix ~ '_MMPROJ_OFFLOAD', backend_prefix ~ '_CACHE_TYPE_K', backend_prefix ~ '_CACHE_TYPE_V', backend_prefix ~ '_CACHE_RAM', backend_prefix ~ '_CTX_CHECKPOINTS', backend_prefix ~ '_CACHE_IDLE_SLOTS', backend_prefix ~ '_CACHE_REUSE', backend_prefix ~ '_SWA_FULL', backend_prefix ~ '_NO_MMAP', backend_prefix ~ '_MLOCK'] %}
-      {% set behavior_keys = [backend_prefix ~ '_TEMP', backend_prefix ~ '_TOP_P', backend_prefix ~ '_TOP_K', backend_prefix ~ '_MIN_P', backend_prefix ~ '_REASONING_FORMAT'] %}
+      {% set behavior_keys = [backend_prefix ~ '_TEMP', backend_prefix ~ '_TOP_P', backend_prefix ~ '_TOP_K', backend_prefix ~ '_MIN_P', backend_prefix ~ '_REASONING_FORMAT', backend_prefix ~ '_PRESERVE_THINKING', backend_prefix ~ '_REASONING_EFFORT'] %}
       {% set spec_keys = [backend_prefix ~ '_SPEC_METHOD', backend_prefix ~ '_SPEC_NGRAM_MOD', backend_prefix ~ '_SPEC_DRAFT_MODEL_PATH', backend_prefix ~ '_SPEC_DRAFT_N_GPU_LAYERS', backend_prefix ~ '_SPEC_DRAFT_DEVICES', backend_prefix ~ '_SPEC_DRAFT_TYPE_K', backend_prefix ~ '_SPEC_DRAFT_TYPE_V', backend_prefix ~ '_SPEC_DRAFT_N_MAX', backend_prefix ~ '_SPEC_DRAFT_N_MIN', backend_prefix ~ '_SPEC_DRAFT_P_MIN', backend_prefix ~ '_SPEC_DRAFT_P_SPLIT', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MATCH', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MIN', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MAX', backend_prefix ~ '_SPEC_NGRAM_SIZE_N', backend_prefix ~ '_SPEC_NGRAM_SIZE_M', backend_prefix ~ '_SPEC_NGRAM_MIN_HITS'] %}
       {% set custom_args_key = backend_prefix ~ '_CUSTOM_ARGS_JSON' %}
       {% set curated = identity_keys + shared_keys + gpu_keys + behavior_keys + spec_keys + [backend_prefix ~ '_CUSTOM_ARGS_JSON'] %}
@@ -1801,7 +1801,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       </div>
       {% elif section == 'Task Model' %}
       {% set task_identity_keys = ['TASK_MODEL_NAME', 'TASK_MODEL_PATH', 'TASK_MMPROJ_PATH', 'TASK_CTX_SIZE'] %}
-      {% set task_runtime_keys = ['TASK_N_PARALLEL', 'TASK_BATCH_SIZE', 'TASK_UBATCH_SIZE', 'TASK_FLASH_ATTN', 'TASK_JINJA', 'TASK_CHAT_TEMPLATE_ID', 'TASK_THINKING', 'TASK_REASONING_FORMAT', 'TASK_FIT', 'TASK_FIT_TARGET', 'TASK_FIT_CTX'] %}
+      {% set task_runtime_keys = ['TASK_N_PARALLEL', 'TASK_BATCH_SIZE', 'TASK_UBATCH_SIZE', 'TASK_FLASH_ATTN', 'TASK_JINJA', 'TASK_CHAT_TEMPLATE_ID', 'TASK_THINKING', 'TASK_REASONING_EFFORT', 'TASK_REASONING_FORMAT', 'TASK_FIT', 'TASK_FIT_TARGET', 'TASK_FIT_CTX'] %}
       {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_CACHE_RAM', 'TASK_CTX_CHECKPOINTS', 'TASK_CACHE_IDLE_SLOTS', 'TASK_CACHE_REUSE', 'TASK_SWA_FULL', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
       {% set task_sampling_keys = ['TASK_TEMP', 'TASK_TOP_P', 'TASK_TOP_K', 'TASK_MIN_P', 'TASK_PRESENCE_PENALTY', 'TASK_REPEAT_PENALTY'] %}
       {% set task_spec_keys = ['TASK_SPEC_METHOD', 'TASK_SPEC_NGRAM_MOD', 'TASK_SPEC_DRAFT_MODEL_PATH', 'TASK_SPEC_DRAFT_N_GPU_LAYERS', 'TASK_SPEC_DRAFT_DEVICES', 'TASK_SPEC_DRAFT_TYPE_K', 'TASK_SPEC_DRAFT_TYPE_V', 'TASK_SPEC_DRAFT_N_MAX', 'TASK_SPEC_DRAFT_N_MIN', 'TASK_SPEC_DRAFT_P_MIN', 'TASK_SPEC_DRAFT_P_SPLIT', 'TASK_SPEC_NGRAM_MOD_N_MATCH', 'TASK_SPEC_NGRAM_MOD_N_MIN', 'TASK_SPEC_NGRAM_MOD_N_MAX', 'TASK_SPEC_NGRAM_SIZE_N', 'TASK_SPEC_NGRAM_SIZE_M', 'TASK_SPEC_NGRAM_MIN_HITS'] %}
@@ -1935,7 +1935,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       </div>
       {% elif section == 'Thinking Endpoint' %}
       {% set thinking_identity_keys = ['THINK_MODEL_NAME'] %}
-      {% set thinking_behavior_keys = ['PROXY_STREAM_PASSTHROUGH', 'THINK_PRESERVE_THINKING', 'THINK_JINJA', 'THINK_REASONING_FORMAT'] %}
+      {% set thinking_behavior_keys = ['PROXY_STREAM_PASSTHROUGH', 'THINK_PRESERVE_THINKING', 'THINK_REASONING_EFFORT', 'THINK_JINJA', 'THINK_REASONING_FORMAT'] %}
       {% set thinking_sampling_keys = ['THINK_TEMP', 'THINK_TOP_P', 'THINK_TOP_K', 'THINK_MIN_P', 'THINK_PRESENCE_PENALTY', 'THINK_REPEAT_PENALTY'] %}
       {% set curated = thinking_identity_keys + thinking_behavior_keys + thinking_sampling_keys %}
       <div class="cfg-panel-grid">
@@ -2007,7 +2007,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       </div>
       {% elif section == 'Coding Endpoint' %}
       {% set code_identity_keys = ['CODE_MODEL_NAME'] %}
-      {% set code_behavior_keys = ['CODE_THINKING', 'CODE_PRESERVE_THINKING', 'CODE_JINJA', 'CODE_REASONING_FORMAT'] %}
+      {% set code_behavior_keys = ['CODE_THINKING', 'CODE_PRESERVE_THINKING', 'CODE_REASONING_EFFORT', 'CODE_JINJA', 'CODE_REASONING_FORMAT'] %}
       {% set code_sampling_keys = ['CODE_TEMP', 'CODE_TOP_P', 'CODE_TOP_K', 'CODE_MIN_P', 'CODE_PRESENCE_PENALTY', 'CODE_REPEAT_PENALTY'] %}
       {% set curated = code_identity_keys + code_behavior_keys + code_sampling_keys %}
       <div class="cfg-panel-grid">

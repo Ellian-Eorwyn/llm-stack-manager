@@ -55,6 +55,7 @@ CHAT_MIN_P="${CHAT_SECONDARY_MIN_P:-${CHAT_MIN_P:-0.00}}"
 CHAT_REASONING_FORMAT="${CHAT_SECONDARY_REASONING_FORMAT:-${CHAT_REASONING_FORMAT:-deepseek}}"
 CHAT_CUSTOM_ARGS_JSON="${CHAT_SECONDARY_CUSTOM_ARGS_JSON:-${CHAT_CUSTOM_ARGS_JSON:-[]}}"
 CHAT_PRESERVE_THINKING="${CHAT_SECONDARY_PRESERVE_THINKING:-${CHAT_PRESERVE_THINKING:-on}}"
+CHAT_REASONING_EFFORT="${CHAT_SECONDARY_REASONING_EFFORT-${CHAT_REASONING_EFFORT-}}"
 CHAT_SPEC_METHOD="${CHAT_SECONDARY_SPEC_METHOD:-${CHAT_SPEC_METHOD:-off}}"
 CHAT_SPEC_NGRAM_MOD="${CHAT_SECONDARY_SPEC_NGRAM_MOD:-${CHAT_SPEC_NGRAM_MOD:-off}}"
 CHAT_SPEC_DRAFT_MODEL_PATH="${CHAT_SECONDARY_SPEC_DRAFT_MODEL_PATH-${CHAT_SPEC_DRAFT_MODEL_PATH-}}"
@@ -155,8 +156,9 @@ done
 if [[ "${CHAT_JINJA:-off}" == "on" && "${HAS_CUSTOM_JINJA}" -eq 0 ]]; then
     OPTS+=(--jinja)
 fi
-if [[ "${CHAT_PRESERVE_THINKING:-on}" == "on" && "${HAS_TEMPLATE_KWARGS}" -eq 0 ]]; then
-    OPTS+=(--chat-template-kwargs '{"preserve_thinking": true}')
+if [[ "${HAS_TEMPLATE_KWARGS}" -eq 0 ]]; then
+    add_chat_template_kwargs_opt "[chat-backend-moe]" \
+        "${CHAT_PRESERVE_THINKING:-on}" "${CHAT_REASONING_EFFORT:-}"
 fi
 
 if [[ -n "${CHAT_TEMPLATE_ID:-}" && "${HAS_CUSTOM_CHAT_TEMPLATE}" -eq 0 ]]; then
@@ -230,6 +232,12 @@ if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     [[ -n "${CHAT_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${CHAT_SPEC_DRAFT_DEVICES}")
 elif [[ "${SPEC_METHOD}" != "off" ]]; then
     SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${DRAFT_CACHE_SPEC_ARGS[@]}" "${COMMON_SPEC_ARGS[@]}")
+    # draft-mtp is deliberately absent: when no draft model is given,
+    # common_speculative_init_result creates the MTP draft context against the
+    # *target* model (common/speculative.cpp, the `else if (spec_mtp)` branch),
+    # which is how a GGUF carrying its own blk.N.nextn.* head runs MTP with no
+    # sidecar at all. Requiring a draft path here would refuse to start exactly
+    # that configuration.
     if [[ "${SPEC_METHOD}" == "draft-simple" || "${SPEC_METHOD}" == "draft-eagle3" || "${SPEC_METHOD}" == "draft-dflash" ]]; then
         if [[ -z "${CHAT_SPEC_DRAFT_MODEL_PATH:-}" ]]; then
             echo "[chat-backend-moe] ${SPEC_METHOD} is enabled, but CHAT_SPEC_DRAFT_MODEL_PATH is empty." >&2

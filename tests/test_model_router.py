@@ -189,7 +189,7 @@ class TaskSettingCoverageTests(unittest.TestCase):
 
         carried = set(renderer.VALUE_OPTIONS) | set(renderer.FLAG_OPTIONS) | {
             "MODEL_PATH", "MMPROJ_PATH", "MODEL_NAME", "CUSTOM_ARGS_JSON",
-            "THINKING", "CHAT_TEMPLATE_ID",
+            "THINKING", "REASONING_EFFORT", "CHAT_TEMPLATE_ID",
         }
         declared = {
             field["key"][len("TASK_"):]
@@ -207,6 +207,22 @@ class TaskSettingCoverageTests(unittest.TestCase):
         self.assertEqual(
             self._task(TASK_THINKING="off")["chat-template-kwargs"],
             '{"enable_thinking":false}',
+        )
+
+    def test_thinking_level_rides_along_only_while_thinking_is_on(self):
+        """Qwen 3.8's template raises on a level it does not know, and ignores
+        any level once thinking is off — so an unusable one is never sent."""
+        self.assertEqual(
+            self._task(TASK_THINKING="on", TASK_REASONING_EFFORT="low")["chat-template-kwargs"],
+            '{"enable_thinking":true, "reasoning_effort": "low"}',
+        )
+        self.assertEqual(
+            self._task(TASK_THINKING="off", TASK_REASONING_EFFORT="low")["chat-template-kwargs"],
+            '{"enable_thinking":false}',
+        )
+        self.assertEqual(
+            self._task(TASK_THINKING="on", TASK_REASONING_EFFORT="high")["chat-template-kwargs"],
+            '{"enable_thinking":true}',
         )
         self.assertEqual(
             self._task(TASK_THINKING="on")["chat-template-kwargs"],

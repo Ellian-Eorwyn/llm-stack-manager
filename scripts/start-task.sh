@@ -34,7 +34,7 @@ echo "[task] KV cache:         K=${TASK_CACHE_TYPE_K} V=${TASK_CACHE_TYPE_V}"
 echo "[task] Prompt cache:     ram=${TASK_CACHE_RAM:-8192} MiB ctx-checkpoints=${TASK_CTX_CHECKPOINTS:-8}"
 echo "[task] SWA full cache:   ${TASK_SWA_FULL:-off}"
 echo "[task] Jinja:            ${TASK_JINJA:-off}"
-echo "[task] Thinking:         ${TASK_THINKING:-off}"
+echo "[task] Thinking:         ${TASK_THINKING:-off} (effort=${TASK_REASONING_EFFORT:-model default})"
 echo "[task] Reasoning format: ${TASK_REASONING_FORMAT:-none}"
 echo "[task] Fit to VRAM:      ${TASK_FIT:-on}"
 echo "[task] Speculative:      ${TASK_SPEC_METHOD:-off}"
@@ -83,9 +83,22 @@ PY
     )
 fi
 
-# Build chat-template-kwargs based on thinking setting
+# Build chat-template-kwargs based on thinking setting. The thinking level only
+# rides along when thinking is on: templates that read reasoning_effort ignore it
+# otherwise, and Qwen 3.8's raises on a level it does not recognize, so an
+# unexpected value is dropped with a note rather than failing every request.
 if [[ "${TASK_THINKING:-off}" == "on" ]]; then
     TEMPLATE_KWARGS='{"enable_thinking":true}'
+    case "${TASK_REASONING_EFFORT:-}" in
+        xhigh|medium|low)
+            TEMPLATE_KWARGS="{\"enable_thinking\":true, \"reasoning_effort\": \"${TASK_REASONING_EFFORT}\"}"
+            ;;
+        "")
+            ;;
+        *)
+            echo "[task] Ignoring Reasoning Effort '${TASK_REASONING_EFFORT}': expected xhigh, medium, or low."
+            ;;
+    esac
 else
     TEMPLATE_KWARGS='{"enable_thinking":false}'
 fi
@@ -183,6 +196,12 @@ if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     [[ -n "${TASK_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${TASK_SPEC_DRAFT_DEVICES}")
 elif [[ "${SPEC_METHOD}" != "off" ]]; then
     SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${DRAFT_CACHE_SPEC_ARGS[@]}" "${COMMON_SPEC_ARGS[@]}")
+    # draft-mtp is deliberately absent: when no draft model is given,
+    # common_speculative_init_result creates the MTP draft context against the
+    # *target* model (common/speculative.cpp, the `else if (spec_mtp)` branch),
+    # which is how a GGUF carrying its own blk.N.nextn.* head runs MTP with no
+    # sidecar at all. Requiring a draft path here would refuse to start exactly
+    # that configuration.
     if [[ "${SPEC_METHOD}" == "draft-simple" || "${SPEC_METHOD}" == "draft-eagle3" || "${SPEC_METHOD}" == "draft-dflash" ]]; then
         if [[ -z "${TASK_SPEC_DRAFT_MODEL_PATH:-}" ]]; then
             echo "[task] ${SPEC_METHOD} is enabled, but TASK_SPEC_DRAFT_MODEL_PATH is empty." >&2

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 def _load_proxy_module():
@@ -118,6 +120,61 @@ class MaxTokensOverrideTests(unittest.TestCase):
         payload = {"max_tokens": 40}
         proxy._inject_max_tokens(payload, "chat", 0)
         self.assertEqual(payload["max_tokens"], 40)
+
+
+class ReasoningEffortTests(unittest.TestCase):
+    """Qwen 3.8's template raises on a level it does not recognize, so an
+    unusable value must never survive as far as the backend."""
+
+    def test_qwen_levels_pass_through(self):
+        for level in ("xhigh", "medium", "low"):
+            self.assertEqual(proxy._normalize_reasoning_effort(level), level)
+
+    def test_openai_vocabulary_maps_onto_the_nearest_qwen_level(self):
+        self.assertEqual(proxy._normalize_reasoning_effort("high"), "xhigh")
+        self.assertEqual(proxy._normalize_reasoning_effort("minimal"), "low")
+        self.assertEqual(proxy._normalize_reasoning_effort("none"), "low")
+
+    def test_unknown_and_non_string_values_fall_back_to_the_endpoint_default(self):
+        for value in ("bogus", "", None, 7, {"a": 1}):
+            self.assertEqual(proxy._normalize_reasoning_effort(value, "medium"), "medium")
+
+    def test_case_and_surrounding_space_are_ignored(self):
+        self.assertEqual(proxy._normalize_reasoning_effort("  XHigh "), "xhigh")
+
+    def test_endpoint_default_applies_when_the_caller_says_nothing(self):
+        payload = {}
+        proxy._inject_thinking(payload, True, True, "xhigh")
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "xhigh")
+
+    def test_top_level_field_is_consumed_rather_than_forwarded(self):
+        """llama.cpp 7e4c0a9 forwards a top-level reasoning_effort straight into
+        the template, so leaving one on the payload is what would raise."""
+        payload = {"reasoning_effort": "high"}
+        proxy._inject_thinking(payload, True, True, "xhigh")
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "xhigh")
+
+    def test_a_level_supplied_via_template_kwargs_is_normalized_too(self):
+        payload = {"chat_template_kwargs": {"reasoning_effort": "minimal"}}
+        proxy._inject_thinking(payload, True, True, "xhigh")
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "low")
+
+    def test_no_level_is_sent_when_thinking_is_off(self):
+        payload = {"reasoning_effort": "high"}
+        proxy._inject_thinking(payload, False, False, None)
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertNotIn("reasoning_effort", payload["chat_template_kwargs"])
+
+    def test_unconfigured_endpoint_strips_a_client_level_rather_than_guessing(self):
+        payload = {"reasoning_effort": "bogus"}
+        proxy._inject_thinking(payload, True, True, None)
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertNotIn("reasoning_effort", payload["chat_template_kwargs"])
+
+    def test_blank_configuration_means_leave_the_template_default_alone(self):
+        with mock.patch.dict(os.environ, {"THINK_REASONING_EFFORT": ""}, clear=False):
+            self.assertIsNone(proxy._reasoning_effort_env("THINK_REASONING_EFFORT", "xhigh"))
 
 
 class ResponseHelpersTests(unittest.TestCase):

@@ -171,3 +171,60 @@ report is empty, and that is an operator action rather than a code change.
 **Saved profiles are never rewritten.** They are user data, and a profile
 carrying only `CHAT_DENSE_MODEL_PATH` would lose its model if the key were
 dropped. Step 1 keeps reading them correctly for as long as they exist.
+
+## 5. Thinking level (`reasoning_effort`)
+
+Qwen 3.8 added a graded thinking control on top of the `enable_thinking` /
+`preserve_thinking` pair the stack already injected. It rides the same seam:
+`chat_template_kwargs`, set as a backend default on the launcher and overridden
+per endpoint by the proxy.
+
+| Key | Applies to | Default |
+| --- | --- | --- |
+| `CHAT_REASONING_EFFORT` / `CHAT_PRIMARY_REASONING_EFFORT` / `CHAT2_REASONING_EFFORT` | backend `--chat-template-kwargs` | empty (model default) |
+| `THINK_REASONING_EFFORT` | thinking proxy port | `xhigh` |
+| `CODE_REASONING_EFFORT` | code proxy port | `medium` |
+| `TASK_REASONING_EFFORT` | task model launcher | `low` |
+
+There is deliberately no `NOTHINK_REASONING_EFFORT`: that endpoint pins
+`enable_thinking=false`, and the template ignores the level when thinking is off.
+
+**Three things about this setting are counter-intuitive and worth keeping in mind.**
+
+**`medium` is not a midpoint.** The template injects a steering instruction for
+`xhigh` ("think carefully… validate key assumptions…") and for `low` ("keep your
+thinking brief…"), and injects *nothing* for `medium`. Medium is the model's
+unsteered baseline, not a halfway setting, which is why the UI labels it that way.
+
+**An unrecognized level is a failed request, not a fallback.** The template ends
+its validation with `raise_exception`, so `reasoning_effort: "high"` — OpenAI's
+vocabulary, which any OpenAI-compatible client may send without knowing which
+model is behind the endpoint — returns a 500 rather than degrading. Two places
+guard against that:
+
+- `_normalize_reasoning_effort` in `llm-chat-proxy.py` maps the OpenAI names
+  onto the Qwen ones (`high`/`max` → `xhigh`, `minimal`/`none`/`off` → `low`) and
+  falls back to the endpoint default for anything else. It also **consumes** a
+  top-level `reasoning_effort` from the request, leaving the normalized value
+  only in `chat_template_kwargs`. That last part matters as of llama.cpp
+  `7e4c0a9`, which forwards a top-level `reasoning_effort` straight into the
+  template — before that commit the field was ignored, so the hazard only
+  appears once the pinned ref is new enough.
+- `add_chat_template_kwargs_opt` in `scripts/lib/backend-preflight.sh` drops an
+  out-of-range value with a note in the journal, rather than letting a typo in
+  the env file fail every request against the backend.
+
+**It only does anything under a template that reads it.** The model's own
+embedded template does; so does `Qwen3.8.jinja`. `Qwen3.6.jinja` and
+`qwen35-cache-fix.jinja` do not — selecting one of those silently discards the
+setting. Leaving the template unset is what keeps the GGUF's own in force.
+
+### Chat templates are validated on save
+
+`Qwen3.6.jinja` was once saved with 56 lines of the model card's *web page*
+above the template — logo, nav, "Files", the file size. All of it is valid Jinja
+literal text, so it compiled clean and prepended ~300 tokens of nonsense to
+every prompt while telling the model it was a different model. `validate_chat_template_content`
+(`web/models.py`) now rejects, on both the create and update routes, any content
+whose first non-whitespace character does not open a Jinja tag — which is the
+check that catches a pasted page — in addition to a syntax parse.
