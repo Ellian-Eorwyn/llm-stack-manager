@@ -34,9 +34,9 @@ export LISTEN_HOST
 export EMBED_PORT
 export EMBED_MODEL_NAME
 export EMBED_BACKEND_HOST
-export THINK_MODEL_NAME="${THINK2_MODEL_NAME:-think}"
-export NOTHINK_MODEL_NAME="${NOTHINK2_MODEL_NAME:-chat}"
-export CODE_MODEL_NAME="${CODE2_MODEL_NAME:-code}"
+export THINK_MODEL_NAME="${THINK2_MODEL_NAME:-think2}"
+export NOTHINK_MODEL_NAME="${NOTHINK2_MODEL_NAME:-chat2}"
+export CODE_MODEL_NAME="${CODE2_MODEL_NAME:-code2}"
 export THINK_PRESERVE_THINKING
 export THINK_JINJA
 export THINK_TEMP
@@ -85,6 +85,6 @@ echo "[chat-proxy2] Starting proxy 2"
 echo "[chat-proxy2] Think port:   ${THINK_PORT}   -> ${CHAT_BACKEND_HOST}:${CHAT_BACKEND_PORT}"
 echo "[chat-proxy2] Nothink port: ${NOTHINK_PORT} -> ${CHAT_BACKEND_HOST}:${CHAT_BACKEND_PORT} (+enable_thinking=false)"
 echo "[chat-proxy2] Code port:    ${CODE_PORT}    -> ${CHAT_BACKEND_HOST}:${CHAT_BACKEND_PORT} (temp=${CODE_TEMP})"
-echo "[chat-proxy2] Aggregate:    ${AGGREGATE_ENABLED} on ${AGGREGATE_PORT} (model-routed think/chat/code)"
+echo "[chat-proxy2] Aggregate:    ${AGGREGATE_ENABLED} on ${AGGREGATE_PORT} (model-routed ${THINK_MODEL_NAME}/${NOTHINK_MODEL_NAME}/${CODE_MODEL_NAME})"
 
 exec python3 "$(dirname "$0")/llm-chat-proxy.py"
