@@ -43,6 +43,7 @@ from config_fields import (
     CODE_TO_CHAT_MIRRORS,
     CONFIG_FIELDS,
     LEGACY_ENV_KEY_MAP,
+    LLAMA_SPLIT_MODE_OPTIONS,
     NEW_ENV_KEY_LEGACY_ALIASES,
     RESTART_HINTS,
     TRANSCRIPTION_ENGINES,
@@ -569,16 +570,36 @@ def allowed_config_keys(env: dict | None = None) -> set[str]:
     return keys
 
 
+def _reject_unsupported_split_modes(values: dict) -> dict:
+    """Drop any `*_SPLIT_MODE` this build cannot act on.
+
+    `allowed_config_keys` unions in whatever the env file already holds, so a
+    saved profile written before `row` was withdrawn — or a hand-edited env —
+    can still carry it here. Writing it back would persist a value whose only
+    effect is a line in the journal when the launcher refuses it. Dropping the
+    update leaves the previous value in place, which is the same thing every
+    other rejected field does.
+
+    Only the fixed vocabulary is checked. Whether `tensor` suits a particular
+    model depends on its architecture, which is knowable from the model file
+    and not from this dict, so that check stays in the launcher.
+    """
+    return {
+        key: value for key, value in values.items()
+        if not (key.endswith("_SPLIT_MODE") and value not in LLAMA_SPLIT_MODE_OPTIONS)
+    }
+
+
 def filter_config_updates(updates: dict, env: dict | None = None) -> dict:
     if not isinstance(updates, dict):
         return {}
     allowed = allowed_config_keys(env)
     normalized = normalize_config_updates(updates)
-    return {
+    return _reject_unsupported_split_modes({
         key: "" if value is None else str(value)
         for key, value in normalized.items()
         if key in allowed and (value is None or isinstance(value, (str, int, float, bool)))
-    }
+    })
 
 
 def config_form_snapshot(values: dict, env: dict | None = None) -> dict:

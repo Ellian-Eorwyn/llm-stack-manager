@@ -44,14 +44,16 @@ export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 export CUDA_VISIBLE_DEVICES="${CHAT2_GPU_VISIBLE_DEVICES}"
 
 echo "[chat-backend2] Starting shared llama-server backend"
+resolve_split_opts "[chat-backend2]" "${CHAT2_SPLIT_MODE:-layer}" "${CHAT2_MODEL_PATH:-}" \
+    "${CHAT2_TENSOR_SPLIT:-}" "${CHAT2_MAIN_GPU:-0}" "${CHAT2_FLASH_ATTN:-auto}"
 echo "[chat-backend2] Model:   ${CHAT2_MODEL_PATH}"
 echo "[chat-backend2] MMProj:  ${CHAT2_MMPROJ_PATH:-(none)}"
 echo "[chat-backend2] Port:    ${CHAT2_BACKEND_PORT} (localhost only)"
 echo "[chat-backend2] Context: ${CHAT2_CTX_SIZE}"
-echo "[chat-backend2] Main GPU: ${CHAT2_MAIN_GPU}"
-echo "[chat-backend2] GPUs:    ${CUDA_VISIBLE_DEVICES} (split ${CHAT2_TENSOR_SPLIT})"
+echo "[chat-backend2] Main GPU: ${MAIN_GPU_EFFECTIVE:-n/a}"
+echo "[chat-backend2] GPUs:    ${CUDA_VISIBLE_DEVICES} (split ${TENSOR_SPLIT_EFFECTIVE:-n/a})"
 echo "[chat-backend2] Device override: ${CHAT2_DEVICE:-auto}"
-echo "[chat-backend2] Placement: split=${CHAT2_SPLIT_MODE} kv-offload=${CHAT2_KV_OFFLOAD:-on} op-offload=${CHAT2_OP_OFFLOAD:-on} mmproj-offload=${CHAT2_MMPROJ_OFFLOAD:-on}"
+echo "[chat-backend2] Placement: split=${SPLIT_MODE_EFFECTIVE} kv-offload=${CHAT2_KV_OFFLOAD:-on} op-offload=${CHAT2_OP_OFFLOAD:-on} mmproj-offload=${CHAT2_MMPROJ_OFFLOAD:-on}"
 echo "[chat-backend2] CPU threads:      ${CHAT2_THREADS:--1} (batch=${CHAT2_THREADS_BATCH:--1})"
 echo "[chat-backend2] KV cache: K=${CHAT2_CACHE_TYPE_K} V=${CHAT2_CACHE_TYPE_V}"
 echo "[chat-backend2] SWA full cache:    ${CHAT2_SWA_FULL:-off}"
@@ -256,10 +258,8 @@ exec "${LLAMA_SERVER_BIN}" \
     --host "${CHAT2_BACKEND_HOST}" \
     --port "${CHAT2_BACKEND_PORT}" \
     --ctx-size "${CHAT2_CTX_SIZE}" \
-    --main-gpu "${CHAT2_MAIN_GPU}" \
     --n-gpu-layers "${CHAT2_N_GPU_LAYERS}" \
-    --split-mode "${CHAT2_SPLIT_MODE}" \
-    --tensor-split "${CHAT2_TENSOR_SPLIT}" \
+    "${SPLIT_OPTS[@]}" \
     --batch-size "${CHAT2_BATCH_SIZE}" \
     --ubatch-size "${CHAT2_UBATCH_SIZE}" \
     --parallel "${CHAT2_N_PARALLEL}" \

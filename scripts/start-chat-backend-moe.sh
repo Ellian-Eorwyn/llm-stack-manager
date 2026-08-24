@@ -81,14 +81,16 @@ export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 export CUDA_VISIBLE_DEVICES="${CHAT_GPU_VISIBLE_DEVICES}"
 
 echo "[chat-backend-moe] Starting shared llama-server backend (${CHAT_MOE_LABEL:-Backend MoE})"
+resolve_split_opts "[chat-backend-moe]" "${CHAT_SPLIT_MODE:-layer}" "${CHAT_MOE_MODEL_PATH:-}" \
+    "${CHAT_TENSOR_SPLIT:-}" "${CHAT_MAIN_GPU:-0}" "${CHAT_FLASH_ATTN:-auto}"
 echo "[chat-backend-moe] Model:            ${CHAT_MOE_MODEL_PATH}"
 echo "[chat-backend-moe] MMProj:           ${CHAT_MOE_MMPROJ_PATH:-(none)}"
 echo "[chat-backend-moe] Port:             ${CHAT_BACKEND_PORT} (localhost only)"
 echo "[chat-backend-moe] Context:          ${CHAT_MOE_CTX_SIZE}"
-echo "[chat-backend-moe] Main GPU:         ${CHAT_MAIN_GPU}"
-echo "[chat-backend-moe] GPUs:             ${CUDA_VISIBLE_DEVICES} (split ${CHAT_TENSOR_SPLIT})"
+echo "[chat-backend-moe] Main GPU:         ${MAIN_GPU_EFFECTIVE:-n/a}"
+echo "[chat-backend-moe] GPUs:             ${CUDA_VISIBLE_DEVICES} (split ${TENSOR_SPLIT_EFFECTIVE:-n/a})"
 echo "[chat-backend-moe] Device override:  ${CHAT_DEVICE:-auto}"
-echo "[chat-backend-moe] Placement:        split=${CHAT_SPLIT_MODE} kv-offload=${CHAT_KV_OFFLOAD:-on} op-offload=${CHAT_OP_OFFLOAD:-on} mmproj-offload=${CHAT_MMPROJ_OFFLOAD:-on}"
+echo "[chat-backend-moe] Placement:        split=${SPLIT_MODE_EFFECTIVE} kv-offload=${CHAT_KV_OFFLOAD:-on} op-offload=${CHAT_OP_OFFLOAD:-on} mmproj-offload=${CHAT_MMPROJ_OFFLOAD:-on}"
 echo "[chat-backend-moe] CPU threads:      ${CHAT_THREADS:--1} (batch=${CHAT_THREADS_BATCH:--1})"
 echo "[chat-backend-moe] KV cache:         K=${CHAT_CACHE_TYPE_K} V=${CHAT_CACHE_TYPE_V}"
 echo "[chat-backend-moe] Prompt cache:     ram=${CHAT_CACHE_RAM:-8192} MiB ctx-checkpoints=${CHAT_CTX_CHECKPOINTS:-8}"
@@ -291,10 +293,8 @@ exec "${LLAMA_SERVER_BIN}" \
     --host "${CHAT_BACKEND_HOST}" \
     --port "${CHAT_BACKEND_PORT}" \
     --ctx-size "${CHAT_MOE_CTX_SIZE}" \
-    --main-gpu "${CHAT_MAIN_GPU}" \
     --n-gpu-layers "${CHAT_N_GPU_LAYERS}" \
-    --split-mode "${CHAT_SPLIT_MODE}" \
-    --tensor-split "${CHAT_TENSOR_SPLIT}" \
+    "${SPLIT_OPTS[@]}" \
     --batch-size "${CHAT_BATCH_SIZE}" \
     --ubatch-size "${CHAT_UBATCH_SIZE}" \
     --parallel "${CHAT_N_PARALLEL}" \

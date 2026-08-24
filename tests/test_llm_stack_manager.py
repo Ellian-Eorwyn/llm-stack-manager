@@ -4,6 +4,7 @@ import importlib.util
 import json
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1783,6 +1784,165 @@ class ConfigNormalizationTests(unittest.TestCase):
         self.assertEqual(snapshot["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
         self.assertEqual(snapshot["CHAT_PRIMARY_CTX_SIZE"], "131072")
         self.assertEqual(config_env.config_form_snapshot(snapshot, env={}), snapshot)
+
+
+class SplitModeTests(unittest.TestCase):
+    """Two of llama.cpp's four split modes cannot run on this build, and both
+    fail after the launcher has exec'd — as a core dump in a restart loop, not
+    as an error. See docs/gpu-split-modes.md."""
+
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        spec = importlib.util.spec_from_file_location(
+            "llm_stack_manager_split_budget",
+            pathlib.Path(__file__).resolve().parent / "test_budget.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        tmp = pathlib.Path(self._tmp.name)
+        # qwen35 is hybrid and is the family the primary backend runs; gemma4
+        # is not, and is the counter-example that must still be allowed.
+        self.hybrid = module.write_gguf(tmp / "hybrid.gguf", module.QWEN36_27B)
+        self.dense = module.write_gguf(tmp / "dense.gguf", module.GEMMA4_31B)
+
+    # -- the config surface -------------------------------------------------
+
+    def test_row_is_not_offered_anywhere(self):
+        self.assertNotIn("row", config_fields.LLAMA_SPLIT_MODE_OPTIONS)
+        for field in config_fields.CONFIG_FIELDS:
+            if field["key"].endswith("_SPLIT_MODE"):
+                self.assertEqual(field["options"], config_fields.LLAMA_SPLIT_MODE_OPTIONS,
+                                 f"{field['key']} offers its own split-mode list")
+                self.assertTrue(field.get("hint"), f"{field['key']} has no hint")
+
+    def test_every_backend_offers_the_same_modes(self):
+        """Embedding and reranking used to offer a different list than the chat
+        backends, for no reason anyone recorded."""
+        keys = {f["key"] for f in config_fields.CONFIG_FIELDS if f["key"].endswith("_SPLIT_MODE")}
+        self.assertIn("CHAT_PRIMARY_SPLIT_MODE", keys)
+        self.assertIn("EMBED_SPLIT_MODE", keys)
+        self.assertIn("RERANK_SPLIT_MODE", keys)
+
+    def test_an_unsupported_mode_is_not_persisted(self):
+        """allowed_config_keys unions in whatever the env already holds, so a
+        saved profile written before row was withdrawn can still offer it."""
+        out = config_env.filter_config_updates({
+            "CHAT_PRIMARY_SPLIT_MODE": "row",
+            "CHAT2_SPLIT_MODE": "sideways",
+            "TASK_SPLIT_MODE": "tensor",
+            "EMBED_SPLIT_MODE": "layer",
+            "CHAT_PRIMARY_TENSOR_SPLIT": "1,1",
+        })
+        self.assertNotIn("CHAT_PRIMARY_SPLIT_MODE", out)
+        self.assertNotIn("CHAT2_SPLIT_MODE", out)
+        self.assertEqual(out["TASK_SPLIT_MODE"], "tensor")
+        self.assertEqual(out["EMBED_SPLIT_MODE"], "layer")
+        self.assertEqual(out["CHAT_PRIMARY_TENSOR_SPLIT"], "1,1")
+
+    # -- the launcher helper ------------------------------------------------
+
+    def _resolve(self, mode, model, tensor_split="1,1", main_gpu="0", flash_attn="on"):
+        """Run resolve_split_opts the way a start script does and report both
+        the flags it built and what it said about them."""
+        script = (
+            'set -euo pipefail\n'
+            f'STACK_DIR={shlex.quote(str(self.ROOT))}\n'
+            'source "${STACK_DIR}/scripts/lib/backend-preflight.sh"\n'
+            f'resolve_split_opts "[test]" {shlex.quote(mode)} {shlex.quote(str(model))} '
+            f'{shlex.quote(tensor_split)} {shlex.quote(main_gpu)} {shlex.quote(flash_attn)}\n'
+            'printf "FLAGS:%s\\n" "${SPLIT_OPTS[*]}"\n'
+        )
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        flags, messages = "", []
+        for line in proc.stdout.splitlines():
+            if line.startswith("FLAGS:"):
+                flags = line[len("FLAGS:"):]
+            else:
+                messages.append(line)
+        return flags.split(), "\n".join(messages)
+
+    def test_row_never_reaches_llama_server(self):
+        flags, said = self._resolve("row", self.dense)
+        self.assertEqual(flags[:2], ["--split-mode", "layer"])
+        self.assertIn("split-buffer", said)
+
+    def test_tensor_is_refused_for_a_hybrid_model(self):
+        """The reported crash: qwen35 passes llama.cpp's own arch gate and then
+        aborts in the meta backend during the warmup decode."""
+        flags, said = self._resolve("tensor", self.hybrid)
+        self.assertEqual(flags[:2], ["--split-mode", "layer"])
+        self.assertIn("hybrid", said)
+        self.assertIn("qwen35", said)
+
+    def test_tensor_is_allowed_for_a_non_hybrid_model(self):
+        flags, said = self._resolve("tensor", self.dense)
+        self.assertEqual(flags, ["--split-mode", "tensor"])
+        self.assertNotIn("--tensor-split", flags)
+        self.assertNotIn("--main-gpu", flags)
+        self.assertIn("experimental", said)
+
+    def test_tensor_needs_flash_attention(self):
+        flags, said = self._resolve("tensor", self.dense, flash_attn="off")
+        self.assertEqual(flags[:2], ["--split-mode", "layer"])
+        self.assertIn("flash attention", said)
+
+    def test_an_unreadable_model_falls_back_rather_than_guessing(self):
+        flags, said = self._resolve("tensor", self.ROOT / "no-such-model.gguf")
+        self.assertEqual(flags[:2], ["--split-mode", "layer"])
+        self.assertIn("could not read", said)
+
+    def test_an_empty_ratio_is_omitted_not_passed_empty(self):
+        """llama.cpp reads `--tensor-split ""` as an explicit empty split and
+        refuses it; TASK_TENSOR_SPLIT and CHAT2_TENSOR_SPLIT are both empty."""
+        flags, _ = self._resolve("layer", self.dense, tensor_split="")
+        self.assertEqual(flags, ["--split-mode", "layer", "--main-gpu", "0"])
+
+    def test_layer_still_passes_placement_through(self):
+        flags, said = self._resolve("layer", self.hybrid)
+        self.assertEqual(flags, ["--split-mode", "layer", "--main-gpu", "0",
+                                 "--tensor-split", "1,1"])
+        self.assertEqual(said, "")
+
+    def test_backends_without_a_main_gpu_do_not_gain_one(self):
+        """embed, embed2 and rerank have never emitted --main-gpu."""
+        flags, _ = self._resolve("layer", self.dense, main_gpu="")
+        self.assertNotIn("--main-gpu", flags)
+
+    # -- the router preset --------------------------------------------------
+
+    def test_router_preset_applies_the_same_refusals(self):
+        """Pooled models never touch the start scripts, so the check has to
+        exist twice or a router member would crash where a unit would not."""
+        spec = importlib.util.spec_from_file_location(
+            "render_models_ini", self.ROOT / "scripts" / "render-models-ini.py")
+        rmi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rmi)
+
+        said = []
+        self.assertEqual(rmi._resolve_split_mode(str(self.hybrid), "tensor", said.append), "layer")
+        self.assertEqual(rmi._resolve_split_mode(str(self.dense), "row", said.append), "layer")
+        self.assertEqual(rmi._resolve_split_mode(str(self.dense), "tensor", said.append), "tensor")
+        self.assertEqual(rmi._resolve_split_mode(str(self.dense), "layer", said.append), "layer")
+        self.assertEqual(len(said), 2)
+
+    def test_router_preset_drops_placement_under_tensor(self):
+        spec = importlib.util.spec_from_file_location(
+            "render_models_ini", self.ROOT / "scripts" / "render-models-ini.py")
+        rmi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rmi)
+
+        _, options = rmi.render_member("EMBED", {
+            "EMBEDDING_MODEL_PATH": str(self.dense),
+            "EMBED_SPLIT_MODE": "tensor",
+            "EMBED_TENSOR_SPLIT": "1,1",
+            "EMBED_MAIN_GPU": "0",
+        })
+        self.assertEqual(options["split-mode"], "tensor")
+        self.assertNotIn("tensor-split", options)
+        self.assertNotIn("main-gpu", options)
 
 
 if __name__ == "__main__":

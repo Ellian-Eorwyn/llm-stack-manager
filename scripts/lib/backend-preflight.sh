@@ -61,6 +61,134 @@ add_fit_ctx_opt() {
     fi
 }
 
+# Build the GPU split flags this llama.cpp build can actually act on.
+#
+# Two of the four modes llama-server advertises cannot run on a CUDA build of
+# the pinned revision, and both fail *after* the launcher has exec'd, so the
+# only symptom is a systemd restart loop:
+#
+#   row     Upstream 74976e1ae ("CUDA: remove -sm row") deleted the CUDA split
+#           buffer implementation. make_gpu_buft_list (src/llama-model.cpp)
+#           throws "device CUDA0 does not support split buffers" on the first
+#           device, so this dies even with one GPU. Only SYCL still implements
+#           it. Nothing about the config can make it work here.
+#
+#   tensor  Tensor parallelism is unimplemented for hybrid/recurrent
+#           architectures. llm_arch_supports_sm_tensor (src/llama-arch.cpp)
+#           blacklists every hybrid arch *except* qwen35, qwen35moe and
+#           qwen3next, which were added to llm_arch_is_hybrid and missed in the
+#           blacklist. Those three therefore pass the arch gate and then abort
+#           in the meta backend during the warmup decode:
+#               ggml.c: GGML_ASSERT(obj_new) failed
+#               ggml_new_object: not enough space in the context's memory pool
+#           Every Qwen3.5/3.8 GGUF in models/ is qwen35, so the whole family is
+#           affected. Refusing here is what keeps the backend up.
+#
+# In tensor mode llama.cpp folds all visible GPUs into a single "Meta device",
+# which changes what the other placement flags mean: --tensor-split describes a
+# ratio between devices that no longer exist separately, and --main-gpu selects
+# among them. Both are dropped rather than passed and ignored. --fit is inert
+# too (common/fit.cpp refuses SPLIT_MODE_TENSOR and downgrades to a warning),
+# and flash attention is mandatory (src/llama-context.cpp errors without it).
+#
+# Populates SPLIT_OPTS, plus SPLIT_MODE_EFFECTIVE / TENSOR_SPLIT_EFFECTIVE /
+# MAIN_GPU_EFFECTIVE for the launcher's own startup banner, so the banner
+# reports the placement llama-server is actually given rather than the one that
+# was asked for. Call as:
+#
+#   resolve_split_opts "[chat-backend-dense]" "${MODE}" "${MODEL}" \
+#       "${TENSOR_SPLIT}" "${MAIN_GPU}" "${FLASH_ATTN}"
+#
+# Pass an empty main_gpu for the backends that never emitted --main-gpu
+# (embed, embed2, rerank); the helper will not introduce one.
+resolve_split_opts() {
+    local prefix="$1" mode="$2" model_path="$3"
+    local tensor_split="$4" main_gpu="$5" flash_attn="${6:-auto}"
+
+    SPLIT_OPTS=()
+    SPLIT_MODE_EFFECTIVE=""
+    TENSOR_SPLIT_EFFECTIVE=""
+    MAIN_GPU_EFFECTIVE=""
+    [[ -n "${mode}" ]] || mode="layer"
+
+    case "${mode}" in
+        row)
+            echo "${prefix} Ignoring Split Mode 'row': this CUDA build has no split-buffer support, so llama-server would fail to load the model. Using 'layer' instead."
+            mode="layer"
+            ;;
+        tensor)
+            _split_mode_vet_tensor "${prefix}" "${model_path}" "${flash_attn}"
+            mode="${_SPLIT_MODE_RESOLVED}"
+            ;;
+        none|layer)
+            ;;
+        *)
+            echo "${prefix} Ignoring Split Mode '${mode}': expected none, layer, or tensor. Using 'layer' instead."
+            mode="layer"
+            ;;
+    esac
+
+    SPLIT_OPTS+=(--split-mode "${mode}")
+    SPLIT_MODE_EFFECTIVE="${mode}"
+
+    if [[ "${mode}" == "tensor" ]]; then
+        # Deliberately no --tensor-split / --main-gpu: see the header comment.
+        [[ -n "${tensor_split}" ]] && \
+            echo "${prefix} Ignoring Tensor Split '${tensor_split}': split-mode=tensor merges the visible GPUs into one device, so there is no ratio between them to set."
+        [[ -n "${main_gpu}" ]] && \
+            echo "${prefix} Ignoring Main GPU Index ${main_gpu}: split-mode=tensor merges the visible GPUs into one device, so there is no main GPU to choose."
+        return 0
+    fi
+
+    if [[ -n "${main_gpu}" ]]; then
+        SPLIT_OPTS+=(--main-gpu "${main_gpu}")
+        MAIN_GPU_EFFECTIVE="${main_gpu}"
+    fi
+    # An empty ratio must be omitted, not passed as "": llama.cpp reads
+    # `--tensor-split ""` as an explicit empty split and refuses it.
+    if [[ -n "${tensor_split}" ]]; then
+        SPLIT_OPTS+=(--tensor-split "${tensor_split}")
+        TENSOR_SPLIT_EFFECTIVE="${tensor_split}"
+    fi
+    return 0
+}
+
+# Decide whether split-mode=tensor can run against this model, setting
+# _SPLIT_MODE_RESOLVED to the mode to actually use. Falls back to 'layer' with a
+# reason on every refusal.
+#
+# Note this degrades to 'layer' rather than to the operator's setting when the
+# model cannot be read. The rule elsewhere in this file is that a helper must
+# never stop a backend starting, and falling back still starts it — in the mode
+# known to work. Passing an unvetted 'tensor' through is what produces the
+# core-dump loop, so permissiveness here would defeat the check entirely.
+_split_mode_vet_tensor() {
+    local prefix="$1" model_path="$2" flash_attn="$3"
+
+    if [[ "${flash_attn}" == "off" ]]; then
+        echo "${prefix} Ignoring Split Mode 'tensor': it requires flash attention, which is turned off for this backend. Using 'layer' instead."
+        _SPLIT_MODE_RESOLVED=layer
+        return 0
+    fi
+
+    local is_hybrid arch
+    if ! is_hybrid="$(budget_field "${model_path}" geometry.is_hybrid)" || [[ -z "${is_hybrid}" ]]; then
+        echo "${prefix} Ignoring Split Mode 'tensor': could not read the architecture of $(basename "${model_path}") to confirm tensor parallelism supports it. Using 'layer' instead."
+        _SPLIT_MODE_RESOLVED=layer
+        return 0
+    fi
+
+    if [[ "${is_hybrid}" == "true" ]]; then
+        arch="$(budget_field "${model_path}" geometry.architecture)" || arch="unknown"
+        echo "${prefix} Ignoring Split Mode 'tensor': llama.cpp has not implemented tensor parallelism for hybrid attention models, and this one is ${arch:-unknown}. Using 'layer' instead."
+        _SPLIT_MODE_RESOLVED=layer
+        return 0
+    fi
+
+    echo "${prefix} Split Mode 'tensor' is experimental: auto-fit does not apply to it, so context and layer counts are used exactly as configured."
+    _SPLIT_MODE_RESOLVED=tensor
+}
+
 # Append the --chat-template-kwargs the backend should start with.
 #
 # These are defaults the template sees when a request carries no

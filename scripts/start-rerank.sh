@@ -12,6 +12,7 @@ set -euo pipefail
 # Load configuration
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
+source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
 LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
 export LD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
 export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
@@ -37,6 +38,9 @@ OPTS=()
 [[ "${RERANK_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
 [[ "${RERANK_JINJA:-off}" == "on" ]] && OPTS+=(--jinja)
 
+resolve_split_opts "[rerank]" "${RERANK_SPLIT_MODE:-layer}" "${RERANK_MODEL_PATH:-}" \
+    "${RERANK_TENSOR_SPLIT:-1}" "" "${RERANK_FLASH_ATTN:-on}"
+
 exec "${LLAMA_SERVER_BIN}" \
     --model "${RERANKER_MODEL_PATH}" \
     --alias "${RERANK_MODEL_NAME:-rank}" \
@@ -44,8 +48,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --port "${RERANK_PORT}" \
     --ctx-size "${RERANK_CTX_SIZE}" \
     --n-gpu-layers "${RERANK_N_GPU_LAYERS:-${CHAT_N_GPU_LAYERS:--1}}" \
-    --split-mode "${RERANK_SPLIT_MODE:-layer}" \
-    --tensor-split "${RERANK_TENSOR_SPLIT:-1}" \
+    "${SPLIT_OPTS[@]}" \
     --batch-size "${RERANK_BATCH_SIZE}" \
     --ubatch-size "${RERANK_UBATCH_SIZE:-${CHAT_UBATCH_SIZE:-512}}" \
     --parallel "${RERANK_N_PARALLEL:-1}" \

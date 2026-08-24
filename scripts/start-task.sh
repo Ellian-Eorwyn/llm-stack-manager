@@ -20,15 +20,17 @@ export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 export CUDA_VISIBLE_DEVICES="${TASK_GPU_VISIBLE_DEVICES}"
 
 echo "[task] Starting llama-server (small task model)"
+resolve_split_opts "[task]" "${TASK_SPLIT_MODE:-layer}" "${TASK_MODEL_PATH:-}" \
+    "${TASK_TENSOR_SPLIT:-}" "${TASK_MAIN_GPU:-0}" "${TASK_FLASH_ATTN:-auto}"
 echo "[task] Model:            ${TASK_MODEL_PATH}"
 echo "[task] MMProj:           ${TASK_MMPROJ_PATH}"
 echo "[task] Port:             ${TASK_PORT}"
 echo "[task] Context:          ${TASK_CTX_SIZE}"
 echo "[task] Batch:            ${TASK_BATCH_SIZE} (uBatch=${TASK_UBATCH_SIZE})"
-echo "[task] Main GPU:         ${TASK_MAIN_GPU}"
+echo "[task] Main GPU:         ${MAIN_GPU_EFFECTIVE:-n/a}"
 echo "[task] GPU:              ${CUDA_VISIBLE_DEVICES}"
 echo "[task] Device override:  ${TASK_DEVICE:-auto}"
-echo "[task] Placement:        split=${TASK_SPLIT_MODE} kv-offload=${TASK_KV_OFFLOAD:-on} op-offload=${TASK_OP_OFFLOAD:-on} mmproj-offload=${TASK_MMPROJ_OFFLOAD:-on}"
+echo "[task] Placement:        split=${SPLIT_MODE_EFFECTIVE} kv-offload=${TASK_KV_OFFLOAD:-on} op-offload=${TASK_OP_OFFLOAD:-on} mmproj-offload=${TASK_MMPROJ_OFFLOAD:-on}"
 echo "[task] CPU threads:      ${TASK_THREADS:--1} (batch=${TASK_THREADS_BATCH:--1})"
 echo "[task] KV cache:         K=${TASK_CACHE_TYPE_K} V=${TASK_CACHE_TYPE_V}"
 echo "[task] Prompt cache:     ram=${TASK_CACHE_RAM:-8192} MiB ctx-checkpoints=${TASK_CTX_CHECKPOINTS:-8}"
@@ -254,10 +256,8 @@ exec "${LLAMA_SERVER_BIN}" \
     --host "${LISTEN_HOST}" \
     --port "${TASK_PORT}" \
     --ctx-size "${TASK_CTX_SIZE}" \
-    --main-gpu "${TASK_MAIN_GPU}" \
     --n-gpu-layers "${TASK_N_GPU_LAYERS}" \
-    --split-mode "${TASK_SPLIT_MODE}" \
-    --tensor-split "${TASK_TENSOR_SPLIT}" \
+    "${SPLIT_OPTS[@]}" \
     --batch-size "${TASK_BATCH_SIZE}" \
     --ubatch-size "${TASK_UBATCH_SIZE}" \
     --parallel "${TASK_N_PARALLEL}" \

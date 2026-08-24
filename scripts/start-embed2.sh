@@ -10,6 +10,7 @@ set -euo pipefail
 # Load configuration
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
+source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
 LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
 export LD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
 export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
@@ -18,6 +19,8 @@ export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 export CUDA_VISIBLE_DEVICES="${EMBED2_GPU_VISIBLE_DEVICES}"
 
 echo "[embed2] Starting llama-server in embedding mode"
+resolve_split_opts "[embed2]" "${EMBED2_SPLIT_MODE:-layer}" "${EMBED2_MODEL_PATH:-}" \
+    "${EMBED2_TENSOR_SPLIT:-1}" "" "${EMBED2_FLASH_ATTN:-on}"
 echo "[embed2] Model:            ${EMBED2_MODEL_PATH}"
 echo "[embed2] Port:             ${EMBED2_PORT}"
 echo "[embed2] GPU:              ${CUDA_VISIBLE_DEVICES}"
@@ -42,8 +45,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --port "${EMBED2_PORT}" \
     --ctx-size "${EMBED2_CTX_SIZE}" \
     --n-gpu-layers "${EMBED2_N_GPU_LAYERS:-${CHAT_N_GPU_LAYERS:--1}}" \
-    --split-mode "${EMBED2_SPLIT_MODE:-layer}" \
-    --tensor-split "${EMBED2_TENSOR_SPLIT:-1}" \
+    "${SPLIT_OPTS[@]}" \
     --batch-size "${EMBED2_BATCH_SIZE}" \
     --ubatch-size "${EMBED2_UBATCH_SIZE:-${CHAT_UBATCH_SIZE:-512}}" \
     --parallel "${EMBED2_N_PARALLEL:-1}" \

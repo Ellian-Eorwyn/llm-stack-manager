@@ -178,6 +178,55 @@ def _usable(key: str, value: str) -> bool:
     return " ;" not in value and " #" not in value
 
 
+def _model_is_hybrid(model_path: str):
+    """True/False when the model's architecture is known, None when it is not.
+
+    Reuses the GGUF reader the memory model already depends on rather than
+    parsing the header a second time.
+    """
+    try:
+        sys.path.insert(0, str(STACK_DIR / "web"))
+        from budget import model_geometry, read_gguf_metadata  # noqa: PLC0415
+        return bool(model_geometry(read_gguf_metadata(model_path)).get("is_hybrid"))
+    except Exception:
+        return None
+
+
+def _resolve_split_mode(model_path: str, requested: str, warn) -> str:
+    """The split mode the router can actually give this member.
+
+    Same two refusals as `resolve_split_opts` in
+    scripts/lib/backend-preflight.sh, for the same reasons — the router path
+    never touches the start scripts, so it needs its own copy of the check or a
+    pooled model would core-dump where a standalone unit would not:
+
+      row     removed from the CUDA backend upstream; llama.cpp throws
+              "does not support split buffers" before it loads a single tensor.
+      tensor  unimplemented for hybrid attention models. The arch gate in
+              llama.cpp misses qwen35/qwen35moe/qwen3next, so those reach the
+              meta backend and abort during warmup instead of being rejected.
+
+    Falls back to `layer`, which always loads, rather than to the requested
+    value — an unreadable model is exactly the case that must not be let
+    through.
+    """
+    if requested == "row":
+        warn("split-mode row is not supported by this CUDA build; using layer")
+        return "layer"
+    if requested != "tensor":
+        return requested
+
+    is_hybrid = _model_is_hybrid(model_path)
+    if is_hybrid is None:
+        warn(f"cannot read the architecture of {os.path.basename(model_path)} "
+             "to confirm split-mode tensor supports it; using layer")
+        return "layer"
+    if is_hybrid:
+        warn("split-mode tensor is not implemented for hybrid attention models; using layer")
+        return "layer"
+    return "tensor"
+
+
 def _custom_args(raw: str) -> dict:
     """Best-effort translation of a *_CUSTOM_ARGS_JSON list into preset keys.
 
@@ -231,8 +280,9 @@ def _chat_template_file(prefix: str, template_id: str) -> str:
     return str(path)
 
 
-def render_member(prefix: str, env: dict) -> tuple[str, dict]:
+def render_member(prefix: str, env: dict, warn=None) -> tuple[str, dict]:
     """(section name, ordered options) for one pooled model."""
+    warn = warn or (lambda message: None)
     spec = MEMBERS.get(prefix.upper())
     if spec is None:
         raise RenderError(f"unknown model router member {prefix!r}; "
@@ -268,6 +318,19 @@ def render_member(prefix: str, env: dict) -> tuple[str, dict]:
     # Emitting it here anyway is how `--fit-ctx` kept surviving `fit off`.
     if options.get("fit") == "off":
         options.pop("fit-ctx", None)
+
+    # Split mode has to be vetted against the model, and `tensor` folds every
+    # visible GPU into one device, so the ratio between them and the choice of
+    # a main GPU stop meaning anything. The start scripts drop both; a preset
+    # that kept them would describe a placement the server does not use.
+    split_mode = options.get("split-mode")
+    if split_mode:
+        effective = _resolve_split_mode(model_path, split_mode,
+                                        lambda m: warn(f"{prefix.lower()}: {m}"))
+        options["split-mode"] = effective
+        if effective == "tensor":
+            options.pop("tensor-split", None)
+            options.pop("main-gpu", None)
 
     # Thinking is not a llama.cpp flag — it is a template variable, so it rides
     # in as chat-template-kwargs exactly as start-task.sh:86-91,110-112 sends
@@ -336,7 +399,7 @@ def render(env: dict, members=None, warn=None) -> str:
     seen = {}
     for prefix in members:
         try:
-            name, options = render_member(prefix, env)
+            name, options = render_member(prefix, env, warn)
         except RenderError as exc:
             warn(f"skipping {prefix}: {exc}")
             continue

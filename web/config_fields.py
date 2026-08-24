@@ -35,6 +35,30 @@ exceptions.
 from collections import defaultdict
 
 LLAMA_KV_CACHE_OPTIONS = ["q8_0", "f16", "f32", "bf16", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl"]
+
+# How weights are placed across GPUs. `row` is deliberately not offered: the
+# CUDA split-buffer implementation was removed upstream, so llama-server throws
+# "device CUDA0 does not support split buffers" before it loads a single
+# tensor — there is no configuration that makes it work on this build.
+#
+# `tensor` additionally needs a non-hybrid architecture, which depends on the
+# model file rather than on this setting, so it cannot be gated here. The
+# launcher vets it per model and falls back to `layer` with a reason —
+# `resolve_split_opts` in scripts/lib/backend-preflight.sh.
+LLAMA_SPLIT_MODE_OPTIONS = ["none", "layer", "tensor"]
+LLAMA_SPLIT_MODE_HINT = (
+    "none=whole model on one GPU; layer=split by layers, the dependable "
+    "multi-GPU choice; tensor=experimental tensor+KV parallelism, not "
+    "available for hybrid-attention models such as Qwen3.5/3.8"
+)
+LLAMA_MAIN_GPU_HINT = (
+    "GPU index (within visible devices) for split-mode=none. Not used by "
+    "layer, and ignored by tensor, which merges the visible GPUs into one device"
+)
+LLAMA_TENSOR_SPLIT_HINT = (
+    "Weight per visible GPU under split-mode=layer, e.g. 1,1 for an even "
+    "split or 3,2 to favour the first. Ignored by none and tensor"
+)
 BEE_KV_CACHE_OPTIONS = [
     {"value": "f32", "label": "f32 - unquantized 32-bit float"},
     {"value": "f16", "label": "f16 - unquantized 16-bit float"},
@@ -317,10 +341,10 @@ CONFIG_FIELDS = [
     {"section": "Secondary Backend", "key": "CHAT2_THREADS",               "label": "CPU Threads",             "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
     {"section": "Secondary Backend", "key": "CHAT2_THREADS_BATCH",         "label": "CPU Batch Threads",       "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
     {"section": "Secondary Backend", "key": "CHAT2_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",     "type": "number"},
-    {"section": "Secondary Backend", "key": "CHAT2_MAIN_GPU",              "label": "Main GPU Index",          "type": "number", "hint": "GPU index (within visible devices) for split-mode=none, or KV/intermediate buffers with row split"},
+    {"section": "Secondary Backend", "key": "CHAT2_MAIN_GPU",              "label": "Main GPU Index",          "type": "number", "hint": LLAMA_MAIN_GPU_HINT},
     {"section": "Secondary Backend", "key": "CHAT2_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override; use --list-devices names like CUDA0,CUDA1 or none"},
-    {"section": "Secondary Backend", "key": "CHAT2_TENSOR_SPLIT",          "label": "Tensor Split",            "type": "text",   "hint": "e.g. 1,1"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPLIT_MODE",            "label": "Split Mode",              "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none=model on one GPU, layer=layer sharding, row=row sharding, tensor=parallel tensor+KV sharding"},
+    {"section": "Secondary Backend", "key": "CHAT2_TENSOR_SPLIT",          "label": "Tensor Split",            "type": "text",   "hint": LLAMA_TENSOR_SPLIT_HINT},
+    {"section": "Secondary Backend", "key": "CHAT2_SPLIT_MODE",            "label": "Split Mode",              "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
     {"section": "Secondary Backend", "key": "CHAT2_KV_OFFLOAD",            "label": "KV Offload",              "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
     {"section": "Secondary Backend", "key": "CHAT2_OP_OFFLOAD",            "label": "Host Op Offload",         "type": "select", "options": ["on", "off"], "hint": "Controls --op-offload / --no-op-offload for host tensor ops"},
     {"section": "Secondary Backend", "key": "CHAT2_MMPROJ_OFFLOAD",        "label": "MMProj Offload",          "type": "select", "options": ["on", "off"], "hint": "Controls --mmproj-offload / --no-mmproj-offload when an MMProj is loaded"},
@@ -379,10 +403,10 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_THREADS",               "label": "CPU Threads",            "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
     {"section": "Shared Backend", "key": "CHAT_THREADS_BATCH",         "label": "CPU Batch Threads",      "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
     {"section": "Shared Backend", "key": "CHAT_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",    "type": "number"},
-    {"section": "Shared Backend", "key": "CHAT_MAIN_GPU",              "label": "Main GPU Index",         "type": "number", "hint": "GPU index (within visible devices) for split-mode=none, or KV/intermediate buffers with row split"},
+    {"section": "Shared Backend", "key": "CHAT_MAIN_GPU",              "label": "Main GPU Index",         "type": "number", "hint": LLAMA_MAIN_GPU_HINT},
     {"section": "Shared Backend", "key": "CHAT_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override for shared backends; use --list-devices names like CUDA0,CUDA1 or none"},
-    {"section": "Shared Backend", "key": "CHAT_TENSOR_SPLIT",          "label": "Tensor Split",           "type": "text",   "hint": "e.g. 1,1"},
-    {"section": "Shared Backend", "key": "CHAT_SPLIT_MODE",            "label": "Split Mode",             "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none=model on one GPU, layer=layer sharding, row=row sharding, tensor=parallel tensor+KV sharding"},
+    {"section": "Shared Backend", "key": "CHAT_TENSOR_SPLIT",          "label": "Tensor Split",           "type": "text",   "hint": LLAMA_TENSOR_SPLIT_HINT},
+    {"section": "Shared Backend", "key": "CHAT_SPLIT_MODE",            "label": "Split Mode",             "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
     {"section": "Shared Backend", "key": "CHAT_KV_OFFLOAD",            "label": "KV Offload",             "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
     {"section": "Shared Backend", "key": "CHAT_OP_OFFLOAD",            "label": "Host Op Offload",        "type": "select", "options": ["on", "off"], "hint": "Controls --op-offload / --no-op-offload for host tensor ops"},
     {"section": "Shared Backend", "key": "CHAT_MMPROJ_OFFLOAD",        "label": "MMProj Offload",         "type": "select", "options": ["on", "off"], "hint": "Controls --mmproj-offload / --no-mmproj-offload when an MMProj is loaded"},
@@ -434,10 +458,10 @@ CONFIG_FIELDS = [
     {"section": "Task Model",  "key": "TASK_THREADS",               "label": "CPU Threads",          "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
     {"section": "Task Model",  "key": "TASK_THREADS_BATCH",         "label": "CPU Batch Threads",    "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
     {"section": "Task Model",  "key": "TASK_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",  "type": "number"},
-    {"section": "Task Model",  "key": "TASK_MAIN_GPU",              "label": "Main GPU Index",       "type": "number", "hint": "GPU index (within visible devices) for split-mode=none, or KV/intermediate buffers with row split"},
+    {"section": "Task Model",  "key": "TASK_MAIN_GPU",              "label": "Main GPU Index",       "type": "number", "hint": LLAMA_MAIN_GPU_HINT},
     {"section": "Task Model",  "key": "TASK_DEVICE",                "label": "Offload Devices",      "type": "text",   "hint": "Optional llama.cpp --device override, e.g. 0,1 or none"},
-    {"section": "Task Model",  "key": "TASK_TENSOR_SPLIT",          "label": "Tensor Split",         "type": "text",   "hint": "e.g. 1,1"},
-    {"section": "Task Model",  "key": "TASK_SPLIT_MODE",            "label": "Split Mode",           "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none=model on one GPU, layer=layer sharding, row=row sharding, tensor=parallel tensor+KV sharding"},
+    {"section": "Task Model",  "key": "TASK_TENSOR_SPLIT",          "label": "Tensor Split",         "type": "text",   "hint": LLAMA_TENSOR_SPLIT_HINT},
+    {"section": "Task Model",  "key": "TASK_SPLIT_MODE",            "label": "Split Mode",           "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
     {"section": "Task Model",  "key": "TASK_KV_OFFLOAD",            "label": "KV Offload",           "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
     {"section": "Task Model",  "key": "TASK_OP_OFFLOAD",            "label": "Host Op Offload",      "type": "select", "options": ["on", "off"], "hint": "Controls --op-offload / --no-op-offload for host tensor ops"},
     {"section": "Task Model",  "key": "TASK_MMPROJ_OFFLOAD",        "label": "MMProj Offload",       "type": "select", "options": ["on", "off"], "hint": "Controls --mmproj-offload / --no-mmproj-offload when an MMProj is loaded"},
@@ -539,8 +563,8 @@ CONFIG_FIELDS = [
     {"section": "Embedding",   "key": "EMBED_THREADS",              "label": "CPU Threads",          "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
     {"section": "Embedding",   "key": "EMBED_THREADS_BATCH",        "label": "CPU Batch Threads",    "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
     {"section": "Embedding",   "key": "EMBED_N_GPU_LAYERS",         "label": "GPU Layers (−1=all)",  "type": "number"},
-    {"section": "Embedding",   "key": "EMBED_TENSOR_SPLIT",         "label": "Tensor Split",         "type": "text",   "hint": "e.g. 1,1"},
-    {"section": "Embedding",   "key": "EMBED_SPLIT_MODE",           "label": "Split Mode",           "type": "select", "options": ["layer", "row", "none"]},
+    {"section": "Embedding",   "key": "EMBED_TENSOR_SPLIT",         "label": "Tensor Split",         "type": "text",   "hint": LLAMA_TENSOR_SPLIT_HINT},
+    {"section": "Embedding",   "key": "EMBED_SPLIT_MODE",           "label": "Split Mode",           "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
     {"section": "Embedding",   "key": "EMBED_FLASH_ATTN",           "label": "Flash Attention",      "type": "select", "options": ["on", "off", "auto"]},
     {"section": "Embedding",   "key": "EMBED_CACHE_TYPE_K",         "label": "KV Cache Key Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
     {"section": "Embedding",   "key": "EMBED_CACHE_TYPE_V",         "label": "KV Cache Value Type",  "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
@@ -565,8 +589,8 @@ CONFIG_FIELDS = [
     {"section": "Embedding 2", "key": "EMBED2_THREADS",             "label": "CPU Threads",          "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
     {"section": "Embedding 2", "key": "EMBED2_THREADS_BATCH",       "label": "CPU Batch Threads",    "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
     {"section": "Embedding 2", "key": "EMBED2_N_GPU_LAYERS",        "label": "GPU Layers (−1=all)",  "type": "number"},
-    {"section": "Embedding 2", "key": "EMBED2_TENSOR_SPLIT",        "label": "Tensor Split",         "type": "text",   "hint": "e.g. 1,1"},
-    {"section": "Embedding 2", "key": "EMBED2_SPLIT_MODE",          "label": "Split Mode",           "type": "select", "options": ["layer", "row", "none"]},
+    {"section": "Embedding 2", "key": "EMBED2_TENSOR_SPLIT",        "label": "Tensor Split",         "type": "text",   "hint": LLAMA_TENSOR_SPLIT_HINT},
+    {"section": "Embedding 2", "key": "EMBED2_SPLIT_MODE",          "label": "Split Mode",           "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
     {"section": "Embedding 2", "key": "EMBED2_FLASH_ATTN",          "label": "Flash Attention",      "type": "select", "options": ["on", "off", "auto"]},
     {"section": "Embedding 2", "key": "EMBED2_CACHE_TYPE_K",        "label": "KV Cache Key Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
     {"section": "Embedding 2", "key": "EMBED2_CACHE_TYPE_V",        "label": "KV Cache Value Type",  "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
@@ -591,8 +615,8 @@ CONFIG_FIELDS = [
     {"section": "Reranker",    "key": "RERANK_THREADS",             "label": "CPU Threads",          "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
     {"section": "Reranker",    "key": "RERANK_THREADS_BATCH",       "label": "CPU Batch Threads",    "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
     {"section": "Reranker",    "key": "RERANK_N_GPU_LAYERS",        "label": "GPU Layers (−1=all)",  "type": "number"},
-    {"section": "Reranker",    "key": "RERANK_TENSOR_SPLIT",        "label": "Tensor Split",         "type": "text",   "hint": "e.g. 1,1"},
-    {"section": "Reranker",    "key": "RERANK_SPLIT_MODE",          "label": "Split Mode",           "type": "select", "options": ["layer", "row", "none"]},
+    {"section": "Reranker",    "key": "RERANK_TENSOR_SPLIT",        "label": "Tensor Split",         "type": "text",   "hint": LLAMA_TENSOR_SPLIT_HINT},
+    {"section": "Reranker",    "key": "RERANK_SPLIT_MODE",          "label": "Split Mode",           "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
     {"section": "Reranker",    "key": "RERANK_FLASH_ATTN",          "label": "Flash Attention",      "type": "select", "options": ["on", "off", "auto"]},
     {"section": "Reranker",    "key": "RERANK_CACHE_TYPE_K",        "label": "KV Cache Key Type",    "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
     {"section": "Reranker",    "key": "RERANK_CACHE_TYPE_V",        "label": "KV Cache Value Type",  "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
@@ -622,8 +646,8 @@ CONFIG_FIELDS = [
     {"section": "OCR",        "key": "OCR_N_GPU_LAYERS",         "label": "GPU Layers (-1=all)",  "type": "number"},
     {"section": "OCR",        "key": "OCR_MAIN_GPU",             "label": "Main GPU Index",       "type": "number", "hint": "GPU index within OCR GPU Devices; use 0 for the first visible GPU, 1 for the second"},
     {"section": "OCR",        "key": "OCR_DEVICE",               "label": "Offload Devices",      "type": "text",   "hint": "Optional llama.cpp --device override for OCR, e.g. CUDA0,CUDA1 or none"},
-    {"section": "OCR",        "key": "OCR_TENSOR_SPLIT",         "label": "Tensor Split",         "type": "text",   "hint": "auto expands to one weight per visible OCR GPU, e.g. GPU Devices 0,1 -> 1,1; set 2,1 to bias GPU 0"},
-    {"section": "OCR",        "key": "OCR_SPLIT_MODE",           "label": "Split Mode",           "type": "select", "options": ["none", "layer", "row", "tensor"], "hint": "none keeps OCR on one GPU; layer/row/tensor split OCR across OCR GPU Devices"},
+    {"section": "OCR",        "key": "OCR_TENSOR_SPLIT",         "label": "Tensor Split",         "type": "text",   "hint": "auto expands to one weight per visible OCR GPU, e.g. GPU Devices 0,1 -> 1,1; set 2,1 to bias GPU 0. Ignored by split-mode none and tensor"},
+    {"section": "OCR",        "key": "OCR_SPLIT_MODE",           "label": "Split Mode",           "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
     {"section": "OCR",        "key": "OCR_KV_OFFLOAD",           "label": "KV Offload",           "type": "select", "options": ["on", "off"]},
     {"section": "OCR",        "key": "OCR_OP_OFFLOAD",           "label": "Host Op Offload",      "type": "select", "options": ["on", "off"]},
     {"section": "OCR",        "key": "OCR_MMPROJ_OFFLOAD",       "label": "MMProj Offload",       "type": "select", "options": ["on", "off"]},
@@ -774,7 +798,7 @@ CONFIG_FIELDS = [
     {"section": "Model Router", "key": "ASR_N_GPU_LAYERS",       "label": "Audio GPU Layers",     "type": "number"},
     {"section": "Model Router", "key": "ASR_MAIN_GPU",           "label": "Audio Main GPU",       "type": "number"},
     {"section": "Model Router", "key": "ASR_TENSOR_SPLIT",       "label": "Audio Tensor Split",   "type": "text"},
-    {"section": "Model Router", "key": "ASR_SPLIT_MODE",         "label": "Audio Split Mode",     "type": "select", "options": ["none", "layer", "row", "tensor"]},
+    {"section": "Model Router", "key": "ASR_SPLIT_MODE",         "label": "Audio Split Mode",     "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
     {"section": "Model Router", "key": "ASR_FLASH_ATTN",         "label": "Audio Flash Attention","type": "select", "options": ["on", "off", "auto"]},
     {"section": "Model Router", "key": "ASR_MMPROJ_OFFLOAD",     "label": "Audio MMProj Offload", "type": "select", "options": ["on", "off"]},
     {"section": "Model Router", "key": "ASR_JINJA",              "label": "Audio Native Templates","type": "select","options": ["on", "off"], "hint": "Leave on: llama.cpp builds the ASR prompt from the model's chat template"},

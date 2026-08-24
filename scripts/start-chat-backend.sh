@@ -23,14 +23,16 @@ export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 export CUDA_VISIBLE_DEVICES="${CHAT_GPU_VISIBLE_DEVICES}"
 
 echo "[chat-backend] Starting shared llama-server backend"
+resolve_split_opts "[chat-backend]" "${CHAT_SPLIT_MODE:-layer}" "${CHAT_MODEL_PATH:-}" \
+    "${CHAT_TENSOR_SPLIT:-}" "${CHAT_MAIN_GPU:-0}" "${CHAT_FLASH_ATTN:-auto}"
 echo "[chat-backend] Model:   ${CHAT_MODEL_PATH}"
 echo "[chat-backend] MMProj:  ${CHAT_MMPROJ_PATH:-(none)}"
 echo "[chat-backend] Port:    ${CHAT_BACKEND_PORT} (localhost only)"
 echo "[chat-backend] Context: ${CHAT_CTX_SIZE}"
-echo "[chat-backend] Main GPU: ${CHAT_MAIN_GPU}"
-echo "[chat-backend] GPUs:    ${CUDA_VISIBLE_DEVICES} (split ${CHAT_TENSOR_SPLIT})"
+echo "[chat-backend] Main GPU: ${MAIN_GPU_EFFECTIVE:-n/a}"
+echo "[chat-backend] GPUs:    ${CUDA_VISIBLE_DEVICES} (split ${TENSOR_SPLIT_EFFECTIVE:-n/a})"
 echo "[chat-backend] Device override: ${CHAT_DEVICE:-auto}"
-echo "[chat-backend] Placement: split=${CHAT_SPLIT_MODE} kv-offload=${CHAT_KV_OFFLOAD:-on} op-offload=${CHAT_OP_OFFLOAD:-on} mmproj-offload=${CHAT_MMPROJ_OFFLOAD:-on}"
+echo "[chat-backend] Placement: split=${SPLIT_MODE_EFFECTIVE} kv-offload=${CHAT_KV_OFFLOAD:-on} op-offload=${CHAT_OP_OFFLOAD:-on} mmproj-offload=${CHAT_MMPROJ_OFFLOAD:-on}"
 echo "[chat-backend] CPU threads:      ${CHAT_THREADS:--1} (batch=${CHAT_THREADS_BATCH:--1})"
 echo "[chat-backend] KV cache: K=${CHAT_CACHE_TYPE_K} V=${CHAT_CACHE_TYPE_V}"
 echo "[chat-backend] SWA full cache:    ${CHAT_SWA_FULL:-off}"
@@ -235,10 +237,8 @@ exec "${LLAMA_SERVER_BIN}" \
     --host "${CHAT_BACKEND_HOST}" \
     --port "${CHAT_BACKEND_PORT}" \
     --ctx-size "${CHAT_CTX_SIZE}" \
-    --main-gpu "${CHAT_MAIN_GPU}" \
     --n-gpu-layers "${CHAT_N_GPU_LAYERS}" \
-    --split-mode "${CHAT_SPLIT_MODE}" \
-    --tensor-split "${CHAT_TENSOR_SPLIT}" \
+    "${SPLIT_OPTS[@]}" \
     --batch-size "${CHAT_BATCH_SIZE}" \
     --ubatch-size "${CHAT_UBATCH_SIZE}" \
     --parallel "${CHAT_N_PARALLEL}" \

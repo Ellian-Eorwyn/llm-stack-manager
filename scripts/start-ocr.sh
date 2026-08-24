@@ -8,6 +8,7 @@ set -euo pipefail
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
+source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
 LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
 export LD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
 export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
@@ -42,11 +43,13 @@ echo "[ocr] Host:             ${OCR_HOST:-${LISTEN_HOST}}"
 echo "[ocr] Port:             ${OCR_PORT:-8009}"
 echo "[ocr] Context:          ${OCR_CTX_SIZE:-8192}"
 echo "[ocr] Batch:            ${OCR_BATCH_SIZE:-2048} (uBatch=${OCR_UBATCH_SIZE:-512})"
-echo "[ocr] Main GPU:         ${OCR_MAIN_GPU:-0}"
+resolve_split_opts "[ocr]" "${OCR_SPLIT_MODE:-layer}" "${OCR_MODEL_PATH:-${STACK_DIR}/models/GLM-OCR-F16.gguf}" \
+    "${OCR_EFFECTIVE_TENSOR_SPLIT}" "${OCR_MAIN_GPU:-0}" "${OCR_FLASH_ATTN:-on}"
+echo "[ocr] Main GPU:         ${MAIN_GPU_EFFECTIVE:-n/a}"
 echo "[ocr] GPUs:             ${CUDA_VISIBLE_DEVICES}"
-echo "[ocr] Tensor split:     ${OCR_EFFECTIVE_TENSOR_SPLIT}"
+echo "[ocr] Tensor split:     ${TENSOR_SPLIT_EFFECTIVE:-n/a}"
 echo "[ocr] Device override:  ${OCR_DEVICE:-auto}"
-echo "[ocr] Placement:        split=${OCR_SPLIT_MODE:-layer} kv-offload=${OCR_KV_OFFLOAD:-on} op-offload=${OCR_OP_OFFLOAD:-on} mmproj-offload=${OCR_MMPROJ_OFFLOAD:-on}"
+echo "[ocr] Placement:        split=${SPLIT_MODE_EFFECTIVE} kv-offload=${OCR_KV_OFFLOAD:-on} op-offload=${OCR_OP_OFFLOAD:-on} mmproj-offload=${OCR_MMPROJ_OFFLOAD:-on}"
 echo "[ocr] CPU threads:      ${OCR_THREADS:--1} (batch=${OCR_THREADS_BATCH:--1})"
 echo "[ocr] KV cache:         K=${OCR_CACHE_TYPE_K:-f16} V=${OCR_CACHE_TYPE_V:-f16}"
 echo "[ocr] Fit to VRAM:      ${OCR_FIT:-off}"
@@ -92,10 +95,8 @@ exec "${LLAMA_SERVER_BIN}" \
     --host "${OCR_HOST:-${LISTEN_HOST}}" \
     --port "${OCR_PORT:-8009}" \
     --ctx-size "${OCR_CTX_SIZE:-8192}" \
-    --main-gpu "${OCR_MAIN_GPU:-0}" \
     --n-gpu-layers "${OCR_N_GPU_LAYERS:--1}" \
-    --split-mode "${OCR_SPLIT_MODE:-layer}" \
-    --tensor-split "${OCR_EFFECTIVE_TENSOR_SPLIT}" \
+    "${SPLIT_OPTS[@]}" \
     --batch-size "${OCR_BATCH_SIZE:-2048}" \
     --ubatch-size "${OCR_UBATCH_SIZE:-512}" \
     --parallel "${OCR_N_PARALLEL:-1}" \
