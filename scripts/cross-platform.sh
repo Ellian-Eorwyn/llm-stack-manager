@@ -342,38 +342,25 @@ PLIST
 PLIST
     fi
 
-    # Add After dependencies as WaitFor
+    # systemd's After= and Conflicts= have no launchd equivalent.
+    #
+    # This function used to emit <key>WaitFor</key> and <key>Unbootstraps</key>
+    # here. Neither is a real launchd key. launchd ignores keys it does not
+    # recognise without complaint, so the units looked ordered and were not --
+    # the failure was invisible for as long as nobody checked the plist against
+    # Apple's documented key list.
+    #
+    # Recording the intent as an XML comment keeps the information for whoever
+    # implements ordering properly (launchd's own answer is a dependency-aware
+    # wrapper, or KeepAlive with an OtherJobEnabled condition), and saying it out
+    # loud keeps it from being rediscovered the hard way a second time.
     if [[ -n "${LAUNCHD_WAIT_FOR:-}" ]]; then
-        cat >> "${plist_path}" <<PLIST
-    <key>WaitFor</key>
-    <array>
-PLIST
-        IFS=' ' read -ra deps <<< "${LAUNCHD_WAIT_FOR}"
-        for dep in "${deps[@]}"; do
-            local dep_label
-            dep_label="$(svc_label "${dep}")"
-            echo "        <string>${dep_label}</string>" >> "${plist_path}"
-        done
-        cat >> "${plist_path}" <<PLIST
-    </array>
-PLIST
+        echo "    <!-- intended After=: ${LAUNCHD_WAIT_FOR} (not enforced by launchd) -->" >> "${plist_path}"
+        echo "  WARNING: ${unit_name} should start after '${LAUNCHD_WAIT_FOR}'; launchd does not enforce ordering" >&2
     fi
-
-    # Add Conflicts
     if [[ -n "${LAUNCHD_CONFLICTS:-}" ]]; then
-        cat >> "${plist_path}" <<PLIST
-    <key>Unbootstraps</key>
-    <array>
-PLIST
-        IFS=' ' read -ra conflicts <<< "${LAUNCHD_CONFLICTS}"
-        for conf in "${conflicts[@]}"; do
-            local conf_label
-            conf_label="$(svc_label "${conf}")"
-            echo "        <string>${conf_label}</string>" >> "${plist_path}"
-        done
-        cat >> "${plist_path}" <<PLIST
-    </array>
-PLIST
+        echo "    <!-- intended Conflicts=: ${LAUNCHD_CONFLICTS} (not enforced by launchd) -->" >> "${plist_path}"
+        echo "  WARNING: ${unit_name} conflicts with '${LAUNCHD_CONFLICTS}'; launchd will not stop it for you" >&2
     fi
 
     cat >> "${plist_path}" <<PLIST

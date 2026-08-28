@@ -694,18 +694,25 @@ echo "Install complete. The active stack will automatically be restored on reboo
 echo "You can manually restore your saved settings at any time with:"
 echo "  sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 echo ""
-echo "Or access the web UI at http://localhost:5001"
+echo "Or access the web UI at http://localhost:$(config_flag LLM_MANAGER_PORT 8077)"
 echo ""
 echo "Useful Commands:"
 echo "  - Update (fast, no llama.cpp rebuild): sudo llm-stack-manager update"
 echo "  - Stack overview: llm-stack-manager status"
-echo "  - Restart manager: sudo systemctl restart llm-manager"
+if is_mac; then
+    echo "  - Restart manager: sudo launchctl kickstart -k system/com.llmstack.llm-manager"
+else
+    echo "  - Restart manager: sudo systemctl restart llm-manager"
+fi
 echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 
 if is_mac; then
     echo ""
     echo "macOS notes:"
+    echo "  - macOS support is INCOMPLETE and under active development."
+    echo "    GPU, memory and swap reporting are not yet implemented on this"
+    echo "    platform and will read as zero. Do not rely on the health model here."
     echo "  - Services are managed via launchd (plist files in /Library/LaunchDaemons/)"
     echo "  - View logs: tail -f ${STACK_DIR}/logs/<service>.stdout.log"
-    echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/default-mode.sh"
+    echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 fi
