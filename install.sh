@@ -664,7 +664,14 @@ elif is_mac; then
     fi
 
     # Own wrapper scripts and plists
-    chown -R root:wheel /Library/LaunchDaemons/com.llmstack.*.plist 2>/dev/null || true
+    # A system daemon's plist must be root-owned; a per-user agent's must be
+    # owned by the user whose domain loads it, or launchctl refuses to bootstrap
+    # it. Ownership follows the domain rather than being applied unconditionally.
+    if [[ "${LLM_LAUNCHD_DOMAIN:-user}" == "system" ]]; then
+        chown -R root:wheel /Library/LaunchDaemons/com.llmstack.*.plist 2>/dev/null || true
+    else
+        chown "${SERVICE_USER}:${SERVICE_GROUP}" "$(svc_plist_dir)"/com.llmstack.*.plist 2>/dev/null || true
+    fi
     chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${STACK_DIR}/scripts/launchd-wrapper-"*.sh 2>/dev/null || true
 
     # Enable default services, disable non-default
@@ -712,7 +719,8 @@ if is_mac; then
     echo "  - macOS support is INCOMPLETE and under active development."
     echo "    GPU, memory and swap reporting are not yet implemented on this"
     echo "    platform and will read as zero. Do not rely on the health model here."
-    echo "  - Services are managed via launchd (plist files in /Library/LaunchDaemons/)"
+    echo "  - Services are managed via launchd in the ${LLM_LAUNCHD_DOMAIN:-user} domain"
+    echo "    (plists in $(svc_plist_dir))"
     echo "  - View logs: tail -f ${STACK_DIR}/logs/<service>.stdout.log"
     echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 fi

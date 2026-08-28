@@ -298,6 +298,94 @@ class GpuAttributionTests(unittest.TestCase):
         self.assertEqual(gpu["driver_alloc_mib"], round(19067781120 / 1024**2))
 
 
+class PreflightContractTests(unittest.TestCase):
+    """The wizard has to be able to run on both platforms, and its planner has
+    to be able to read what preflight hands it on both platforms."""
+
+    SECTIONS = {"checks", "required", "gpus", "network", "extra"}
+
+    def _preflight(self, harness):
+        with harness() as platform:
+            return platform.preflight()
+
+    def test_both_platforms_return_the_same_sections(self):
+        for harness in (platform_harness.as_linux, platform_harness.as_darwin):
+            with self.subTest(harness.__name__):
+                self.assertEqual(set(self._preflight(harness)), self.SECTIONS)
+
+    def test_every_required_check_actually_exists(self):
+        # A name in `required` with no matching check is a KeyError in
+        # collect_preflight, on the platform nobody is running the wizard on.
+        for harness in (platform_harness.as_linux, platform_harness.as_darwin):
+            with self.subTest(harness.__name__):
+                result = self._preflight(harness)
+                missing = set(result["required"]) - set(result["checks"])
+                self.assertEqual(missing, set())
+
+    def test_every_check_carries_an_ok_flag(self):
+        for harness in (platform_harness.as_linux, platform_harness.as_darwin):
+            for name, check in self._preflight(harness)["checks"].items():
+                with self.subTest(harness.__name__, check=name):
+                    self.assertIn("ok", check)
+                    self.assertIs(type(check["ok"]), bool)
+
+    def test_preflight_gpus_are_in_the_shape_the_planner_reads(self):
+        # `gpu_info()` names these mem_total/mem_free; the planner reads
+        # memory_total_mib/memory_free_mib and raises KeyError on the first
+        # model it places if handed the wrong one.
+        for harness in (platform_harness.as_linux, platform_harness.as_darwin):
+            for gpu in self._preflight(harness)["gpus"]:
+                with self.subTest(harness.__name__):
+                    self.assertLessEqual(
+                        {"index", "name", "memory_total_mib", "memory_free_mib"}, set(gpu))
+
+    def test_the_darwin_firewall_installs_no_rules_rather_than_wrong_ones(self):
+        # macOS filters by application, not by port and source subnet, so there
+        # is nothing here that corresponds to the UFW rules. Empty is the honest
+        # answer; the preflight check is what tells the operator.
+        with platform_harness.as_darwin() as platform:
+            self.assertEqual(platform.firewall_rules([8077], "192.168.4.0/22"), [])
+
+    def test_the_linux_firewall_refuses_a_public_source(self):
+        with platform_harness.as_linux() as platform:
+            with self.assertRaises(ValueError):
+                platform.firewall_rules([8077], "8.8.8.0/24")
+            rules = platform.firewall_rules([8077], "192.168.4.0/22")
+            self.assertEqual(rules[0][:4], ["ufw", "allow", "from", "192.168.4.0/22"])
+
+
+class DarwinNetworkTests(unittest.TestCase):
+
+    IFCONFIG = (
+        "en4: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n"
+        "\tinet 192.168.4.32 netmask 0xfffffc00 broadcast 192.168.7.255\n"
+    )
+    ROUTE = "   route to: default\n    gateway: 192.168.4.1\n  interface: en4\n"
+
+    def _run(self, cmd, timeout=30):
+        if cmd[0] == "route":
+            return _completed(self.ROUTE)
+        if cmd[0] == "ifconfig":
+            return _completed(self.IFCONFIG)
+        return _completed("")
+
+    def test_the_hexadecimal_netmask_becomes_a_prefix_length(self):
+        # BSD ifconfig prints the mask as 0xfffffc00 and has no flag to change
+        # it, so it has to be counted into a prefix rather than parsed as one.
+        with platform_harness.as_darwin(run_cmd=self._run) as platform:
+            self.assertEqual(platform.detect_private_network(), {
+                "interface": "en4", "address": "192.168.4.32", "cidr": "192.168.4.0/22"})
+
+    def test_a_public_address_is_not_offered_as_a_private_network(self):
+        # Not 203.0.113.x: Python counts the documentation ranges as private,
+        # so TEST-NET-3 passes `is_private` and would not exercise this at all.
+        public = self.IFCONFIG.replace("192.168.4.32", "8.8.4.4")
+        with platform_harness.as_darwin(
+                run_cmd=lambda cmd, timeout=30: _completed(
+                    self.ROUTE if cmd[0] == "route" else public)) as platform:
+            self.assertEqual(platform.detect_private_network(), {})
+
+
 class ActiveAdapterTests(unittest.TestCase):
 
     def test_the_active_adapter_is_cached(self):

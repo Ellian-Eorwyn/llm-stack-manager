@@ -146,7 +146,82 @@ four.
 
 CI runs the same suite on `ubuntu-24.04` and `macos-latest`.
 
-## 5. What is not done yet
+## 5. Setup on macOS
+
+`collect_preflight()` used to ask one hardcoded set of questions — Ubuntu 24.04,
+x86-64, systemd, an NVIDIA driver, a compatible CUDA toolkit — and require all
+five. On Apple silicon **all five fail at once**, so the wizard could not
+complete there, and the checks it displayed described a machine the operator was
+never going to have.
+
+The platform now contributes its own checks and names which of them are
+required; `setup_engine` adds the three that are the same everywhere
+(privileges, disk, connectivity). On this M1 Pro:
+
+```
+ok       : True
+platform : darwin
+  [ok  ] os                 macOS 26.5.2
+  [ok  ] architecture       arm64
+  [ok  ] launchd            launchd
+  [ok  ] metal_gpu          Apple M1 Pro GPU
+  [ok  ] unified_memory     16 GiB unified
+  [ok  ] xcode_tools        /Applications/Xcode.app/Contents/Developer
+  [ok  ] homebrew           /opt/homebrew/bin/brew
+  [ok  ] private_network    192.168.4.0/22
+  [FAIL] firewall
+```
+
+`firewall` fails and is advisory, exactly as the UFW check is on Linux. macOS
+filters by application rather than by port and source subnet, so there is no
+equivalent of the UFW rules the Linux installer writes; `firewall_rules()`
+returns `[]` and the check says so, because an empty rule list must not be
+mistaken for a protected host.
+
+Two details worth keeping in mind:
+
+- **The preflight `gpus` are not `gpu_info()`'s shape.** The planner reads
+  `memory_total_mib` / `memory_free_mib`; the status payload uses `mem_total` /
+  `mem_free`. Handing the planner the wrong one raises `KeyError` on the first
+  model it places. `PreflightContractTests` pins this on both platforms.
+- **`detect_private_network()` has to count a hexadecimal netmask.** BSD
+  `ifconfig` prints `0xfffffc00` and has no flag to print a prefix length.
+
+### The launchd domain
+
+Services install as **per-user LaunchAgents in `gui/<uid>`** by default, with
+plists under the service user's `~/Library/LaunchAgents`. `LLM_LAUNCHD_DOMAIN=system`
+restores the old `/Library/LaunchDaemons` behaviour.
+
+A LaunchDaemon runs at boot with no user session, and Metal is built around an
+interactive one. Every tool that serves models on a Mac has converged on running
+a host-native process in the user's session — Docker ships vLLM for macOS that
+way because there is no GPU passthrough for Metal in containers, and GPUStack
+dropped macOS entirely at v2 for the same reason.
+
+It is also settled empirically on this hardware: an MLX embedding server has
+been serving from a per-user LaunchAgent for days.
+
+### Building against the accelerator
+
+`dependencies.json` used to carry `-DGGML_CUDA=ON` as a literal, and the builder
+followed it with an nvcc lookup and an `nvidia-smi` compute-capability probe.
+On a Mac that path did not fail with "wrong platform" — it failed with "Could
+not detect NVIDIA GPU compute capability", which reads as broken hardware.
+
+`accelerator_cmake_args()` now supplies them: `-DGGML_CUDA=ON` plus the located
+compiler and detected architectures on Linux, `-DGGML_METAL=ON` on macOS, where
+Metal ships with the OS and there is nothing to locate or probe. It raises
+rather than returning `[]` if the accelerator is unusable — a silent fallback
+produces a CPU-only build that starts, serves, and is an order of magnitude
+slower with nothing saying why.
+
+`scripts/install-system-dependencies.sh` grows a macOS branch that installs the
+build prerequisites with Homebrew. It **refuses to run as root** there:
+Homebrew will not run as root, and the services it is preparing for are
+per-user agents.
+
+## 6. What is not done yet
 
 - **Logs.** `journalctl` is still called directly in `telemetry.py` (seed and
   follow), `routes/public.py` and `app.py`. The launchd plists already redirect

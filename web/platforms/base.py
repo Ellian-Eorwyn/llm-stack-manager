@@ -164,6 +164,66 @@ class Platform(ABC):
         which is indistinguishable from good news.
         """
 
+    # -- setup ---------------------------------------------------------------
+
+    @abstractmethod
+    def preflight(self) -> dict:
+        """Whether this host can run the stack, in this platform's terms.
+
+        The setup wizard used to ask one hardcoded set of questions -- Ubuntu
+        24.04, x86-64, systemd, an NVIDIA driver, a compatible CUDA toolkit --
+        and require all five. On Apple silicon all five fail, so the wizard
+        could not complete at all, and the checks it showed described a machine
+        the operator was never going to have.
+
+        Returns:
+
+            checks    name -> {"ok": bool, ...detail}. The UI renders these
+                      generically from `value` / `warning` / `error`, so a
+                      platform is free to ask its own questions.
+            required  the check names that must pass for `ok` to be true.
+                      Everything else is advisory and renders as a warning.
+            gpus      accelerators in the shape `plan_gpu_placement` reads:
+                      `index`, `name`, `memory_total_mib`, `memory_free_mib`.
+                      This is deliberately *not* `gpu_info()`'s shape -- that
+                      one is for the live status payload and uses different key
+                      names, and handing it to the planner raises a KeyError on
+                      the first model it tries to place.
+            network   {"interface", "address", "cidr"}, or {} if there is no
+                      private network to bind to.
+            extra     top-level keys merged into the payload, for anything
+                      only one platform has.
+
+        The caller adds the checks that are the same everywhere -- privileges,
+        disk, connectivity -- so a platform only answers what it alone knows.
+        """
+
+    @abstractmethod
+    def accelerator_cmake_args(self) -> list[str]:
+        """The cmake flags that build ggml for this host's accelerator.
+
+        `dependencies.json` used to carry `-DGGML_CUDA=ON` as a literal, and the
+        builder followed it with an nvcc lookup and an `nvidia-smi` probe for
+        compute capabilities. On a Mac that path does not fail with "wrong
+        platform", it fails with "Could not detect NVIDIA GPU compute
+        capability" — which reads as broken hardware rather than as a build
+        configured for someone else's machine.
+
+        Raises rather than returning `[]` if the accelerator is unusable: a
+        silent fallback here produces a CPU-only build that starts, serves, and
+        is slower by an order of magnitude with nothing saying why.
+        """
+
+    @abstractmethod
+    def firewall_rules(self, ports: list[int], cidr: str) -> list[list[str]]:
+        """Commands that open `ports` to `cidr` only, or `[]` if this platform
+        has no firewall this installer manages.
+
+        `[]` is not "the host is open"; it is "nothing here will be changed on
+        your behalf". The preflight check is what tells the operator which of
+        those they are looking at.
+        """
+
     @abstractmethod
     def gpu_compute_apps(self) -> list[dict] | None:
         """Raw per-process device-memory rows: `{gpu_uuid, pid, process_name,

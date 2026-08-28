@@ -28,9 +28,11 @@ than `linux.py` despite doing less.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 import threading
 
@@ -418,3 +420,146 @@ class DarwinPlatform(base.Platform):
         # `nvidia-smi --query-compute-apps`. `None` says so; `[]` would claim
         # the GPU is idle.
         return None
+
+    # -- setup ---------------------------------------------------------------
+
+    #: macOS 14 (Sonoma) is the floor: it is the oldest release still receiving
+    #: security updates, and llama.cpp's Metal backend targets Metal 3.
+    MINIMUM_MACOS_MAJOR = 14
+
+    def detect_private_network(self) -> dict[str, str]:
+        """The LAN interface and its subnet.
+
+        `ip -j route` does not exist here. `route -n get default` names the
+        interface, and `ifconfig` gives the address and a **hexadecimal**
+        netmask (`0xfffffc00`), which has to be counted into a prefix length --
+        BSD ifconfig has printed it that way for thirty years and there is no
+        flag to change it.
+        """
+        try:
+            route = self.run_cmd(["route", "-n", "get", "default"], timeout=5).stdout or ""
+            match = re.search(r"^\s*interface:\s*(\S+)", route, re.MULTILINE)
+            if not match:
+                return {}
+            interface = match.group(1)
+
+            config = self.run_cmd(["ifconfig", interface], timeout=5).stdout or ""
+            for line in config.splitlines():
+                fields = line.split()
+                if len(fields) < 4 or fields[0] != "inet":
+                    continue
+                ip = ipaddress.ip_address(fields[1])
+                if not ip.is_private:
+                    continue
+                netmask = fields[3]
+                prefix = (bin(int(netmask, 16)).count("1") if netmask.startswith("0x")
+                          else ipaddress.ip_network(f"0.0.0.0/{netmask}").prefixlen)
+                network = ipaddress.ip_network(f"{ip}/{prefix}", strict=False)
+                return {"interface": interface, "address": str(ip), "cidr": str(network)}
+        except Exception:
+            pass
+        return {}
+
+    def preflight(self) -> dict:
+        version = (self.run_cmd(["sw_vers", "-productVersion"], timeout=5).stdout or "").strip()
+        try:
+            major = int(version.split(".")[0])
+        except (ValueError, IndexError):
+            major = 0
+        machine = (self.run_cmd(["uname", "-m"], timeout=5).stdout or "").strip()
+
+        checks: dict[str, dict] = {
+            "os": {
+                "ok": major >= self.MINIMUM_MACOS_MAJOR,
+                "value": f"macOS {version}" if version else "macOS (version unknown)",
+                "required": f"macOS {self.MINIMUM_MACOS_MAJOR} or newer",
+            },
+            # Intel Macs have no Metal-capable unified memory worth serving
+            # models from, and no Apple silicon GPU to target.
+            "architecture": {"ok": machine == "arm64", "value": machine, "required": "arm64"},
+            "launchd": {"ok": os.path.exists("/bin/launchctl"), "value": "launchd"},
+        }
+
+        devices = self.gpu_info()
+        checks["metal_gpu"] = {
+            "ok": bool(devices),
+            "gpu_count": len(devices),
+            "value": devices[0]["name"] if devices else "",
+            "error": "" if devices else "No IOAccelerator device found",
+        }
+        # Translated into the planner's vocabulary rather than passed through:
+        # `gpu_info()` is the live status shape and names the same numbers
+        # `mem_total` / `mem_free`, which the planner does not read.
+        gpus = [{
+            "index": device["index"],
+            "name": device["name"],
+            "memory_total_mib": device["mem_total"],
+            "memory_free_mib": device["mem_free"],
+        } for device in devices]
+
+        # Unified memory is the hard ceiling on model size here, so it is a
+        # preflight fact rather than something to discover at load time.
+        total_mib = round(self.meminfo().get("MemTotal", 0) / 1024)
+        checks["unified_memory"] = {
+            "ok": total_mib > 0,
+            "value": f"{total_mib / 1024:.0f} GiB unified",
+            "warning": ("Under 32 GiB: expect small models only"
+                        if 0 < total_mib < 32 * 1024 else ""),
+        }
+
+        # llama.cpp is built from source against Metal, which needs a toolchain.
+        clt = self.run_cmd(["xcode-select", "-p"], timeout=10)
+        checks["xcode_tools"] = {
+            "ok": clt.returncode == 0,
+            "value": (clt.stdout or "").strip(),
+            "error": "" if clt.returncode == 0 else "Run: xcode-select --install",
+        }
+        brew = shutil.which("brew")
+        checks["homebrew"] = {
+            "ok": bool(brew),
+            "value": brew or "",
+            "error": "" if brew else "Homebrew is how dependencies are installed on macOS",
+        }
+
+        network = self.detect_private_network()
+        checks["private_network"] = {"ok": bool(network), **network}
+
+        # macOS's application firewall filters by application, not by port and
+        # source subnet, so there is no equivalent of the UFW rules the Linux
+        # installer writes. Reported so the operator knows the manager is not
+        # being protected by anything this installer set up -- it is
+        # unauthenticated and must stay off untrusted networks.
+        state = self.run_cmd(
+            ["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"], timeout=5)
+        enabled = "State = 1" in (state.stdout or "")
+        checks["firewall"] = {
+            "ok": enabled,
+            "active": enabled,
+            "warning": "macOS filters by application, not by port: no rules are "
+                       "installed for the stack's ports. Keep it on a trusted network.",
+        }
+
+        return {
+            "checks": checks,
+            "required": ["os", "architecture", "launchd", "metal_gpu",
+                         "unified_memory", "xcode_tools", "homebrew", "private_network"],
+            "gpus": gpus,
+            "network": network,
+            "extra": {},
+        }
+
+    def firewall_rules(self, ports: list[int], cidr: str) -> list[list[str]]:
+        # Nothing is changed on the operator's behalf here; see the firewall
+        # check above for why, and what it says instead.
+        return []
+
+    def accelerator_cmake_args(self) -> list[str]:
+        """Metal needs no toolkit and no architecture probe.
+
+        It ships with the OS and ggml targets it directly, so unlike CUDA there
+        is no compiler to locate and no compute capability to detect -- the one
+        flag is the whole configuration.
+        """
+        if not self.gpu_info():
+            raise RuntimeError("No Metal device found; refusing to configure a CPU-only build")
+        return ["-DGGML_METAL=ON"]

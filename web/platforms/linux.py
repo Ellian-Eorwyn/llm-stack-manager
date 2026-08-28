@@ -9,7 +9,11 @@ document failures that were paid for once already.
 
 from __future__ import annotations
 
+import ipaddress
+import json
+import platform as _platform
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -253,3 +257,129 @@ class LinuxPlatform(base.Platform):
                 "used_memory": used,
             })
         return rows
+
+    # -- setup ---------------------------------------------------------------
+
+    def _os_release(self) -> dict[str, str]:
+        data: dict[str, str] = {}
+        try:
+            for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+                key, _, value = line.partition("=")
+                if key:
+                    data[key.strip()] = value.strip().strip('"')
+        except OSError:
+            pass
+        return data
+
+    def detect_private_network(self) -> dict[str, str]:
+        try:
+            route = self.run_cmd(["ip", "-j", "route", "show", "default"], timeout=5)
+            entries = json.loads(route.stdout or "[]")
+            interface = entries[0].get("dev", "") if entries else ""
+            if not interface:
+                return {}
+            addr = self.run_cmd(["ip", "-j", "address", "show", "dev", interface], timeout=5)
+            for info in json.loads(addr.stdout or "[]"):
+                for item in info.get("addr_info", []):
+                    if item.get("family") != "inet":
+                        continue
+                    ip = ipaddress.ip_address(item["local"])
+                    if not ip.is_private:
+                        continue
+                    network = ipaddress.ip_network(f"{ip}/{item['prefixlen']}", strict=False)
+                    return {"interface": interface, "address": str(ip), "cidr": str(network)}
+        except Exception:
+            pass
+        return {}
+
+    def preflight(self) -> dict:
+        from . import _cuda
+
+        os_release = self._os_release()
+        machine = _platform.machine()
+        checks: dict[str, dict] = {
+            "os": {
+                "ok": os_release.get("ID") == "ubuntu" and os_release.get("VERSION_ID") == "24.04",
+                "value": f"{os_release.get('ID', _platform.system())} "
+                         f"{os_release.get('VERSION_ID', _platform.release())}".strip(),
+                "required": "Ubuntu 24.04",
+            },
+            "architecture": {"ok": machine in {"x86_64", "amd64"}, "value": machine,
+                             "required": "x86_64"},
+            "systemd": {"ok": Path("/run/systemd/system").exists(), "value": "systemd"},
+        }
+
+        gpus, cuda_version, error = _cuda.probe(self)
+        checks["nvidia_driver"] = {"ok": bool(gpus), "gpu_count": len(gpus), "error": error}
+        toolkit = _cuda.choose_toolkit(cuda_version)
+        checks["cuda_compatibility"] = {
+            "ok": bool(toolkit),
+            "driver_cuda": cuda_version,
+            "selected_toolkit": toolkit,
+            "error": "" if toolkit else
+                     "Driver does not report compatibility with a supported CUDA toolkit",
+        }
+
+        network = self.detect_private_network()
+        checks["private_network"] = {"ok": bool(network), **network}
+
+        ufw_active = False
+        if shutil.which("ufw"):
+            try:
+                ufw_active = "Status: active" in self.run_cmd(["ufw", "status"], timeout=5).stdout
+            except Exception:
+                pass
+        checks["firewall"] = {"ok": ufw_active, "active": ufw_active,
+                              "warning": "" if ufw_active else "No active UFW firewall detected"}
+
+        return {
+            "checks": checks,
+            "required": ["os", "architecture", "systemd", "nvidia_driver",
+                         "cuda_compatibility", "private_network"],
+            "gpus": gpus,
+            "network": network,
+            "extra": {"cuda_toolkit": toolkit},
+        }
+
+    def firewall_rules(self, ports: list[int], cidr: str) -> list[list[str]]:
+        network = ipaddress.ip_network(cidr, strict=False)
+        if not network.is_private:
+            raise ValueError("Firewall source must be a private network")
+        return [["ufw", "allow", "from", str(network), "to", "any",
+                 "port", str(port), "proto", "tcp"] for port in ports]
+
+    def accelerator_cmake_args(self) -> list[str]:
+        import shutil
+
+        args = ["-DGGML_CUDA=ON"]
+        candidates = sorted(Path("/usr/local").glob("cuda-*/bin/nvcc"),
+                            key=_cuda_path_version, reverse=True)
+        nvcc = str(candidates[0]) if candidates else (shutil.which("nvcc") or "")
+        if not nvcc:
+            raise RuntimeError(
+                "CUDA toolkit compiler nvcc was not found; "
+                "run the setup system-dependencies stage")
+        args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")
+
+        probe = self.run_cmd(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"], timeout=10)
+        architectures = sorted({
+            line.strip().replace(".", "") for line in (probe.stdout or "").splitlines()
+            if re.fullmatch(r"\s*\d+\.\d+\s*", line)})
+        if not architectures:
+            raise RuntimeError(
+                "Could not detect NVIDIA GPU compute capability with nvidia-smi")
+        args.append(f"-DCMAKE_CUDA_ARCHITECTURES={';'.join(architectures)}")
+        return args
+
+
+def _cuda_path_version(path: Path) -> tuple[int, ...]:
+    """Sort key for /usr/local/cuda-*/bin/nvcc, newest first.
+
+    Variable length on purpose: an install can be `cuda-13`, `cuda-13.3` or
+    `cuda-13.3.1`, and a pattern demanding exactly two components silently
+    sorts the single-component ones last -- picking the oldest toolkit on a host
+    that has a `cuda-13` directory.
+    """
+    match = re.search(r"cuda-([0-9]+(?:\.[0-9]+)*)", str(path))
+    return tuple(int(part) for part in match.group(1).split(".")) if match else (0,)
