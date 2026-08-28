@@ -10,16 +10,12 @@ import shlex
 import platforms
 
 from .slots import COMMON_FLAGS, COMMON_TOGGLES
-from .spec import Slot
+from .spec import Slot, lookup
 
 
-def _first(env: dict, keys: tuple[str, ...], prefix: str) -> str:
-    for key in keys:
-        name = key[1:] if key.startswith("!") else f"{prefix}_{key}"
-        value = env.get(name)
-        if value not in (None, ""):
-            return str(value)
-    return ""
+def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...],
+           empty_is_set: bool = False) -> str:
+    return lookup(env, keys, prefixes, empty_is_set) or ""
 
 
 def placement_args(slot: Slot, env: dict) -> list[str]:
@@ -50,14 +46,15 @@ def placement_args(slot: Slot, env: dict) -> list[str]:
     if platforms.active().unified_memory:
         return ["--split-mode", "none"]
 
-    mode = str(env.get(f"{slot.prefix}_SPLIT_MODE") or "layer").strip() or "layer"
+    prefixes = slot.prefixes
+    mode = _first(env, ("SPLIT_MODE",), prefixes).strip() or "layer"
     args = ["--split-mode", mode]
-    main_gpu = str(env.get(f"{slot.prefix}_MAIN_GPU") or "").strip()
+    main_gpu = _first(env, ("MAIN_GPU",), prefixes).strip()
     if main_gpu:
         args += ["--main-gpu", main_gpu]
     tensor_split = even_tensor_split(
-        str(env.get(f"{slot.prefix}_TENSOR_SPLIT") or "").strip(),
-        str(env.get(f"{slot.prefix}_GPU_VISIBLE_DEVICES") or "").strip())
+        _first(env, ("TENSOR_SPLIT",), prefixes).strip(),
+        _first(env, ("GPU_VISIBLE_DEVICES",), prefixes).strip())
     # An empty ratio is omitted, never passed as "": llama.cpp reads
     # `--tensor-split ""` as an explicit empty split and refuses it.
     if tensor_split:
@@ -107,23 +104,21 @@ def custom_args(env: dict, key: str) -> list[str]:
 
 def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     """The full argv, binary first."""
-    prefix = slot.prefix
+    prefixes = slot.prefixes
     argv = [str(env.get("LLAMA_SERVER_BIN") or "llama-server")]
 
-    model = _first(env, slot.model_keys, prefix)
-    argv += ["--model", model]
-    argv += ["--alias", str(env.get(f"{prefix}_MODEL_NAME") or slot.alias_default)]
-    argv += ["--host", _first(env, slot.host_keys, prefix) or "127.0.0.1"]
-    argv += ["--port", str(env.get(f"{prefix}_PORT") or slot.port_default)]
+    argv += ["--model", _first(env, slot.model_keys, prefixes)]
+    argv += ["--alias", _first(env, slot.alias_keys, prefixes) or slot.alias_default]
+    argv += ["--host", _first(env, slot.host_keys, prefixes) or "127.0.0.1"]
+    argv += ["--port", _first(env, slot.port_keys, prefixes) or slot.port_default]
 
     for flag in COMMON_FLAGS:
         if flag.name in slot.omit:
             continue
         suffix = flag.keys[0]
-        override = slot.defaults.get(suffix)
-        resolved = (flag if override is None else
-                    type(flag)(flag.name, flag.keys, override)).resolve(env, prefix)
-        argv += resolved
+        keys = slot.key_chains.get(suffix, flag.keys)
+        default = slot.defaults.get(suffix, flag.default)
+        argv += type(flag)(flag.name, keys, default, flag.empty_is_set).resolve(env, prefixes)
         # Placement sits between --n-gpu-layers and --batch-size, where the
         # launchers spliced SPLIT_OPTS.
         if flag.name == "--n-gpu-layers":
@@ -132,9 +127,11 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     argv += list(slot.literals)
 
     for toggle in COMMON_TOGGLES + slot.extra_toggles:
-        argv += toggle.resolve(env, prefix)
+        argv += toggle.resolve(env, prefixes)
 
-    mmproj = str(env.get(f"{prefix}_MMPROJ_PATH") or "").strip()
+    # Emptied means cleared here: a slot whose own mmproj key has been cleared
+    # must not inherit the legacy one.
+    mmproj = _first(env, slot.mmproj_keys, prefixes, empty_is_set=True).strip()
     if mmproj and os.path.isfile(mmproj):
         argv += ["--mmproj", mmproj]
 

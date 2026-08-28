@@ -8,7 +8,7 @@ environment they are launched with. There is no flag surface to assemble.
 
 from __future__ import annotations
 
-from .spec import Slot
+from .spec import Slot, lookup
 
 #: Slot -> the server script that serves it under MLX.
 SERVERS = {
@@ -26,6 +26,6 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     stack = str(env.get("STACK_DIR") or ".")
     venv = str(env.get("MLX_RUNTIME_VENV") or f"{stack}/deps/mlx-runtime-venv")
     host = str(env.get("LISTEN_HOST") or "127.0.0.1")
-    port = str(env.get(f"{slot.prefix}_PORT") or slot.port_default)
+    port = lookup(env, slot.port_keys, slot.prefixes) or slot.port_default
     return [f"{venv}/bin/python", f"{stack}/scripts/{script}",
             "--host", host, "--port", port, *(extra or [])]
