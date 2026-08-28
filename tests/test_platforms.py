@@ -500,8 +500,28 @@ class AcceleratedBuildTests(unittest.TestCase):
     def test_metal_needs_no_toolkit_or_architecture_probe(self):
         # CUDA needs nvcc located and compute capabilities detected. Metal ships
         # with the OS: one flag is the whole configuration.
-        with platform_harness.as_darwin() as platform:
+        #
+        # `ioreg` is stubbed because the check is still a positive one -- it
+        # refuses to configure a build with no Metal device -- and a Linux
+        # runner has no IOAccelerator to find.
+        ioreg = ('<plist version="1.0"><array><dict>'
+                 '<key>IOClass</key><string>AGXAcceleratorG13X</string>'
+                 '<key>PerformanceStatistics</key><dict>'
+                 '<key>Alloc system memory</key><integer>19067781120</integer>'
+                 '</dict></dict></array></plist>')
+
+        def run(cmd, timeout=30):
+            if cmd[0] == "ioreg":
+                return _completed(ioreg)
+            return UnifiedMemoryTests()._run(cmd, timeout)
+
+        with platform_harness.as_darwin(run_cmd=run) as platform:
             self.assertEqual(platform.accelerator_cmake_args(), ["-DGGML_METAL=ON"])
+
+    def test_a_host_with_no_metal_device_is_refused_rather_than_built_cpu_only(self):
+        with platform_harness.as_darwin(run_cmd=lambda *a, **k: _completed("", 1)) as platform:
+            with self.assertRaises(RuntimeError):
+                platform.accelerator_cmake_args()
 
 
 class UnifiedMemoryBudgetTests(unittest.TestCase):

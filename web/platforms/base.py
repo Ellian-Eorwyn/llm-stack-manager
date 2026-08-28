@@ -50,7 +50,25 @@ class Platform(ABC):
 
     @staticmethod
     def run_cmd(cmd, timeout=30) -> subprocess.CompletedProcess:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        """Run a command, and treat "there is no such command" as a failure.
+
+        Every caller here already branches on `returncode`, because a probe
+        that cannot answer is an ordinary outcome: a box with no NVIDIA driver
+        has no `nvidia-smi`, and a Mac with no Xcode has no `xcode-select`. An
+        exception makes that ordinary outcome the caller's problem, and the
+        callers that remembered wrapped it in `try/except Exception` -- which
+        is how `_cuda.probe` survives a host with no driver while
+        `darwin.preflight` does not survive a host with no `sw_vers`.
+
+        127 is the shell's own code for "command not found", so a caller that
+        checks `returncode == 0` needs to know nothing about this.
+        """
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except (FileNotFoundError, NotADirectoryError, PermissionError) as exc:
+            return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+        except subprocess.TimeoutExpired as exc:
+            return subprocess.CompletedProcess(cmd, 124, "", str(exc))
 
     # -- services -----------------------------------------------------------
 
