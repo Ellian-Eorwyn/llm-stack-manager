@@ -72,14 +72,46 @@ cp_get_home_dir() {
 }
 
 # --- Service management wrappers --------------------------------------------
-# On Linux these call systemctl; on macOS they call launchctl with
-# plists in /Library/LaunchDaemons/com.llmstack.<name>.plist
+# On Linux these call systemctl. On macOS they call launchctl, and *which
+# launchd domain* is the decision that matters.
+#
+# These wrappers used to hardcode /Library/LaunchDaemons and the `system`
+# domain. A LaunchDaemon runs at boot with no user session, and Metal is built
+# around an interactive one -- which is why every tool that serves models on a
+# Mac runs a host-native process in the user's session rather than a system
+# daemon or a container (Docker ships vLLM for macOS this way for exactly this
+# reason: there is no GPU passthrough for Metal).
+#
+# It is also settled empirically here: an MLX embedding server has been serving
+# from a per-user LaunchAgent on this hardware for days.
+#
+# So the default is the GUI domain, `gui/<uid>`, with plists under the service
+# user's ~/Library/LaunchAgents. LLM_LAUNCHD_DOMAIN=system restores the old
+# behaviour for a host that genuinely wants a boot-time daemon and is not
+# serving models from it. The Python side (web/platforms/darwin.py) probes for
+# whichever of the two locations actually holds the plist, so the two agree
+# without having to share a constant.
 
-_svc_plist_dir="/Library/LaunchDaemons"
 _svc_label_prefix="com.llmstack"
 
+svc_domain() {
+    if [[ "${LLM_LAUNCHD_DOMAIN:-user}" == "system" ]]; then
+        echo "system"
+    else
+        echo "gui/$(id -u "${SERVICE_USER:-$(id -un)}")"
+    fi
+}
+
+svc_plist_dir() {
+    if [[ "${LLM_LAUNCHD_DOMAIN:-user}" == "system" ]]; then
+        echo "/Library/LaunchDaemons"
+    else
+        echo "$(cp_get_home_dir "${SERVICE_USER:-$(id -un)}")/Library/LaunchAgents"
+    fi
+}
+
 svc_plist_path() {
-    echo "${_svc_plist_dir}/${_svc_label_prefix}.${1}.plist"
+    echo "$(svc_plist_dir)/${_svc_label_prefix}.${1}.plist"
 }
 
 svc_label() {
@@ -100,8 +132,8 @@ svc_start() {
     else
         local label
         label="$(svc_label "${name}")"
-        launchctl bootout "system/${label}" 2>/dev/null || true
-        launchctl bootstrap system "$(svc_plist_path "${name}")"
+        launchctl bootout "$(svc_domain)/${label}" 2>/dev/null || true
+        launchctl bootstrap "$(svc_domain)" "$(svc_plist_path "${name}")"
     fi
 }
 
@@ -112,7 +144,7 @@ svc_stop() {
     else
         local label
         label="$(svc_label "${name}")"
-        launchctl bootout "system/${label}" 2>/dev/null || true
+        launchctl bootout "$(svc_domain)/${label}" 2>/dev/null || true
     fi
 }
 
@@ -134,7 +166,7 @@ svc_enable() {
         local plist
         plist="$(svc_plist_path "${name}")"
         if [[ -f "${plist}" ]]; then
-            launchctl bootstrap system "${plist}"
+            launchctl bootstrap "$(svc_domain)" "${plist}"
         fi
     fi
 }
@@ -146,7 +178,7 @@ svc_disable() {
     else
         local label
         label="$(svc_label "${name}")"
-        launchctl bootout "system/${label}" 2>/dev/null || true
+        launchctl bootout "$(svc_domain)/${label}" 2>/dev/null || true
     fi
 }
 
@@ -270,7 +302,7 @@ except:
 # --- Generate launchd plist + wrapper ---------------------------------------
 # generate_launchd_plist <service_name> <description> <script_filename> <timeout>
 # Creates:
-#   /Library/LaunchDaemons/com.llmstack.<name>.plist
+#   $(svc_plist_dir)/com.llmstack.<name>.plist
 #   ${STACK_DIR}/scripts/launchd-wrapper-<name>.sh
 generate_launchd_plist() {
     local unit_name="$1"
@@ -281,6 +313,7 @@ generate_launchd_plist() {
     label="$(svc_label "${unit_name}")"
     local plist_path
     plist_path="$(svc_plist_path "${unit_name}")"
+    mkdir -p "$(dirname "${plist_path}")"
     local wrapper_path="${STACK_DIR}/scripts/launchd-wrapper-${unit_name}.sh"
     local log_file="${STACK_DIR}/logs/${unit_name}.stdout.log"
     local err_file="${STACK_DIR}/logs/${unit_name}.stderr.log"
@@ -317,6 +350,11 @@ WRAPPER
     <true/>
     <key>ThrottleInterval</key>
     <integer>5</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${LAUNCHD_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>${log_file}</string>
     <key>StandardErrorPath</key>
@@ -342,38 +380,25 @@ PLIST
 PLIST
     fi
 
-    # Add After dependencies as WaitFor
+    # systemd's After= and Conflicts= have no launchd equivalent.
+    #
+    # This function used to emit <key>WaitFor</key> and <key>Unbootstraps</key>
+    # here. Neither is a real launchd key. launchd ignores keys it does not
+    # recognise without complaint, so the units looked ordered and were not --
+    # the failure was invisible for as long as nobody checked the plist against
+    # Apple's documented key list.
+    #
+    # Recording the intent as an XML comment keeps the information for whoever
+    # implements ordering properly (launchd's own answer is a dependency-aware
+    # wrapper, or KeepAlive with an OtherJobEnabled condition), and saying it out
+    # loud keeps it from being rediscovered the hard way a second time.
     if [[ -n "${LAUNCHD_WAIT_FOR:-}" ]]; then
-        cat >> "${plist_path}" <<PLIST
-    <key>WaitFor</key>
-    <array>
-PLIST
-        IFS=' ' read -ra deps <<< "${LAUNCHD_WAIT_FOR}"
-        for dep in "${deps[@]}"; do
-            local dep_label
-            dep_label="$(svc_label "${dep}")"
-            echo "        <string>${dep_label}</string>" >> "${plist_path}"
-        done
-        cat >> "${plist_path}" <<PLIST
-    </array>
-PLIST
+        echo "    <!-- intended After=: ${LAUNCHD_WAIT_FOR} (not enforced by launchd) -->" >> "${plist_path}"
+        echo "  WARNING: ${unit_name} should start after '${LAUNCHD_WAIT_FOR}'; launchd does not enforce ordering" >&2
     fi
-
-    # Add Conflicts
     if [[ -n "${LAUNCHD_CONFLICTS:-}" ]]; then
-        cat >> "${plist_path}" <<PLIST
-    <key>Unbootstraps</key>
-    <array>
-PLIST
-        IFS=' ' read -ra conflicts <<< "${LAUNCHD_CONFLICTS}"
-        for conf in "${conflicts[@]}"; do
-            local conf_label
-            conf_label="$(svc_label "${conf}")"
-            echo "        <string>${conf_label}</string>" >> "${plist_path}"
-        done
-        cat >> "${plist_path}" <<PLIST
-    </array>
-PLIST
+        echo "    <!-- intended Conflicts=: ${LAUNCHD_CONFLICTS} (not enforced by launchd) -->" >> "${plist_path}"
+        echo "  WARNING: ${unit_name} conflicts with '${LAUNCHD_CONFLICTS}'; launchd will not stop it for you" >&2
     fi
 
     cat >> "${plist_path}" <<PLIST

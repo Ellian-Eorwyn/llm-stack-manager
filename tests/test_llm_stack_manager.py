@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import re
 import shlex
@@ -32,6 +33,12 @@ core = sys.modules["core"]
 config_env = sys.modules["config_env"]
 config_fields = sys.modules["config_fields"]
 models = sys.modules["models"]
+
+# Imported after the app, for the same reason: it reaches the `platforms`
+# module app.py already put in sys.modules, so a substituted adapter is the one
+# the application sees.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import platform_harness  # noqa: E402
 
 
 class ConfigSectionTests(unittest.TestCase):
@@ -100,11 +107,23 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertEqual(env["CHAT_PRIMARY_CTX_SIZE"], "32768")
         self.assertEqual(env["CHAT_PRIMARY_BATCH_SIZE"], "2048")
         self.assertEqual(env["CHAT_PRIMARY_GPU_VISIBLE_DEVICES"], "0,1")
-        self.assertEqual(env["CHAT_SECONDARY_LABEL"], "Secondary Backend")
-        self.assertEqual(env["CHAT_SECONDARY_MODEL_PATH"], "/models/secondary.gguf")
-        self.assertEqual(env["CHAT_SECONDARY_CTX_SIZE"], "65536")
+        # The MoE keys described an alternative model for the *one* shared
+        # backend. That slot is retired, so they backfill the concurrent second
+        # slot instead of vanishing -- a host with a MoE model and no second
+        # slot keeps its model.
         self.assertEqual(env["CHAT2_LABEL"], "Secondary Backend")
+        self.assertEqual(env["CHAT2_MODEL_PATH"], "/models/secondary.gguf")
+        self.assertEqual(env["CHAT2_CTX_SIZE"], "65536")
+        self.assertNotIn("CHAT_SECONDARY_LABEL", env)
         self.assertNotIn("CHAT_SECONDARY_BATCH_SIZE", {f["key"] for f in manager.CONFIG_FIELDS})
+
+    def test_a_configured_second_slot_is_not_overwritten_by_legacy_moe_keys(self):
+        """The backfill never overwrites, so the two cannot collide."""
+        env = config_env.normalize_env_keys({
+            "CHAT_MOE_MODEL_PATH": "/models/old-moe.gguf",
+            "CHAT2_MODEL_PATH": "/models/current-b.gguf",
+        })
+        self.assertEqual(env["CHAT2_MODEL_PATH"], "/models/current-b.gguf")
 
     def test_removed_backend_fields_are_not_in_config_surface(self):
         sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
@@ -626,7 +645,6 @@ class MetricsFlagTests(unittest.TestCase):
             ("CHAT_PRIMARY_METRICS", "Primary Backend"),
             ("CHAT2_METRICS", "Secondary Backend"),
             ("EMBED_METRICS", "Embedding"),
-            ("EMBED2_METRICS", "Embedding 2"),
             ("RERANK_METRICS", "Reranker"),
             ("TASK_METRICS", "Task Model"),
             ("OCR_METRICS", "OCR"),
@@ -639,21 +657,33 @@ class MetricsFlagTests(unittest.TestCase):
         self.assertEqual(manager.RESTART_HINTS["EMBED_METRICS"], ["embed"])
         self.assertEqual(manager.RESTART_HINTS["TASK_METRICS"], ["task"])
 
-    def test_launchers_gate_the_flag_on_the_env_key(self):
+    def test_launchers_still_written_in_shell_gate_the_flag_on_the_env_key(self):
         root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
         for script, prefix in [
-            ("start-chat-backend.sh", "CHAT"),
             ("start-chat-backend2.sh", "CHAT2"),
-            ("start-chat-backend-moe.sh", "CHAT"),
             ("start-chat-backend-dense.sh", "CHAT"),
-            ("start-embed.sh", "EMBED"),
-            ("start-embed2.sh", "EMBED2"),
-            ("start-rerank.sh", "RERANK"),
             ("start-task.sh", "TASK"),
-            ("start-ocr.sh", "OCR"),
         ]:
             text = (root / script).read_text()
             self.assertIn(f'"${{{prefix}_METRICS:-on}}" == "on" ]] && OPTS+=(--metrics)', text, script)
+
+    def test_consolidated_slots_gate_the_flag_on_the_env_key(self):
+        """The same guarantee for the slots that moved to the registry.
+
+        Asserted as behaviour rather than as source text: the gate is a Toggle
+        in web/backends/slots.py now, and grepping the shell for it would pass
+        for a launcher that never reaches its exec.
+        """
+        env = {"LLAMA_SERVER_BIN": "/bin/llama-server", "LISTEN_HOST": "127.0.0.1",
+               "EMBEDDING_MODEL_PATH": "/m.gguf", "RERANKER_MODEL_PATH": "/m.gguf",
+               "OCR_MODEL_PATH": "/m.gguf"}
+        with platform_harness.as_linux():
+            import backends
+            for slot, prefix in (("embed", "EMBED"), ("rerank", "RERANK"), ("ocr", "OCR")):
+                with self.subTest(slot):
+                    self.assertIn("--metrics", backends.build_command(slot, dict(env)))
+                    self.assertNotIn("--metrics", backends.build_command(
+                        slot, dict(env, **{f"{prefix}_METRICS": "off"})))
 
     def test_mtp_runs_without_a_draft_model(self):
         """Most MTP GGUFs carry their own blk.N.nextn.* head, and llama.cpp
@@ -664,9 +694,7 @@ class MetricsFlagTests(unittest.TestCase):
         """
         root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
         for script in [
-            "start-chat-backend.sh",
             "start-chat-backend2.sh",
-            "start-chat-backend-moe.sh",
             "start-chat-backend-dense.sh",
             "start-task.sh",
         ]:
@@ -680,9 +708,7 @@ class MetricsFlagTests(unittest.TestCase):
     def test_thinking_level_reaches_every_chat_launcher(self):
         root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
         for script, prefix in [
-            ("start-chat-backend.sh", "CHAT"),
             ("start-chat-backend2.sh", "CHAT2"),
-            ("start-chat-backend-moe.sh", "CHAT"),
             ("start-chat-backend-dense.sh", "CHAT"),
         ]:
             text = (root / script).read_text()
@@ -751,7 +777,7 @@ class UpdateCliTests(unittest.TestCase):
         cheap = re.search(r"CHEAP_RESTART_SERVICES=\(([^)]*)\)", self.update)
         self.assertIsNotNone(cheap)
         services = cheap.group(1).split()
-        for backend in ("chat-backend-dense", "chat-backend-moe", "chat-backend",
+        for backend in ("chat-backend-dense",
                         "chat-backend2", "embed", "rerank", "task", "ocr"):
             self.assertNotIn(backend, services)
         self.assertIn("llm-manager", services)
@@ -984,8 +1010,7 @@ class ServiceHealthTests(unittest.TestCase):
     def test_a_unit_mid_launch_is_its_own_state(self):
         # A service that cannot start spends most of its life here, because
         # Restart= bounces it out of `failed` within seconds.
-        with patch.object(core.ServiceManager, "run_cmd",
-                          side_effect=self._systemctl(ocr=("activating", "loaded"))):
+        with platform_harness.as_linux(run_cmd=self._systemctl(ocr=("activating", "loaded"))):
             self.assertEqual(manager.get_service_status("ocr"), "starting")
 
     def test_statuses_and_restart_counts_come_from_one_pass(self):
@@ -1000,7 +1025,7 @@ class ServiceHealthTests(unittest.TestCase):
         with (
             patch.object(config_env, "read_env", return_value={}),
             patch.object(manager, "patch_service_labels", return_value=[{"name": "ocr"}]),
-            patch.object(core.ServiceManager, "run_cmd", side_effect=run),
+            platform_harness.as_linux(run_cmd=run),
         ):
             statuses, restarts = manager.service_unit_snapshot()
 
@@ -1010,14 +1035,12 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertEqual(len(calls), len(set(calls)))
 
     def test_a_crashed_unit_is_no_longer_indistinguishable_from_a_stopped_one(self):
-        with patch.object(core.ServiceManager, "run_cmd",
-                          side_effect=self._systemctl(embed=("failed", "loaded"))):
+        with platform_harness.as_linux(run_cmd=self._systemctl(embed=("failed", "loaded"))):
             self.assertEqual(manager.get_service_status("embed"), "failed")
             self.assertEqual(manager.get_service_status("rerank"), "inactive")
 
     def test_an_uninstalled_unit_is_unknown(self):
-        with patch.object(core.ServiceManager, "run_cmd",
-                          side_effect=self._systemctl(ghost=("inactive", "not-found"))):
+        with platform_harness.as_linux(run_cmd=self._systemctl(ghost=("inactive", "not-found"))):
             self.assertEqual(manager.get_service_status("ghost"), "unknown")
 
     def test_unit_state_reads_load_and_activation_in_one_call(self):
@@ -1029,7 +1052,7 @@ class ServiceHealthTests(unittest.TestCase):
                 cmd, 0, "LoadState=loaded\nActiveState=active\nSubState=running\n"
                         "Result=success\nMainPID=4242\n", "")
 
-        with patch.object(core.ServiceManager, "run_cmd", side_effect=run):
+        with platform_harness.as_linux(run_cmd=run):
             state = core.ServiceManager.state("embed")
         self.assertEqual(len(calls), 1)
         self.assertTrue(state["active"] and state["installed"])
@@ -1111,7 +1134,9 @@ class ServiceHealthTests(unittest.TestCase):
             patch.object(manager, "get_service_status", return_value="inactive"),
         ):
             statuses = manager.all_service_statuses()
-        self.assertIn("chat-backend-moe", statuses)
+        # chat-proxy's upstream has no card of its own in this stubbed panel,
+        # and still has to be asked about.
+        self.assertIn("chat-backend-dense", statuses)
         self.assertIn("chat-proxy", statuses)
 
 
@@ -1186,7 +1211,12 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
 
 class ConfigPreflightTests(unittest.TestCase):
     """The config form has always accepted anything, and the cost of that
-    arrived later — on restart, or as an eviction storm."""
+    arrived later — on restart, or as an eviction storm.
+
+    Pinned to Linux: these assert the discrete-GPU verdicts, where
+    overcommitting VRAM fails the allocation. Unified memory answers
+    differently and has its own tests.
+    """
 
     GPUS = [{"index": 0, "mem_total": 24576, "mem_used": 1000},
             {"index": 1, "mem_total": 24576, "mem_used": 1000}]
@@ -1194,6 +1224,9 @@ class ConfigPreflightTests(unittest.TestCase):
                "SwapTotal": 8388604, "SwapFree": 8388604}
 
     def setUp(self):
+        ctx = platform_harness.as_linux()
+        ctx.__enter__()
+        self.addCleanup(ctx.__exit__, None, None, None)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         spec = importlib.util.spec_from_file_location(
@@ -1843,9 +1876,16 @@ class SplitModeTests(unittest.TestCase):
 
     # -- the launcher helper ------------------------------------------------
 
-    def _resolve(self, mode, model, tensor_split="1,1", main_gpu="0", flash_attn="on"):
+    def _resolve(self, mode, model, tensor_split="1,1", main_gpu="0", flash_attn="on",
+                 platform="Linux"):
         """Run resolve_split_opts the way a start script does and report both
-        the flags it built and what it said about them."""
+        the flags it built and what it said about them.
+
+        `platform` is pinned rather than inherited from the host: these assert
+        the CUDA placement rules, which do not apply on Metal, and they have to
+        keep running on a macOS runner. `LLM_STACK_PLATFORM` is the shell's
+        equivalent of `platforms.set_active`.
+        """
         script = (
             'set -euo pipefail\n'
             f'STACK_DIR={shlex.quote(str(self.ROOT))}\n'
@@ -1854,7 +1894,8 @@ class SplitModeTests(unittest.TestCase):
             f'{shlex.quote(tensor_split)} {shlex.quote(main_gpu)} {shlex.quote(flash_attn)}\n'
             'printf "FLAGS:%s\\n" "${SPLIT_OPTS[*]}"\n'
         )
-        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              env={**os.environ, "LLM_STACK_PLATFORM": platform})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         flags, messages = "", []
         for line in proc.stdout.splitlines():
@@ -1863,6 +1904,24 @@ class SplitModeTests(unittest.TestCase):
             else:
                 messages.append(line)
         return flags.split(), "\n".join(messages)
+
+    def test_metal_collapses_every_mode_to_none(self):
+        """One device and one memory pool: every mode that exists to divide a
+        model between cards is inapplicable, not merely unsupported."""
+        for mode in ("layer", "tensor", "row", "bogus"):
+            with self.subTest(mode=mode):
+                flags, said = self._resolve(mode, self.dense, platform="Darwin")
+                self.assertEqual(flags, ["--split-mode", "none"])
+                self.assertIn("Metal", said)
+
+    def test_metal_drops_placement_flags_it_cannot_act_on(self):
+        # --tensor-split and --main-gpu ask llama-server to choose between GPUs
+        # there is only one of.
+        flags, said = self._resolve("none", self.dense, tensor_split="1,1",
+                                    main_gpu="1", platform="Darwin")
+        self.assertEqual(flags, ["--split-mode", "none"])
+        self.assertIn("Tensor Split", said)
+        self.assertIn("Main GPU", said)
 
     def test_row_never_reaches_llama_server(self):
         flags, said = self._resolve("row", self.dense)
@@ -1907,7 +1966,7 @@ class SplitModeTests(unittest.TestCase):
         self.assertEqual(said, "")
 
     def test_backends_without_a_main_gpu_do_not_gain_one(self):
-        """embed, embed2 and rerank have never emitted --main-gpu."""
+        """embed and rerank have never emitted --main-gpu."""
         flags, _ = self._resolve("layer", self.dense, main_gpu="")
         self.assertNotIn("--main-gpu", flags)
 

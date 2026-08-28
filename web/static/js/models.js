@@ -9,9 +9,10 @@ async function pollActiveModel() {
   activeModel = d.variant;
   const label = document.getElementById('active-model-label');
   // Update label
-  if (builtInChatVariantMap[d.variant]) label.textContent = 'Active: ' + (d.label || builtInChatVariantMap[d.variant].label);
+  // The slot reports its own label now; there is no variant table to look it
+  // up in, because there is one unit per slot rather than three sharing a port.
+  if (d.label) label.textContent = 'Active: ' + d.label;
   else if (d.custom_model) label.textContent = 'Active: ' + d.custom_model.display_name;
-  else if (d.variant === 'generic') label.textContent = 'Active: Custom';
   else label.textContent = 'No backend active';
 
   // Highlight active switch button

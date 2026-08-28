@@ -25,6 +25,15 @@ from typing import Any, Callable
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# `platforms`, plural, is deliberately not the stdlib `platform` imported above.
+# This module is run directly as a script (`sudo scripts/setup_engine.py
+# preflight`) as well as imported by the manager, so the path is added here
+# rather than relying on the caller having done it.
+sys.path.insert(0, str(ROOT / "web"))
+import platforms  # noqa: E402
+from platforms import _cuda  # noqa: E402
+
 CONFIG_FILE = ROOT / "config" / "llm-stack.env"
 STATE_FILE = ROOT / "config" / "install-state.json"
 MODELS_DIR = ROOT / "models"
@@ -44,7 +53,6 @@ COMPONENT_SERVICES = {
     "primary": ["chat-backend-dense", "chat-proxy"],
     "secondary": ["chat-backend2", "chat-proxy2"],
     "embedding": ["embed"],
-    "embedding2": ["embed2"],
     "task": ["task"],
     "ocr": ["ocr"],
     "glmocr-sdk": ["glmocr-sdk"],
@@ -64,7 +72,6 @@ MODEL_ENV_KEYS = {
     "primary": ("CHAT_PRIMARY_MODEL_PATH", "CHAT_PRIMARY_MMPROJ_PATH"),
     "secondary": ("CHAT2_MODEL_PATH", "CHAT2_MMPROJ_PATH"),
     "embedding": ("EMBEDDING_MODEL_PATH", ""),
-    "embedding2": ("EMBED2_MODEL_PATH", ""),
     "task": ("TASK_MODEL_PATH", "TASK_MMPROJ_PATH"),
     "ocr": ("OCR_MODEL_PATH", "OCR_MMPROJ_PATH"),
     "reranker": ("RERANKER_MODEL_PATH", ""),
@@ -147,10 +154,16 @@ def selected_ports(components: list[str]) -> list[int]:
 
 
 def firewall_rules(components: list[str], cidr: str) -> list[list[str]]:
+    """Commands opening the selected ports to the private LAN only.
+
+    Empty on a platform with no firewall this installer manages, which is not
+    the same as an open host -- the preflight `firewall` check is what says
+    which of those the operator is looking at.
+    """
     network = ipaddress.ip_network(cidr, strict=False)
     if not network.is_private:
         raise ValueError("Firewall source must be a private network")
-    return [["ufw", "allow", "from", str(network), "to", "any", "port", str(port), "proto", "tcp"] for port in selected_ports(components)]
+    return platforms.active().firewall_rules(selected_ports(components), cidr)
 
 
 def run_capture(command: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
@@ -169,80 +182,40 @@ def parse_os_release(path: Path = Path("/etc/os-release")) -> dict[str, str]:
     return values
 
 
-def parse_nvidia_gpus(text: str) -> list[dict[str, Any]]:
-    gpus: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) < 5:
-            continue
-        try:
-            compute_cap = parts[2]
-            gpus.append({
-                "index": int(parts[0]),
-                "name": parts[1],
-                "compute_capability": compute_cap,
-                "cmake_architecture": compute_cap.replace(".", ""),
-                "memory_total_mib": int(float(parts[3])),
-                "memory_free_mib": int(float(parts[4])),
-            })
-        except ValueError:
-            continue
-    return gpus
-
-
-def driver_cuda_version(text: str) -> str:
-    match = re.search(r"CUDA Version:\s*([0-9]+(?:\.[0-9]+)?)", text)
-    return match.group(1) if match else ""
-
-
-def choose_cuda_toolkit(driver_cuda: str, supported: tuple[str, ...] = ("13.3", "13.0", "12.8")) -> str:
-    try:
-        maximum = tuple(int(part) for part in driver_cuda.split(".")[:2])
-    except ValueError:
-        return ""
-    for candidate in supported:
-        parsed = tuple(int(part) for part in candidate.split("."))
-        if parsed <= maximum:
-            return candidate
-    return ""
+# These three are the NVIDIA half of preflight. They live in the platform
+# package now, where the Linux adapter uses them, and are re-exported here under
+# their original names because the CLI, the wizard and the tests all know them
+# by those names.
+parse_nvidia_gpus = _cuda.parse_gpus
+driver_cuda_version = _cuda.driver_cuda_version
+choose_cuda_toolkit = _cuda.choose_toolkit
 
 
 def detect_private_network() -> dict[str, str]:
-    try:
-        route = run_capture(["ip", "-j", "route", "show", "default"], timeout=5)
-        entries = json.loads(route.stdout or "[]")
-        interface = entries[0].get("dev", "") if entries else ""
-        if not interface:
-            return {}
-        addr = run_capture(["ip", "-j", "address", "show", "dev", interface], timeout=5)
-        for info in json.loads(addr.stdout or "[]"):
-            for item in info.get("addr_info", []):
-                if item.get("family") != "inet":
-                    continue
-                ip = ipaddress.ip_address(item["local"])
-                if not ip.is_private:
-                    continue
-                network = ipaddress.ip_network(f"{ip}/{item['prefixlen']}", strict=False)
-                return {"interface": interface, "address": str(ip), "cidr": str(network)}
-    except Exception:
-        pass
-    return {}
+    return platforms.active().detect_private_network()
 
 
 def collect_preflight() -> dict[str, Any]:
-    os_release = parse_os_release()
-    checks: dict[str, dict[str, Any]] = {}
-    checks["os"] = {
-        "ok": os_release.get("ID") == "ubuntu" and os_release.get("VERSION_ID") == "24.04",
-        "value": f"{os_release.get('ID', platform.system())} {os_release.get('VERSION_ID', platform.release())}".strip(),
-        "required": "Ubuntu 24.04",
+    """Whether this host can run the stack.
+
+    Three of these questions are the same everywhere -- can we elevate, is there
+    room, can we reach the internet -- and the rest are the platform's to ask.
+    This used to be one hardcoded list requiring Ubuntu 24.04, x86-64, systemd,
+    an NVIDIA driver and a compatible CUDA toolkit; on Apple silicon all five
+    failed at once, so the wizard could not complete there and the checks it
+    displayed described a machine the operator was never going to have.
+    """
+    platform = platforms.active()
+    contribution = platform.preflight()
+    checks: dict[str, dict[str, Any]] = dict(contribution["checks"])
+
+    checks["sudo"] = {
+        "ok": os.geteuid() == 0 or shutil.which("sudo") is not None,
+        "value": "available" if shutil.which("sudo") else "root-only",
     }
-    machine = platform.machine()
-    checks["architecture"] = {"ok": machine in {"x86_64", "amd64"}, "value": machine, "required": "x86_64"}
-    checks["systemd"] = {"ok": Path("/run/systemd/system").exists(), "value": "systemd"}
-    checks["sudo"] = {"ok": os.geteuid() == 0 or shutil.which("sudo") is not None, "value": "available" if shutil.which("sudo") else "root-only"}
     usage = shutil.disk_usage(ROOT)
-    checks["disk"] = {"ok": usage.free >= 20 * 1024**3, "free_bytes": usage.free, "required_bytes": 20 * 1024**3}
+    checks["disk"] = {"ok": usage.free >= 20 * 1024**3, "free_bytes": usage.free,
+                      "required_bytes": 20 * 1024**3}
     internet_error = ""
     try:
         with socket.create_connection(("github.com", 443), timeout=5):
@@ -253,47 +226,18 @@ def collect_preflight() -> dict[str, Any]:
         internet_error = str(exc)
     checks["internet"] = {"ok": internet_ok, "target": "github.com:443", "error": internet_error}
 
-    gpus: list[dict[str, Any]] = []
-    cuda_version = ""
-    error = ""
-    try:
-        result = run_capture([
-            "nvidia-smi",
-            "--query-gpu=index,name,compute_cap,memory.total,memory.free",
-            "--format=csv,noheader,nounits",
-        ], timeout=10)
-        gpus = parse_nvidia_gpus(result.stdout) if result.returncode == 0 else []
-        summary = run_capture(["nvidia-smi"], timeout=10)
-        cuda_version = driver_cuda_version(summary.stdout + summary.stderr)
-        error = (result.stderr or "").strip()
-    except Exception as exc:
-        error = str(exc)
-    checks["nvidia_driver"] = {"ok": bool(gpus), "gpu_count": len(gpus), "error": error}
-    toolkit = choose_cuda_toolkit(cuda_version)
-    checks["cuda_compatibility"] = {
-        "ok": bool(toolkit),
-        "driver_cuda": cuda_version,
-        "selected_toolkit": toolkit,
-        "error": "Driver does not report compatibility with a supported CUDA toolkit" if not toolkit else "",
-    }
-    network = detect_private_network()
-    checks["private_network"] = {"ok": bool(network), **network}
-    ufw_active = False
-    if shutil.which("ufw"):
-        try:
-            ufw_active = "Status: active" in run_capture(["ufw", "status"], timeout=5).stdout
-        except Exception:
-            pass
-    checks["firewall"] = {"ok": ufw_active, "active": ufw_active, "warning": "No active UFW firewall detected" if not ufw_active else ""}
-    required = ["os", "architecture", "systemd", "sudo", "disk", "internet", "nvidia_driver", "cuda_compatibility", "private_network"]
+    required = list(contribution["required"]) + ["sudo", "disk", "internet"]
     return {
         "ok": all(checks[name]["ok"] for name in required),
         "checks": checks,
-        "gpus": gpus,
-        "cuda_toolkit": toolkit,
-        "network": network,
-        "trusted_lan_warning": "The manager is unauthenticated. Never expose it to the public internet.",
+        "required": required,
+        "gpus": contribution["gpus"],
+        "network": contribution["network"],
+        "platform": platform.name,
+        "trusted_lan_warning":
+            "The manager is unauthenticated. Never expose it to the public internet.",
         "timestamp": int(time.time()),
+        **contribution["extra"],
     }
 
 
@@ -489,7 +433,6 @@ def placement_env(assignments: dict[str, Any]) -> dict[str, str]:
         "primary": "CHAT_PRIMARY",
         "secondary": "CHAT2",
         "embedding": "EMBED",
-        "embedding2": "EMBED2",
         "task": "TASK",
         "ocr": "OCR",
         "reranker": "RERANK",

@@ -29,11 +29,17 @@ BACKEND_SENSITIVE_PATHS=(
     "scripts/start-rerank"
     "scripts/start-task"
     "scripts/start-ocr"
+    # The one launcher the consolidated slots run through.
+    "scripts/start-backend.sh"
     # Sourced by every launcher, and it decides which flags reach llama-server.
     "scripts/lib/"
     # The launchers consult the budget model at startup to skip flags the
     # loaded model cannot act on, so a change here changes the next launch.
     "web/budget.py"
+    # What a slot *is*: its flags, defaults and engine. A change here changes
+    # the command line a backend is next started with, exactly as editing its
+    # launcher used to.
+    "web/backends/"
 )
 
 usage() {
@@ -264,12 +270,12 @@ if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
         if is_linux; then
             mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'transcript-backend.service' 'playwright-server.service' 'think.service' 'nothink.service' 'qwen-*' 'honcho-*.service' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
         else
-            active=(llm-manager chat-backend chat-backend-dense chat-backend-moe chat-proxy embed rerank task ocr glmocr-sdk transcript-backend honcho-api honcho-deriver think nothink)
+            active=(llm-manager chat-backend-dense chat-proxy chat-backend2 chat-proxy2 embed rerank task ocr glmocr-sdk transcript-backend honcho-api honcho-deriver)
         fi
         
         for svc in "${active[@]}"; do
             case "${svc}" in
-                llm-manager|chat-backend|chat-backend-dense|chat-backend-moe|chat-proxy|embed|rerank|task|ocr|glmocr-sdk|transcript-backend|playwright-server|honcho-api|honcho-deriver|think|nothink)
+                llm-manager|chat-backend-dense|chat-backend2|chat-proxy|chat-proxy2|embed|rerank|task|ocr|glmocr-sdk|transcript-backend|playwright-server|honcho-api|honcho-deriver)
                     if is_mac || svc_is_active "${svc}"; then
                         svc_restart "${svc}"
                     fi

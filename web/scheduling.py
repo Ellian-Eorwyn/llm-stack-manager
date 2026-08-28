@@ -38,6 +38,8 @@ from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+import platforms
+
 STACK_DIR = Path(__file__).resolve().parent.parent
 
 # What pi-forge needs from the backend regardless of model or host. Mirrors
@@ -234,10 +236,7 @@ def lease_directory(env: dict | None = None) -> Path | None:
 
 
 def _pid_alive(pid) -> bool:
-    try:
-        return Path(f"/proc/{int(pid)}").exists()
-    except (TypeError, ValueError):
-        return False
+    return platforms.active().pid_alive(pid)
 
 
 def read_leases(directory: Path | None, now_ms: float | None = None) -> list[dict]:

@@ -16,14 +16,11 @@ fi
 ALL_SERVICES=(
     think
     nothink
-    chat-backend
     chat-backend-dense
-    chat-backend-moe
     chat-proxy
     chat-backend2
     chat-proxy2
     embed
-    embed2
     rerank
     task
     ocr
@@ -116,15 +113,14 @@ for key, value in updates.items():
         content += f"\n{key}={rendered}\n"
 config_path.write_text(re.sub(r"\n{3,}", "\n\n", content))
 
+# A saved profile used to record which of three mutually exclusive units served
+# the primary slot. There is one unit per slot now, so any profile that had a
+# chat backend active resolves to the same one -- including old profiles naming
+# a retired variant, which would otherwise resolve to a unit that no longer
+# exists and leave the stack with no chat backend at all.
 active = data.get("_active_chat_model") if isinstance(data.get("_active_chat_model"), dict) else {}
-variant = active.get("variant")
-service = active.get("service")
-if variant == "moe":
-    print("chat-backend-moe")
-elif variant == "dense":
+if active.get("variant") or active.get("service"):
     print("chat-backend-dense")
-elif service == "chat-backend":
-    print("chat-backend")
 PYDEFAULT
 )"
     if [[ -n "${resolved_backend}" ]]; then
@@ -148,7 +144,6 @@ if [[ -n "${LLM_STACK_SELECTED_COMPONENTS:-}" ]]; then
     selected secondary && DEFAULT_SERVICES+=(chat-backend2 chat-proxy2)
     [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] && DEFAULT_SERVICES+=(llama-router)
     selected embedding && ! router_owns EMBED && DEFAULT_SERVICES+=(embed)
-    selected embedding2 && ! router_owns EMBED2 && DEFAULT_SERVICES+=(embed2)
     selected reranker && ! router_owns RERANK && DEFAULT_SERVICES+=(rerank)
     selected task && ! router_owns TASK && DEFAULT_SERVICES+=(task)
     selected ocr && ! router_owns OCR && DEFAULT_SERVICES+=(ocr)
@@ -161,7 +156,7 @@ else
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         DEFAULT_SERVICES+=(llama-router)
     else
-        DEFAULT_SERVICES+=(embed embed2 rerank task)
+        DEFAULT_SERVICES+=(embed rerank task)
     fi
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_SERVICES+=(honcho-api honcho-deriver)

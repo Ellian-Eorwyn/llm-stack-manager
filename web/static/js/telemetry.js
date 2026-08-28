@@ -207,6 +207,16 @@ function formatG(mib) {
   return (Number(mib) / 1000).toFixed(1) + 'G';
 }
 
+// A reading the platform cannot take is null, not zero, and must not render as
+// zero: "0 C" and "0% util" describe a cold, idle card, which is exactly what a
+// card under load looks like if you fabricate the number. Apple silicon exposes
+// neither temperature nor power without elevated privileges, so this is the
+// normal case there rather than an error case.
+function gpuReading(value, suffix) {
+  if (value === null || value === undefined) return '\u2014';
+  return escapeHtml(value) + suffix;
+}
+
 function applyGpus(gpus) {
   const el = document.getElementById('gpu-stats');
   if (!el) return;
@@ -267,10 +277,10 @@ function applyGpus(gpus) {
         </div>
         <div class="gpu-stat-row">
           <span>${formatG(used)}/${formatG(total)} (${pct}%)</span>
-          <span>${escapeHtml(g.util || 0)}% util</span>
-          <span>${escapeHtml(g.temp || 0)} C</span>
+          <span>${gpuReading(g.util, '%')} util</span>
+          <span>${gpuReading(g.temp, ' C')}</span>
         </div>
-        <div class="bar-wrap" title="${formatG(used)}/${formatG(total)} | ${escapeHtml(g.util || 0)}% | ${escapeHtml(g.temp || 0)} C">
+        <div class="bar-wrap" title="${formatG(used)}/${formatG(total)} | ${gpuReading(g.util, '%')} | ${gpuReading(g.temp, ' C')}">
           ${segmentsHtml}
         </div>
         ${itemsHtml}

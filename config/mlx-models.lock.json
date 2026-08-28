@@ -1,0 +1,39 @@
+{
+  "installed_at": "2026-08-18",
+  "host": {
+    "model": "MacBookPro18,3",
+    "chip": "Apple M1 Pro",
+    "memory_gib": 16,
+    "architecture": "arm64"
+  },
+  "stack": {
+    "repository_commit": "8667370c6848e1ff0852a4c0e215db283836fdcc",
+    "python": "3.14.4",
+    "mlx": "0.32.1",
+    "mlx_vlm": "0.6.4",
+    "mlx_audio": "0.4.6",
+    "mlx_embeddings": "0.1.0"
+  },
+  "models": {
+    "embedding": {
+      "repository": "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ",
+      "revision": "6c3ae70858513f1a78e9cdca3cae330d9075cd2a",
+      "local_path": "models/mlx/Qwen3-Embedding-0.6B-4bit-DWQ",
+      "weight_bytes": 335296756,
+      "weight_sha256": "3d773d5ee582eda445daeee23f7a2b76124011796df244ddb45e22638fdb7cde",
+      "dimensions": 1024,
+      "quantization": "4-bit DWQ"
+    },
+    "transcription": {
+      "repository": "mlx-community/parakeet-tdt-0.6b-v3",
+      "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
+      "local_path": "models/mlx/parakeet-tdt-0.6b-v3",
+      "weight_bytes": 2508288736,
+      "weight_sha256": "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592",
+      "service_language": "en",
+      "english_only_endpoint": true,
+      "checkpoint_languages": 25,
+      "precision": "bfloat16"
+    }
+  }
+}

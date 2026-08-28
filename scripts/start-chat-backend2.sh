@@ -68,7 +68,7 @@ OPTS=()
 [[ "${CHAT2_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${CHAT2_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${CHAT2_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
-[[ -n "${CHAT2_DEVICE:-}" ]] && OPTS+=(--device "${CHAT2_DEVICE}")
+add_device_opt "[chat-backend2]" "${CHAT2_DEVICE:-}"
 [[ "${CHAT2_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT2_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT2_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
@@ -191,12 +191,12 @@ if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     SPEC_ARGS+=(
         --spec-draft-model "${CHAT2_SPEC_DRAFT_MODEL_PATH}"
         --spec-draft-ngl "${CHAT2_SPEC_DRAFT_N_GPU_LAYERS:-auto}"
-        "${DRAFT_CACHE_SPEC_ARGS[@]}"
-        "${COMMON_SPEC_ARGS[@]}"
+        ${DRAFT_CACHE_SPEC_ARGS[@]+"${DRAFT_CACHE_SPEC_ARGS[@]}"}
+        ${COMMON_SPEC_ARGS[@]+"${COMMON_SPEC_ARGS[@]}"}
     )
     [[ -n "${CHAT2_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${CHAT2_SPEC_DRAFT_DEVICES}")
 elif [[ "${SPEC_METHOD}" != "off" ]]; then
-    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${DRAFT_CACHE_SPEC_ARGS[@]}" "${COMMON_SPEC_ARGS[@]}")
+    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" ${DRAFT_CACHE_SPEC_ARGS[@]+"${DRAFT_CACHE_SPEC_ARGS[@]}"} ${COMMON_SPEC_ARGS[@]+"${COMMON_SPEC_ARGS[@]}"})
     # draft-mtp is deliberately absent: when no draft model is given,
     # common_speculative_init_result creates the MTP draft context against the
     # *target* model (common/speculative.cpp, the `else if (spec_mtp)` branch),
@@ -217,16 +217,16 @@ elif [[ "${SPEC_METHOD}" != "off" ]]; then
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-mod,* ]]; then
         echo "[chat-backend2] N-gram mod:       match=${CHAT2_SPEC_NGRAM_MOD_N_MATCH:-24} min=${CHAT2_SPEC_NGRAM_MOD_N_MIN:-48} max=${CHAT2_SPEC_NGRAM_MOD_N_MAX:-64}"
-        SPEC_ARGS+=("${NGRAM_MOD_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MOD_SPEC_ARGS[@]+"${NGRAM_MOD_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-simple,* ]]; then
-        SPEC_ARGS+=("${NGRAM_SIMPLE_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_SIMPLE_SPEC_ARGS[@]+"${NGRAM_SIMPLE_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-map-k,* ]]; then
-        SPEC_ARGS+=("${NGRAM_MAP_K_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MAP_K_SPEC_ARGS[@]+"${NGRAM_MAP_K_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-map-k4v,* ]]; then
-        SPEC_ARGS+=("${NGRAM_MAP_K4V_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MAP_K4V_SPEC_ARGS[@]+"${NGRAM_MAP_K4V_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," != *,ngram-mod,* && "${CHAT2_SPEC_NGRAM_MOD:-off}" == "on" ]]; then
         echo "[chat-backend2] N-gram mod assist requested, but this llama-server build only accepts ngram-mod as a standalone --spec-type; leaving --spec-type=${SPEC_METHOD}."
@@ -259,7 +259,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --port "${CHAT2_BACKEND_PORT}" \
     --ctx-size "${CHAT2_CTX_SIZE}" \
     --n-gpu-layers "${CHAT2_N_GPU_LAYERS}" \
-    "${SPLIT_OPTS[@]}" \
+    ${SPLIT_OPTS[@]+"${SPLIT_OPTS[@]}"} \
     --batch-size "${CHAT2_BATCH_SIZE}" \
     --ubatch-size "${CHAT2_UBATCH_SIZE}" \
     --parallel "${CHAT2_N_PARALLEL}" \
@@ -276,9 +276,9 @@ exec "${LLAMA_SERVER_BIN}" \
     --min-p "${CHAT2_MIN_P}" \
     --reasoning-format "${CHAT2_REASONING_FORMAT:-deepseek}" \
     --fit "${CHAT2_FIT:-on}" \
-    "${OPTS[@]}" \
-    "${SPEC_ARGS[@]}" \
-    "${CUSTOM_ARGS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
+    ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
+    ${CUSTOM_ARGS[@]+"${CUSTOM_ARGS[@]}"} \
     "$@"
 # NOTE: No --chat-template-kwargs here. Thinking is controlled per-request
 # by the proxy, so this backend can be reused across model families.

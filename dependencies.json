@@ -14,7 +14,6 @@
       "target": "llama-server",
       "binary": "deps/llama.cpp/build/bin/llama-server",
       "cmake_args": [
-        "-DGGML_CUDA=ON",
         "-DCMAKE_BUILD_TYPE=Release"
       ],
       "require_gpu": true

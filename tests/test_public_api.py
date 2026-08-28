@@ -737,8 +737,13 @@ class StateApiAppTests(unittest.TestCase):
         self.assertEqual(response.get_json()["error"], "unknown_unit")
 
     def test_the_snapshot_endpoint_serves_the_payload(self):
+        # The GPUs are stubbed because this asserts what the endpoint serves,
+        # not what hardware the runner happens to have. Reading them from the
+        # host made the test pass only on a machine with two NVIDIA cards, so it
+        # failed on every CI runner and on any developer machine without them.
         with (self.state_app.test_client() as client,
               patch.object(config_env, "read_env", return_value=dict(ENV)),
+              patch.object(manager, "get_gpu_info", return_value=[dict(g) for g in GPUS]),
               _TelemetryStub()):
             payload = client.get("/api/v1/snapshot").get_json()
         self.assertEqual(payload["api_version"], public_api.API_VERSION)

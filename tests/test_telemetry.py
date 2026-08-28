@@ -253,10 +253,11 @@ class WindowTests(unittest.TestCase):
 class TargetResolutionTests(unittest.TestCase):
     def test_active_unit_selected_from_candidates(self):
         env = {"CHAT_BACKEND_PORT": "8010", "CHAT_BACKEND_HOST": "127.0.0.1"}
-        targets = telemetry.resolve_targets(env, lambda unit: "active" if unit == "chat-backend-moe" else "inactive")
+        targets = telemetry.resolve_targets(
+            env, lambda unit: "active" if unit == "chat-backend-dense" else "inactive")
         primary = next(t for t in targets if t["name"] == "chat-primary")
         self.assertTrue(primary["active"])
-        self.assertEqual(primary["unit"], "chat-backend-moe")
+        self.assertEqual(primary["unit"], "chat-backend-dense")
         self.assertEqual(primary["base_url"], "http://127.0.0.1:8010")
 
     def test_inactive_backend_has_no_unit(self):

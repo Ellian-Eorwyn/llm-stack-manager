@@ -79,8 +79,10 @@ class SectionNameTests(unittest.TestCase):
         self.assertIn("rank", _sections(renderer.render(env)))
 
     def test_two_members_claiming_one_name_do_not_both_render(self):
-        env = dict(BASE_ENV, MODEL_ROUTER_MEMBERS="EMBED,EMBED2",
-                   EMBED2_MODEL_PATH="/models/embed2.gguf", EMBED2_MODEL_NAME="embed")
+        # The section name *is* the routing key, so two members answering to one
+        # name would make which model serves a request depend on render order.
+        env = dict(BASE_ENV, MODEL_ROUTER_MEMBERS="EMBED,RERANK",
+                   RERANK_MODEL_NAME="embed")
         warnings = []
         sections = _sections(renderer.render(env, warn=warnings.append))
         self.assertEqual({"embed"}, set(sections) - {"*"})
@@ -354,7 +356,7 @@ class PooledUnitTests(unittest.TestCase):
         self.assertEqual(set(renderer.MEMBERS), set(telemetry.ROUTER_MEMBER_UNITS))
 
     def test_the_audio_model_is_pooled_only_when_asked_for(self):
-        """ASR is opt-in, like EMBED2: being in MEMBERS is not being in the pool."""
+        """ASR is opt-in: being in MEMBERS is not the same as being in the pool."""
         self.assertIn("ASR", renderer.MEMBERS)
         self.assertNotIn("asr", telemetry.pooled_units(BASE_ENV))
         env = dict(BASE_ENV, MODEL_ROUTER_MEMBERS="EMBED,OCR,RERANK,TASK,ASR")

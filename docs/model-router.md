@@ -157,9 +157,11 @@ free VRAM, and use `1` for strict one-at-a-time.
 The other live risk is Honcho. `config/honcho.env` points its embeddings at
 `127.0.0.1:8005` with `EMBED_MESSAGES=true`, so its deriver embeds every message
 as background work. With Honcho running, that is a continuous unattended load
-trigger that will evict OCR seconds after it loads. Pointing Honcho at `embed2`
-on 8011 — outside the pool, 639 MB, and already the right 1024 dimensions —
-keeps it out of the way.
+trigger that will evict OCR seconds after it loads. The way out is to keep
+Honcho's embedding model outside the pool — a dedicated `embed` unit with
+`EMBED` left out of `MODEL_ROUTER_MEMBERS` — so its continuous background load
+never touches the pooled models. (This used to recommend pointing Honcho at a
+second embedding slot on 8011; that slot has been retired.)
 
 ## 8. Adding a member
 
@@ -179,7 +181,7 @@ that, and its default — `EMBED,OCR,RERANK,TASK` — is duplicated in seven pla
 (`render-models-ini.py`, `web/config_env.py`, `web/telemetry.py`,
 `install-model-router-nginx.sh`, `restore-active-stack.sh`,
 `activate-selected-stack.sh`, `install.sh`). A member left out of that string is
-opt-in and none of the seven change: `EMBED2` and `ASR` are both in this state.
+opt-in and none of the seven change: `ASR` is in this state.
 
 A member with no entry in `MEMBER_PORTS` is logged and skipped rather than
 defaulted, which is right for one that has no public port. `ASR` is the example:

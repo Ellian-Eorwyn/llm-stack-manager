@@ -48,8 +48,7 @@ import config_env
 import core
 import setup_engine
 from config_fields import (
-    BUILTIN_CHAT_VARIANT_BY_ID,
-    TRANSCRIPTION_ENGINE_BY_ID,
+        TRANSCRIPTION_ENGINE_BY_ID,
     TRANSCRIPTION_ENGINES,
     WHISPER_MODEL_PRESETS,
 )

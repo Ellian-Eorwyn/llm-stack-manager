@@ -5,7 +5,6 @@
 # Binds to 127.0.0.1:CHAT_BACKEND_PORT — not publicly accessible.
 # chat-proxy.service exposes this on THINK_PORT and NOTHINK_PORT.
 #
-# Switch from MoE:  sudo bash scripts/switch-chat-model.sh dense
 # =============================================================================
 set -euo pipefail
 
@@ -113,7 +112,7 @@ OPTS=()
 [[ "${CHAT_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${CHAT_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${CHAT_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
-[[ -n "${CHAT_DEVICE:-}" ]] && OPTS+=(--device "${CHAT_DEVICE}")
+add_device_opt "[chat-backend-dense]" "${CHAT_DEVICE:-}"
 [[ "${CHAT_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)
@@ -236,12 +235,12 @@ if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     SPEC_ARGS+=(
         --spec-draft-model "${CHAT_SPEC_DRAFT_MODEL_PATH}"
         --spec-draft-ngl "${CHAT_SPEC_DRAFT_N_GPU_LAYERS:-auto}"
-        "${DRAFT_CACHE_SPEC_ARGS[@]}"
-        "${COMMON_SPEC_ARGS[@]}"
+        ${DRAFT_CACHE_SPEC_ARGS[@]+"${DRAFT_CACHE_SPEC_ARGS[@]}"}
+        ${COMMON_SPEC_ARGS[@]+"${COMMON_SPEC_ARGS[@]}"}
     )
     [[ -n "${CHAT_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${CHAT_SPEC_DRAFT_DEVICES}")
 elif [[ "${SPEC_METHOD}" != "off" ]]; then
-    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${DRAFT_CACHE_SPEC_ARGS[@]}" "${COMMON_SPEC_ARGS[@]}")
+    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" ${DRAFT_CACHE_SPEC_ARGS[@]+"${DRAFT_CACHE_SPEC_ARGS[@]}"} ${COMMON_SPEC_ARGS[@]+"${COMMON_SPEC_ARGS[@]}"})
     # draft-mtp is deliberately absent: when no draft model is given,
     # common_speculative_init_result creates the MTP draft context against the
     # *target* model (common/speculative.cpp, the `else if (spec_mtp)` branch),
@@ -262,16 +261,16 @@ elif [[ "${SPEC_METHOD}" != "off" ]]; then
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-mod,* ]]; then
         echo "[chat-backend-dense] N-gram mod:       match=${CHAT_SPEC_NGRAM_MOD_N_MATCH:-24} min=${CHAT_SPEC_NGRAM_MOD_N_MIN:-48} max=${CHAT_SPEC_NGRAM_MOD_N_MAX:-64}"
-        SPEC_ARGS+=("${NGRAM_MOD_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MOD_SPEC_ARGS[@]+"${NGRAM_MOD_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-simple,* ]]; then
-        SPEC_ARGS+=("${NGRAM_SIMPLE_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_SIMPLE_SPEC_ARGS[@]+"${NGRAM_SIMPLE_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-map-k,* ]]; then
-        SPEC_ARGS+=("${NGRAM_MAP_K_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MAP_K_SPEC_ARGS[@]+"${NGRAM_MAP_K_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-map-k4v,* ]]; then
-        SPEC_ARGS+=("${NGRAM_MAP_K4V_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MAP_K4V_SPEC_ARGS[@]+"${NGRAM_MAP_K4V_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," != *,ngram-mod,* && "${CHAT_SPEC_NGRAM_MOD:-off}" == "on" ]]; then
         echo "[chat-backend-dense] N-gram mod assist requested, but this llama-server build only accepts ngram-mod as a standalone --spec-type; leaving --spec-type=${SPEC_METHOD}."
@@ -302,7 +301,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --port "${CHAT_BACKEND_PORT}" \
     --ctx-size "${CHAT_DENSE_CTX_SIZE}" \
     --n-gpu-layers "${CHAT_N_GPU_LAYERS}" \
-    "${SPLIT_OPTS[@]}" \
+    ${SPLIT_OPTS[@]+"${SPLIT_OPTS[@]}"} \
     --batch-size "${CHAT_BATCH_SIZE}" \
     --ubatch-size "${CHAT_UBATCH_SIZE}" \
     --parallel "${CHAT_N_PARALLEL}" \
@@ -319,7 +318,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --min-p "${CHAT_MIN_P}" \
     --reasoning-format "${CHAT_REASONING_FORMAT:-deepseek}" \
     --fit "${CHAT_FIT:-on}" \
-    "${OPTS[@]}" \
-    "${SPEC_ARGS[@]}" \
-    "${CUSTOM_ARGS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
+    ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
+    ${CUSTOM_ARGS[@]+"${CUSTOM_ARGS[@]}"} \
     "$@"

@@ -21,6 +21,18 @@
 
 BUDGET_PY="${BUDGET_PY:-${STACK_DIR}/web/budget.py}"
 
+# Which platform's rules to apply. `uname -s` unless overridden.
+#
+# The override exists so the Linux placement logic below stays testable on a
+# Mac and the Metal logic on Linux -- the same reason `platforms.set_active`
+# exists on the Python side. Without it, half of this file would only ever be
+# exercised on half of the runners, which is exactly how the macOS support that
+# preceded this decayed into four silent failures.
+_bp_platform() {
+    echo "${LLM_STACK_PLATFORM:-$(uname -s)}"
+}
+
+
 # Ask the budget model one question about a model file. Prints nothing and
 # returns non-zero when the answer is unavailable.
 budget_field() {
@@ -100,7 +112,7 @@ add_fit_ctx_opt() {
 #       "${TENSOR_SPLIT}" "${MAIN_GPU}" "${FLASH_ATTN}"
 #
 # Pass an empty main_gpu for the backends that never emitted --main-gpu
-# (embed, embed2, rerank); the helper will not introduce one.
+# (embed, rerank); the helper will not introduce one.
 resolve_split_opts() {
     local prefix="$1" mode="$2" model_path="$3"
     local tensor_split="$4" main_gpu="$5" flash_attn="${6:-auto}"
@@ -110,6 +122,25 @@ resolve_split_opts() {
     TENSOR_SPLIT_EFFECTIVE=""
     MAIN_GPU_EFFECTIVE=""
     [[ -n "${mode}" ]] || mode="layer"
+
+    # Apple silicon has one device and one pool of memory, so every mode that
+    # exists to divide a model between cards is inapplicable rather than
+    # unsupported. `none` is the honest description of what Metal does, and it
+    # is what the launcher uses: `layer` on a single device is `none` with extra
+    # steps, and passing --tensor-split or --main-gpu asks llama-server to
+    # choose between GPUs there is only one of.
+    if [[ "$(_bp_platform)" == "Darwin" ]]; then
+        if [[ "${mode}" != "none" ]]; then
+            echo "${prefix} Split Mode '${mode}' does not apply on Metal: one device, one unified memory pool. Using 'none'."
+        fi
+        SPLIT_OPTS+=(--split-mode none)
+        SPLIT_MODE_EFFECTIVE="none"
+        [[ -n "${tensor_split}" ]] && \
+            echo "${prefix} Ignoring Tensor Split '${tensor_split}': there is one Metal device to split across."
+        [[ -n "${main_gpu}" ]] && [[ "${main_gpu}" != "0" ]] && \
+            echo "${prefix} Ignoring Main GPU Index ${main_gpu}: there is one Metal device."
+        return 0
+    fi
 
     case "${mode}" in
         row)
@@ -150,6 +181,59 @@ resolve_split_opts() {
         SPLIT_OPTS+=(--tensor-split "${tensor_split}")
         TENSOR_SPLIT_EFFECTIVE="${tensor_split}"
     fi
+    return 0
+}
+
+# Expand a tensor-split ratio of `auto` into an even share per visible device.
+#
+# "1" for one device, "1,1" for two. llama.cpp does not understand the literal
+# string `auto`, so it has to be expanded before it is passed -- and against the
+# *visible* devices rather than every device on the host, because a slot pinned
+# to one card of two wants "1", not "1,1".
+auto_tensor_split() {
+    local ratio="$1" devices="${2//[[:space:]]/}"
+    if [[ -n "${ratio}" && "${ratio}" != "auto" ]]; then
+        printf '%s' "${ratio}"
+        return 0
+    fi
+    if [[ -z "${ratio}" ]]; then
+        printf ''
+        return 0
+    fi
+    local count=0 part split="1" i
+    IFS=',' read -ra parts <<< "${devices}"
+    for part in ${parts[@]+"${parts[@]}"}; do
+        [[ -n "${part}" ]] && count=$((count + 1))
+    done
+    if ((count < 1)); then count=1; fi
+    for ((i = 1; i < count; i++)); do split+=",1"; done
+    printf '%s' "${split}"
+}
+
+# Add --device, if the configured device exists on this machine's backend.
+#
+# The device name is backend-specific: a CUDA build enumerates CUDA0, CUDA1, a
+# Metal build enumerates Metal0. The shipped default is CUDA0, so an Apple
+# silicon host that never edited it would pass `--device CUDA0` to a Metal
+# build, which fails at load with a device-not-found rather than falling back --
+# the same shape of failure as the split modes above, arriving after exec and
+# looking like a crash loop.
+#
+# Dropped rather than translated: on a single-device Metal machine there is
+# nothing for --device to choose between, and silently rewriting an operator's
+# CUDA0 into Metal0 would hide a config that is wrong for the host.
+add_device_opt() {
+    local prefix="$1" device="$2"
+    [[ -n "${device}" ]] || return 0
+    if [[ "$(_bp_platform)" == "Darwin" ]]; then
+        # llama.cpp names it MTL0, not Metal0 -- `--list-devices` prints
+        # "MTL0: Apple M1 Pro". Matching on "Metal" refuses the correct name.
+        if [[ "${device}" != MTL* ]]; then
+            echo "${prefix} Ignoring Device '${device}': this is a Metal build, which enumerates MTL0. Letting llama-server choose."
+            return 0
+        fi
+    fi
+    OPTS+=(--device "${device}")
     return 0
 }
 

@@ -48,6 +48,34 @@ config_flag() {
 MODEL_ROUTER_ENABLED="$(config_flag MODEL_ROUTER_ENABLED off)"
 MODEL_ROUTER_MEMBERS="$(config_flag MODEL_ROUTER_MEMBERS "EMBED,OCR,RERANK,TASK")"
 TRANSCRIPT_ENABLED="$(config_flag TRANSCRIPT_ENABLED off)"
+
+# Which process serves a slot. The launcher name is already a parameter of both
+# the systemd and launchd install paths, so selecting an engine is choosing a
+# different script rather than branching anywhere else. `mlx` is Apple silicon
+# only; asking for it elsewhere is a configuration error worth failing on rather
+# than silently serving from llama.cpp and leaving the operator to wonder why
+# the Metal path is not being used.
+EMBED_ENGINE="$(config_flag EMBED_ENGINE llamacpp)"
+TRANSCRIPT_ENGINE="$(config_flag TRANSCRIPT_ENGINE sidecar)"
+
+resolve_engine_script() {
+    local slot="$1" engine="$2" default_script="$3" mlx_script="$4"
+    case "${engine}" in
+        llamacpp|sidecar) echo "${default_script}" ;;
+        mlx|parakeet-mlx)
+            if ! is_mac; then
+                echo "  ERROR: ${slot} engine '${engine}' needs Apple silicon" >&2
+                exit 1
+            fi
+            echo "${mlx_script}" ;;
+        *)
+            echo "  ERROR: unknown ${slot} engine '${engine}'" >&2
+            exit 1 ;;
+    esac
+}
+
+EMBED_SCRIPT="$(resolve_engine_script embed "${EMBED_ENGINE}" "start-embed.sh" "start-embed-mlx.sh")"
+TRANSCRIPT_SCRIPT="$(resolve_engine_script transcription "${TRANSCRIPT_ENGINE}" "start-transcribe.sh" "start-parakeet-mlx.sh")"
 HONCHO_ENV_TEMPLATE="${CONFIG_DIR}/honcho.env.example"
 HONCHO_ENV_FILE="${CONFIG_DIR}/honcho.env"
 SERVICE_USER="$(cp_stat_user "${STACK_DIR}")"
@@ -425,7 +453,6 @@ UNIT
         remove_unselected_units primary chat-backend-dense chat-proxy
         remove_unselected_units secondary chat-backend2 chat-proxy2
         remove_unselected_units embedding embed
-        remove_unselected_units embedding2 embed2
         remove_unselected_units reranker rerank
         remove_unselected_units task task
         remove_unselected_units ocr ocr
@@ -433,17 +460,19 @@ UNIT
         remove_unselected_units playwright playwright-server
         remove_unselected_units honcho honcho-api honcho-deriver
         remove_unselected_units transcribe transcript-backend
-        for unit in think nothink chat-backend chat-backend-moe; do
-            systemctl disable --now "${unit}" 2>/dev/null || true
-            [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
-        done
     fi
-    if [[ -z "${LLM_STACK_SETUP_COMPONENTS:-}" ]]; then
-        install_unit "think"        "LLM Chat Thinking Legacy - llama-server"        "start-think.sh"        300
-        install_unit "nothink"      "LLM Chat Nothink Legacy - llama-server"         "start-nothink.sh"      300
-        install_unit "chat-backend" "LLM Chat Custom Shared Backend - llama-server"  "start-chat-backend.sh" 300
-        install_unit "chat-backend-moe" "LLM Chat MoE Shared Backend - llama-server" "start-chat-backend-moe.sh" 300
-    fi
+
+    # Retired units, removed on every install rather than only when component
+    # selection is in play: a host that predates the wizard would otherwise keep
+    # a unit whose launcher no longer exists, and find out at the next restart.
+    #
+    # think/nothink were labelled Legacy and were never in the UI's service
+    # table. embed2 was a second embedding slot nothing used.
+    for unit in think nothink embed2 chat-backend chat-backend-moe; do
+        systemctl disable --now "${unit}" 2>/dev/null || true
+        [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
+    done
+
     if setup_has_component primary; then
         install_unit "chat-backend-dense" "LLM Chat Primary Shared Backend - llama-server" "start-chat-backend-dense.sh" 300
         install_unit "chat-proxy" "LLM Chat Proxy - think/chat/code ports" "start-chat-proxy.sh" 30
@@ -452,15 +481,14 @@ UNIT
         install_unit "chat-backend2" "LLM Chat Secondary Shared Backend - llama-server" "start-chat-backend2.sh" 300
         install_unit "chat-proxy2" "LLM Chat Proxy 2 - think/chat/code ports" "start-chat-proxy2.sh" 30
     fi
-    setup_has_component embedding && install_unit "embed" "LLM Embedding Model - llama-server" "start-embed.sh" 120
-    setup_has_component embedding2 && install_unit "embed2" "LLM Embedding 2 Model - llama-server" "start-embed2.sh" 120
+    setup_has_component embedding && install_unit "embed" "LLM Embedding Model - ${EMBED_ENGINE}" "${EMBED_SCRIPT}" 120
     setup_has_component reranker && install_unit "rerank" "LLM Reranker Model - llama-server" "start-rerank.sh" 120
     setup_has_component task && install_unit "task" "LLM Task Model - llama-server" "start-task.sh" 120
     setup_has_component ocr && install_unit "ocr" "LLM OCR GLM-OCR Backend - llama-server" "start-ocr.sh" 120
     setup_has_component glmocr-sdk && install_unit "glmocr-sdk" "LLM OCR GLM-OCR SDK Parser" "start-glmocr-sdk.sh" 300
     # Holds no VRAM until its first request — the model is loaded on demand and
     # released when idle — so installing the unit costs nothing while it is off.
-    setup_has_component transcribe && install_unit "transcript-backend" "LLM Transcription Sidecar - speech to text" "start-transcribe.sh" 120
+    setup_has_component transcribe && install_unit "transcript-backend" "LLM Transcription - ${TRANSCRIPT_ENGINE}" "${TRANSCRIPT_SCRIPT}" 120
     # One llama-server owning embed/ocr/rank/task on demand. The member units
     # above stay installed but stopped, so turning the flag off and starting
     # them is the whole rollback.
@@ -504,17 +532,17 @@ UNIT
         install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
     fi
 
-    [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service|" /etc/systemd/system/chat-proxy.service
+    [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend-dense.service|" /etc/systemd/system/chat-proxy.service
     [[ -f /etc/systemd/system/chat-proxy2.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
     # In router mode the OCR model is not a unit any more, so the SDK's upstream
     # is the router. Keeping Wants=ocr.service here is what pulled the OCR model
     # onto a full GPU and bounced it 32 times — see docs/service-health.md.
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         OCR_UPSTREAM_UNIT="llama-router.service"
-        EMBED_UPSTREAM_UNITS="llama-router.service embed2.service"
+        EMBED_UPSTREAM_UNITS="llama-router.service"
     else
         OCR_UPSTREAM_UNIT="ocr.service"
-        EMBED_UPSTREAM_UNITS="embed.service embed2.service"
+        EMBED_UPSTREAM_UNITS="embed.service"
     fi
     if [[ -f /etc/systemd/system/glmocr-sdk.service ]]; then
         cp_sed_inplace "s|^After=network.target$|After=network.target ${OCR_UPSTREAM_UNIT}|" /etc/systemd/system/glmocr-sdk.service
@@ -541,9 +569,6 @@ UNIT
         cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}|" /etc/systemd/system/honcho-deriver.service
         cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}" /etc/systemd/system/honcho-deriver.service
     fi
-    [[ -f /etc/systemd/system/chat-backend-dense.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
-    [[ -f /etc/systemd/system/chat-backend-moe.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
-    [[ -f /etc/systemd/system/chat-backend.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service" /etc/systemd/system/chat-backend.service
 
     systemctl daemon-reload
 
@@ -554,7 +579,7 @@ UNIT
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(playwright-server)
     fi
-    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-dense chat-backend-moe chat-backend2 chat-proxy chat-proxy2 embed embed2 rerank task ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(chat-backend-dense chat-backend2 chat-proxy chat-proxy2 embed rerank task ocr glmocr-sdk)
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         # The router has to be up at boot: it is what the per-model ports point
         # at, and it is the only thing that can bring those models back.
@@ -598,8 +623,14 @@ elif is_mac; then
         LAUNCHD_WAIT_FOR="${_launched_wait_for}"
         LAUNCHD_CONFLICTS="${_launched_conflicts}"
 
-        # llm-manager runs as root; everything else runs as SERVICE_USER
-        if [[ "${name}" == "llm-manager" ]]; then
+        # In the system domain llm-manager runs as root, because installing
+        # packages and controlling services needs it. A LaunchAgent cannot: the
+        # GUI domain runs everything as the session's own user, and UserName is
+        # not honoured there. So the root special-case applies to the system
+        # domain only -- in the user domain the manager runs as SERVICE_USER
+        # like everything else, and the operations that need privilege prompt
+        # for it rather than already having it.
+        if [[ "${name}" == "llm-manager" && "$(svc_domain)" == "system" ]]; then
             local _saved_user="${SERVICE_USER}"
             local _saved_group="${SERVICE_GROUP}"
             SERVICE_USER="root"
@@ -617,20 +648,13 @@ elif is_mac; then
     echo "Installing launchd services..."
 
     install_mac_service "llm-manager"        "LLM Stack Manager - web UI"                          "start-llm-manager.sh"
-    install_mac_service "think"              "LLM Chat Thinking Legacy - llama-server"             "start-think.sh"
-    install_mac_service "nothink"            "LLM Chat Nothink Legacy - llama-server"              "start-nothink.sh"
-    install_mac_service "chat-backend"       "LLM Chat Custom Shared Backend - llama-server"       "start-chat-backend.sh"
-    install_mac_service "chat-backend-dense" "LLM Chat Dense Shared Backend - llama-server"        "start-chat-backend-dense.sh" \
-        "" "chat-backend-moe chat-backend"
-    install_mac_service "chat-backend-moe"   "LLM Chat MoE Shared Backend - llama-server"          "start-chat-backend-moe.sh" \
-        "" "chat-backend-dense chat-backend"
+    install_mac_service "chat-backend-dense" "LLM Primary Backend - llama-server"                  "start-chat-backend-dense.sh"
     install_mac_service "chat-proxy"         "LLM Chat Proxy - think/chat/code ports"              "start-chat-proxy.sh" \
-        "chat-backend chat-backend-dense chat-backend-moe"
+        "chat-backend-dense"
     install_mac_service "chat-backend2"      "LLM Chat Custom Shared Backend 2 - llama-server"     "start-chat-backend2.sh"
     install_mac_service "chat-proxy2"        "LLM Chat Proxy 2 - think/chat/code ports"            "start-chat-proxy2.sh" \
         "chat-backend2"
-    install_mac_service "embed"              "LLM Embedding Model - llama-server"                  "start-embed.sh"
-    install_mac_service "embed2"             "LLM Embedding 2 Model - llama-server"                "start-embed2.sh"
+    install_mac_service "embed"              "LLM Embedding Model - ${EMBED_ENGINE}"               "${EMBED_SCRIPT}"
     install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
     install_mac_service "task"               "LLM Task Model - llama-server"                       "start-task.sh"
     install_mac_service "ocr"                "LLM OCR GLM-OCR Backend - llama-server"              "start-ocr.sh"
@@ -639,16 +663,16 @@ elif is_mac; then
     # the router, and waiting on `ocr` would summon a model nothing manages.
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         _ocr_upstream="llama-router"
-        _embed_upstream="llama-router embed2"
+        _embed_upstream="llama-router"
     else
         _ocr_upstream="ocr"
-        _embed_upstream="embed embed2"
+        _embed_upstream="embed"
     fi
     install_mac_service "glmocr-sdk"         "LLM OCR GLM-OCR SDK Parser"                          "start-glmocr-sdk.sh" \
         "${_ocr_upstream}"
     # No upstream: only the optional `router` engine talks to llama-router, and
     # the local runtimes need nothing at all. See the note in web/health.py.
-    install_mac_service "transcript-backend" "LLM Transcription Sidecar - speech to text"          "start-transcribe.sh"
+    install_mac_service "transcript-backend" "LLM Transcription - ${TRANSCRIPT_ENGINE}"             "${TRANSCRIPT_SCRIPT}"
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         install_mac_service "honcho-api"     "Local Honcho Memory API"                             "start-honcho-api.sh" \
             "chat-proxy ${_embed_upstream}"
@@ -664,15 +688,22 @@ elif is_mac; then
     fi
 
     # Own wrapper scripts and plists
-    chown -R root:wheel /Library/LaunchDaemons/com.llmstack.*.plist 2>/dev/null || true
+    # A system daemon's plist must be root-owned; a per-user agent's must be
+    # owned by the user whose domain loads it, or launchctl refuses to bootstrap
+    # it. Ownership follows the domain rather than being applied unconditionally.
+    if [[ "${LLM_LAUNCHD_DOMAIN:-user}" == "system" ]]; then
+        chown -R root:wheel /Library/LaunchDaemons/com.llmstack.*.plist 2>/dev/null || true
+    else
+        chown "${SERVICE_USER}:${SERVICE_GROUP}" "$(svc_plist_dir)"/com.llmstack.*.plist 2>/dev/null || true
+    fi
     chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${STACK_DIR}/scripts/launchd-wrapper-"*.sh 2>/dev/null || true
 
     # Enable default services, disable non-default
-    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed embed2 rerank task)
+    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
     fi
-    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(ocr glmocr-sdk)
     for svc in "${NON_DEFAULT_SERVICES[@]}"; do
         svc_disable "${svc}" 2>/dev/null || true
     done
@@ -694,18 +725,26 @@ echo "Install complete. The active stack will automatically be restored on reboo
 echo "You can manually restore your saved settings at any time with:"
 echo "  sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 echo ""
-echo "Or access the web UI at http://localhost:5001"
+echo "Or access the web UI at http://localhost:$(config_flag LLM_MANAGER_PORT 8077)"
 echo ""
 echo "Useful Commands:"
 echo "  - Update (fast, no llama.cpp rebuild): sudo llm-stack-manager update"
 echo "  - Stack overview: llm-stack-manager status"
-echo "  - Restart manager: sudo systemctl restart llm-manager"
+if is_mac; then
+    echo "  - Restart manager: sudo launchctl kickstart -k system/com.llmstack.llm-manager"
+else
+    echo "  - Restart manager: sudo systemctl restart llm-manager"
+fi
 echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 
 if is_mac; then
     echo ""
     echo "macOS notes:"
-    echo "  - Services are managed via launchd (plist files in /Library/LaunchDaemons/)"
+    echo "  - macOS support is INCOMPLETE and under active development."
+    echo "    GPU, memory and swap reporting are not yet implemented on this"
+    echo "    platform and will read as zero. Do not rely on the health model here."
+    echo "  - Services are managed via launchd in the ${LLM_LAUNCHD_DOMAIN:-user} domain"
+    echo "    (plists in $(svc_plist_dir))"
     echo "  - View logs: tail -f ${STACK_DIR}/logs/<service>.stdout.log"
-    echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/default-mode.sh"
+    echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 fi

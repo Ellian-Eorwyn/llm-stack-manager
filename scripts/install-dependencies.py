@@ -4,13 +4,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(ROOT / "web"))
+import platforms  # noqa: E402
 MANIFEST = ROOT / "dependencies.json"
 
 
@@ -74,11 +76,6 @@ def prepend_nvm_node() -> None:
         return
 
 
-def cuda_path_version(path: Path) -> tuple[int, ...]:
-    match = re.search(r"cuda-([0-9]+(?:\.[0-9]+)*)", str(path))
-    return tuple(int(part) for part in match.group(1).split(".")) if match else (0,)
-
-
 def find_or_bootstrap_uv() -> str:
     existing = shutil.which("uv")
     if existing:
@@ -129,24 +126,18 @@ def build_cmake(dep: dict, jobs: int) -> None:
     target = dep.get("target", "")
     cmake_args = [str(x) for x in dep.get("cmake_args", [])]
     if dep.get("require_gpu"):
-        if not any(arg.startswith("-DGGML_CUDA=") for arg in cmake_args):
-            cmake_args.append("-DGGML_CUDA=ON")
-        candidates = sorted(Path("/usr/local").glob("cuda-*/bin/nvcc"), key=cuda_path_version, reverse=True)
-        nvcc = str(candidates[0]) if candidates else (shutil.which("nvcc") or "")
-        if not nvcc:
-            raise SystemExit("CUDA toolkit compiler nvcc was not found; run the setup system-dependencies stage")
-        if not any(arg.startswith("-DCMAKE_CUDA_COMPILER=") for arg in cmake_args):
-            cmake_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")
-        if not any(arg.startswith("-DCMAKE_CUDA_ARCHITECTURES=") for arg in cmake_args):
-            probe = subprocess.run(
-                ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
-                capture_output=True, text=True,
-            )
-            architectures = sorted({line.strip().replace(".", "") for line in probe.stdout.splitlines() if re.fullmatch(r"\s*\d+\.\d+\s*", line)})
-            if not architectures:
-                raise SystemExit("Could not detect NVIDIA GPU compute capability with nvidia-smi")
-            cmake_args.append(f"-DCMAKE_CUDA_ARCHITECTURES={';'.join(architectures)}")
-            print(f"Detected CUDA architectures: {';'.join(architectures)}", flush=True)
+        # The accelerator flags come from the platform, not from the manifest.
+        # dependencies.json used to name -DGGML_CUDA=ON directly, which made the
+        # manifest a description of one machine rather than of the dependency.
+        try:
+            accelerator_args = platforms.active().accelerator_cmake_args()
+        except RuntimeError as exc:
+            raise SystemExit(str(exc))
+        for arg in accelerator_args:
+            flag = arg.split("=", 1)[0] + "="
+            if not any(existing.startswith(flag) for existing in cmake_args):
+                cmake_args.append(arg)
+        print(f"Accelerator: {' '.join(accelerator_args)}", flush=True)
     build_dir.mkdir(parents=True, exist_ok=True)
     run(["cmake", "-S", str(source), "-B", str(build_dir), *cmake_args])
     build_cmd = ["cmake", "--build", str(build_dir)]
@@ -162,6 +153,12 @@ def build_cmake(dep: dict, jobs: int) -> None:
 
 
 def verify_gpu_binary(binary: Path) -> None:
+    """Refuse a CPU-only build.
+
+    Which accelerator to look for is the platform's to say: this check used to
+    require the word "cuda" in the probe output, which a correct Metal build
+    never prints.
+    """
     try:
         result = subprocess.run(
             [str(binary), "--list-devices"],
@@ -172,19 +169,16 @@ def verify_gpu_binary(binary: Path) -> None:
     except Exception as exc:
         raise SystemExit(f"Unable to verify GPU support for {binary}: {exc}") from exc
     output = (result.stdout + result.stderr).strip()
-    lowered = output.lower()
-    cpu_only_markers = (
-        "compiled without support for gpu offload",
-        "no usable gpu found",
-        "ggml_cuda: not found",
-    )
-    if result.returncode != 0 or "cuda" not in lowered or any(marker in lowered for marker in cpu_only_markers):
+    reason = ("the probe exited non-zero" if result.returncode != 0
+              else platforms.active().verify_accelerated_build(output))
+    if reason:
         raise SystemExit(
-            "Built llama-server does not appear to have CUDA GPU offload support. "
+            f"Built llama-server does not appear to have GPU offload support: {reason}. "
             "Refusing to install a CPU-only backend because large models can exhaust RAM. "
             "Probe output was:\n"
             f"{output}"
         )
+
 
 def apply_patches(dep: dict, path: Path) -> None:
     """Re-apply this repo's local patches on top of the pinned checkout.

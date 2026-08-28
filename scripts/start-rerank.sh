@@ -1,68 +1,15 @@
 #!/usr/bin/env bash
 # =============================================================================
 # start-rerank.sh
-# Launches llama-server in reranking mode for the Qwen reranker model.
-# Port: RERANK_PORT (default 8006)
-# GPU:  RERANK_GPU_VISIBLE_DEVICES (default GPU 1, single device)
+# Shim. This slot is served by scripts/start-backend.sh, which builds the
+# command from web/backends/slots.py.
 #
-# llama-server exposes reranking via POST /v1/rerank (OpenAI-compatible format).
+# Kept as a name rather than deleted because a generated systemd unit or launchd
+# plist on an already-installed host still points at this path, and those are
+# only rewritten when the installer runs. Removing it would break a running
+# stack on the next restart, before anyone re-ran install.sh. It goes once the
+# installed units name start-backend.sh.
 # =============================================================================
 set -euo pipefail
-
-# Load configuration
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "${STACK_DIR}/config/llm-stack.env"
-source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
-LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
-export LD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
-export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
-
-# Pin to a single GPU for the reranker model (separate from embedding GPU)
-export CUDA_VISIBLE_DEVICES="${RERANK_GPU_VISIBLE_DEVICES}"
-
-echo "[rerank] Starting llama-server in reranking mode"
-echo "[rerank] Model:            ${RERANKER_MODEL_PATH}"
-echo "[rerank] Port:             ${RERANK_PORT}"
-echo "[rerank] GPU:              ${CUDA_VISIBLE_DEVICES}"
-echo "[rerank] Context:          ${RERANK_CTX_SIZE}"
-echo "[rerank] CPU threads:      ${RERANK_THREADS:--1} (batch=${RERANK_THREADS_BATCH:--1})"
-echo "[rerank] KV cache:         K=${RERANK_CACHE_TYPE_K:-q8_0} V=${RERANK_CACHE_TYPE_V:-q8_0}"
-echo "[rerank] Reasoning format: ${RERANK_REASONING_FORMAT:-none}"
-echo "[rerank] Fit to VRAM:      ${RERANK_FIT:-on}"
-
-# Build optional boolean flags from config
-OPTS=()
-[[ "${RERANK_LOG_PREFIX:-true}" == "true" ]] && OPTS+=(--log-prefix)
-[[ "${RERANK_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
-[[ "${RERANK_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
-[[ "${RERANK_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
-[[ "${RERANK_JINJA:-off}" == "on" ]] && OPTS+=(--jinja)
-
-resolve_split_opts "[rerank]" "${RERANK_SPLIT_MODE:-layer}" "${RERANK_MODEL_PATH:-}" \
-    "${RERANK_TENSOR_SPLIT:-1}" "" "${RERANK_FLASH_ATTN:-on}"
-
-exec "${LLAMA_SERVER_BIN}" \
-    --model "${RERANKER_MODEL_PATH}" \
-    --alias "${RERANK_MODEL_NAME:-rank}" \
-    --host "${LISTEN_HOST}" \
-    --port "${RERANK_PORT}" \
-    --ctx-size "${RERANK_CTX_SIZE}" \
-    --n-gpu-layers "${RERANK_N_GPU_LAYERS:-${CHAT_N_GPU_LAYERS:--1}}" \
-    "${SPLIT_OPTS[@]}" \
-    --batch-size "${RERANK_BATCH_SIZE}" \
-    --ubatch-size "${RERANK_UBATCH_SIZE:-${CHAT_UBATCH_SIZE:-512}}" \
-    --parallel "${RERANK_N_PARALLEL:-1}" \
-    --threads "${RERANK_THREADS:--1}" \
-    --threads-batch "${RERANK_THREADS_BATCH:--1}" \
-    --cache-type-k "${RERANK_CACHE_TYPE_K:-q8_0}" \
-    --cache-type-v "${RERANK_CACHE_TYPE_V:-q8_0}" \
-    --flash-attn "${RERANK_FLASH_ATTN:-on}" \
-    --temp "${RERANK_TEMP:-1.0}" \
-    --top-p "${RERANK_TOP_P:-0.95}" \
-    --top-k "${RERANK_TOP_K:-20}" \
-    --min-p "${RERANK_MIN_P:-0.00}" \
-    --reasoning-format "${RERANK_REASONING_FORMAT:-none}" \
-    --fit "${RERANK_FIT:-on}" \
-    --reranking \
-    "${OPTS[@]}" \
-    "$@"
+exec "${STACK_DIR}/scripts/start-backend.sh" rerank "$@"

@@ -49,6 +49,7 @@ import core
 import deploy
 import health
 import models
+import platforms
 import public_api
 import scheduling
 import telemetry
@@ -64,10 +65,6 @@ from routes import setup as setup_routes
 # substitution is visible to every importer.
 from config_fields import (
     BEE_KV_CACHE_OPTIONS,
-    BUILTIN_CHAT_VARIANTS,
-    BUILTIN_CHAT_VARIANT_BY_ID,
-    BUILTIN_CHAT_VARIANT_BY_SERVICE,
-    BUILTIN_CHAT_VARIANT_IDS,
     CODE_TO_CHAT_MIRRORS,
     CONFIG_FIELDS,
     CORE_CONFIG_SECTIONS,
@@ -110,7 +107,6 @@ SERVICES = [
     {"group": "chat",      "name": "chat-backend2",    "label": "Secondary Backend", "desc": "Secondary model backend",  "ports": "8020 internal / llms:8020", "config_section": "Secondary Backend"},
     {"group": "chat",      "name": "chat-proxy2",      "label": "Secondary Proxy", "desc": "Routes secondary think/chat/code", "ports": "8103 / 8104 / 8108 / 8112"},
     {"group": "auxiliary", "name": "embed",        "label": "Embedding",    "desc": "Embedding model",                   "ports": "8005", "config_section": "Embedding"},
-    {"group": "auxiliary", "name": "embed2",       "label": "Embedding 2",  "desc": "Second embedding backend",          "ports": "8011", "config_section": "Embedding 2"},
     {"group": "auxiliary", "name": "rerank",         "label": "Reranker",     "desc": "Reranker model",                    "ports": "8006", "config_section": "Reranker"},
     {"group": "auxiliary", "name": "task",             "label": "Task",         "desc": "Small fast task model",             "ports": "8007", "config_section": "Task Model"},
     {"group": "auxiliary", "name": "ocr",              "label": "OCR Model",    "desc": "GLM-OCR llama.cpp model backend",      "ports": "8009", "config_section": "OCR"},
@@ -124,12 +120,9 @@ SERVICES = [
 ]
 
 LLAMACPP_MODEL_SERVICES = [
-    "chat-backend",
-    "chat-backend2",
     "chat-backend-dense",
-    "chat-backend-moe",
+    "chat-backend2",
     "embed",
-    "embed2",
     "rerank",
     "task",
     "ocr",
@@ -170,11 +163,8 @@ def apply_router_restart_hints(restart_needed: set, env: dict) -> set:
 # services panel can show a context for every model service it renders.
 SERVICE_ENV_PREFIXES = {
     "chat-backend-dense": "CHAT_PRIMARY",
-    "chat-backend": "CHAT_PRIMARY",
     "chat-backend2": "CHAT2",
-    "chat-backend-moe": "CHAT2",
     "embed": "EMBED",
-    "embed2": "EMBED2",
     "rerank": "RERANK",
     "task": "TASK",
     "ocr": "OCR",
@@ -268,29 +258,24 @@ def saved_config_apply_updates(config: dict) -> dict:
     return updates
 
 
-def builtin_chat_variants(env: dict | None = None) -> list[dict]:
-    env = config_env.normalize_env_keys(env or config_env.read_env())
-    items = []
-    for item in BUILTIN_CHAT_VARIANTS:
-        items.append({
-            **item,
-            "label": env.get(item["label_key"], item["default_label"]).strip() or item["default_label"],
-            "desc": item["default_desc"],
-        })
-    return items
-
-
 def patch_service_labels(env: dict | None = None) -> list[dict]:
-    env = env or config_env.read_env()
-    variant_by_service = {item["service"]: item for item in builtin_chat_variants(env)}
+    """`SERVICES` with each backend slot's operator-set label applied.
+
+    The label used to come from a variant table that also decided which of three
+    mutually exclusive units served the slot. There is one unit per slot now, so
+    all that survives is "the slot's name is configurable", which is a single
+    lookup from the service's config section to its `*_LABEL` key.
+    """
+    env = config_env.normalize_env_keys(env or config_env.read_env())
+    labels = {
+        "chat-backend-dense": ("CHAT_PRIMARY_LABEL", "Primary Backend"),
+        "chat-backend2": ("CHAT2_LABEL", "Secondary Backend"),
+    }
     patched = []
     for svc in SERVICES:
-        item = variant_by_service.get(svc["name"])
-        if item:
-            updated = dict(svc)
-            updated["label"] = item["label"]
-            updated["desc"] = item["desc"]
-            patched.append(updated)
+        key, default = labels.get(svc["name"], (None, None))
+        if key:
+            patched.append(dict(svc, label=env.get(key, default).strip() or default))
         else:
             patched.append(svc)
     return patched
@@ -354,35 +339,11 @@ def record_service_expectation(name: str, action: str, ok: bool, source: str = '
 
 
 def active_chat_model_snapshot(env: dict | None = None) -> dict:
-    """Return the active primary chat backend in a form saved configs can replay."""
-    env = env or config_env.read_env()
-    for item in builtin_chat_variants(env):
-        if get_service_status(item['service']) == 'active':
-            return {
-                "variant": item["id"],
-                "service": item["service"],
-                "label": item["label"],
-                "kind": "builtin",
-            }
-
-    if get_service_status('chat-backend') == 'active':
-        model_path = env.get('CHAT_MODEL_PATH', '')
-        for model in models.load_custom_models():
-            if model.get('model_path') == model_path:
-                return {
-                    "variant": model.get("id"),
-                    "service": "chat-backend",
-                    "label": model.get("display_name") or model.get("model_name") or "Custom",
-                    "kind": "custom",
-                    "model_path": model_path,
-                }
-        return {
-            "variant": "generic",
-            "service": "chat-backend",
-            "label": "Custom",
-            "kind": "generic",
-            "model_path": model_path,
-        }
+    """The active primary chat backend, in a form saved configs can replay."""
+    env = config_env.normalize_env_keys(env or config_env.read_env())
+    if get_service_status('chat-backend-dense') == 'active':
+        label = env.get("CHAT_PRIMARY_LABEL", "Primary Backend").strip() or "Primary Backend"
+        return {"service": "chat-backend-dense", "label": label, "kind": "builtin"}
 
     return {"variant": None, "service": None, "label": "", "kind": "none"}
 
@@ -437,51 +398,40 @@ def clear_default_saved_config_name(name: str | None = None):
 
 
 def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str, list[str]]:
-    active = active or {}
-    variant = active.get("variant")
-    service = active.get("service")
-    if variant in BUILTIN_CHAT_VARIANT_IDS:
-        ok, output = core.run_script('switch-chat-model.sh', variant)
-        return ok, output, [BUILTIN_CHAT_VARIANT_BY_ID[variant]["service"], "chat-proxy"]
+    """Bring the primary slot up to match a saved profile.
 
-    if service != "chat-backend":
+    A saved profile used to record which of three mutually exclusive units
+    served the slot, and replaying it meant running switch-chat-model.sh. With
+    one unit per slot there is nothing to switch: the profile's settings are
+    already applied by the time this runs, so all that is left is starting the
+    slot and its proxy.
+    """
+    active = active or {}
+    if not active.get("service"):
         core.ServiceManager.start('chat-proxy')
         return True, "No saved chat backend was active; left chat backend unchanged.", []
 
-    for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend',
-                'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
-        core.ServiceManager.stop(svc)
-    r = core.ServiceManager.start('chat-backend')
+    returncode, output = core.ServiceManager.restart('chat-backend-dense')
     core.ServiceManager.start('chat-proxy')
-    return r.returncode == 0, (r.stdout + r.stderr).strip(), ["chat-backend", "chat-proxy"]
+    return returncode == 0, output, ["chat-backend-dense", "chat-proxy"]
 
 
 def process_cmdline(pid: int) -> str:
     """How a process was actually launched, which is not always how it is configured."""
-    try:
-        return Path(f"/proc/{int(pid)}/cmdline").read_text(errors="ignore").replace("\x00", " ").strip()
-    except Exception:
-        return ""
-
-
-_CGROUP_UNIT_RE = re.compile(r"/([\w\-.@\\]+)\.service\b")
+    return platforms.active().pid_cmdline(pid)
 
 
 def process_unit(pid: int) -> str:
-    """The systemd unit a PID belongs to, read from its cgroup.
+    """The service unit a PID belongs to.
 
-    Matching against each unit's MainPID only ever finds the process systemd
-    started, and the interesting ones are often children: `llama-router` forks a
-    `llama-server` per resident model, and it is those children that hold the
-    VRAM. The cgroup names the unit for every process in it, parent or child,
-    from one file read and no subprocess.
+    Linux reads this from the cgroup, which names the unit for every process in
+    it -- parent or child -- and that matters because the processes holding GPU
+    memory are frequently children: `llama-router` forks a `llama-server` per
+    resident model and none of them is a main PID. macOS has no equivalent and
+    can only match main PIDs, so `label_gpu_process` falling back to the command
+    line carries more weight there.
     """
-    try:
-        text = Path(f"/proc/{int(pid)}/cgroup").read_text(errors="ignore")
-    except (OSError, ValueError):
-        return ""
-    match = _CGROUP_UNIT_RE.search(text)
-    return match.group(1) if match else ""
+    return platforms.active().pid_unit(pid)
 
 
 def process_model_args(cmdline: str) -> tuple[str, str]:
@@ -562,126 +512,53 @@ def label_gpu_process(pid: int, process_name: str, service_pids: dict[int, str])
 
 
 def get_gpu_processes(uuid_by_index: dict[int, str]) -> dict[int, list[dict]]:
+    """Which process is holding how much device memory, on which GPU.
+
+    The platform supplies the raw rows; the labelling below is the same on every
+    platform and stays here. A platform that cannot attribute device memory to a
+    process at all returns `None` from `gpu_compute_apps`, which is different
+    from returning no rows: on unified memory there is no per-process breakdown
+    to be had, and reporting an empty list there would assert that nothing is
+    using the GPU.
+    """
     uuid_to_index = {uuid: index for index, uuid in uuid_by_index.items() if uuid}
     service_pids = service_main_pids()
-    processes = {index: [] for index in uuid_by_index}
-    try:
-        r = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True, text=True, timeout=5,
-        )
-        for line in r.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 4:
-                continue
-            gpu_uuid, pid_text, process_name, used_text = parts[:4]
-            index = uuid_to_index.get(gpu_uuid)
-            if index is None:
-                continue
-            try:
-                pid = int(pid_text)
-                used = int(float(used_text))
-            except ValueError:
-                continue
-            model, alias = process_model_args(process_cmdline(pid))
-            processes.setdefault(index, []).append({
-                "pid": pid,
-                "name": label_gpu_process(pid, process_name, service_pids),
-                "process_name": Path(process_name).name,
-                "used_memory": used,
-                # Which model this particular process is holding. The router runs
-                # one child per resident model under a single unit, so the unit
-                # alone cannot say what the VRAM is being spent on.
-                "model": model,
-                "alias": alias,
-            })
-    # Narrow on purpose: this used to be a bare `except Exception`, and it spent
-    # an unknown length of time swallowing a NameError that discarded every
-    # attribution here while the payload still looked well-formed.
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        print(f"[llm-manager] GPU process attribution failed: {exc}", flush=True)
+    processes: dict[int, list[dict]] = {index: [] for index in uuid_by_index}
+
+    rows = platforms.active().gpu_compute_apps()
+    if rows is None:
+        return processes
+
+    for row in rows:
+        index = uuid_to_index.get(row.get("gpu_uuid"))
+        if index is None:
+            continue
+        pid = row["pid"]
+        process_name = row["process_name"]
+        model, alias = process_model_args(process_cmdline(pid))
+        processes.setdefault(index, []).append({
+            "pid": pid,
+            "name": label_gpu_process(pid, process_name, service_pids),
+            "process_name": Path(process_name).name,
+            "used_memory": row["used_memory"],
+            # Which model this particular process is holding. The router runs
+            # one child per resident model under a single unit, so the unit
+            # alone cannot say what the VRAM is being spent on.
+            "model": model,
+            "alias": alias,
+        })
     for items in processes.values():
         items.sort(key=lambda item: item.get("used_memory", 0), reverse=True)
     return processes
 
 
-# Order matters: this is the `--query-gpu` field list and the column order it
-# comes back in. The first seven are what the UI has always shown; the rest are
-# for API consumers, and every one of them can be `[N/A]` on some card or driver
-# — an eGPU reports no fan, a datacentre card no power limit — so they parse to
-# None rather than failing the row.
-GPU_QUERY_FIELDS = [
-    'index', 'uuid', 'name', 'memory.used', 'memory.total',
-    'utilization.gpu', 'temperature.gpu',
-    'utilization.memory', 'power.draw', 'enforced.power.limit',
-    'clocks.current.sm', 'clocks.current.memory', 'fan.speed', 'pstate',
-]
-
-
-def _gpu_number(value: str):
-    """A numeric nvidia-smi field, or None for the several ways it says N/A."""
-    text = (value or "").strip()
-    if not text or text.startswith("[") or text.lower() in {"n/a", "unknown"}:
-        return None
-    try:
-        number = float(text)
-    except ValueError:
-        return None
-    return int(number) if number.is_integer() else round(number, 2)
-
-
 @core.ttl_cache(2.0)
 def get_gpu_info() -> list:
-    try:
-        r = subprocess.run(
-            ['nvidia-smi',
-             '--query-gpu=' + ','.join(GPU_QUERY_FIELDS),
-             '--format=csv,noheader,nounits'],
-            capture_output=True, text=True, timeout=5,
-        )
-        gpus = []
-        uuid_by_index = {}
-        for line in r.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) >= 7:
-                index = int(parts[0])
-                mem_used, mem_total = int(parts[3]), int(parts[4])
-                uuid_by_index[index] = parts[1]
-
-                def field(position: int) -> str:
-                    return parts[position] if position < len(parts) else ""
-
-                gpus.append({
-                    'index':     index,
-                    'uuid':      parts[1],
-                    'name':      parts[2],
-                    'mem_used':  mem_used,
-                    'mem_total': mem_total,
-                    'util':      int(parts[5]),
-                    'temp':      int(parts[6]),
-                    'mem_pct':   round(100 * mem_used / max(mem_total, 1)),
-                    'mem_free':  max(0, mem_total - mem_used),
-                    'mem_util':      _gpu_number(field(7)),
-                    'power_watts':   _gpu_number(field(8)),
-                    'power_limit_watts': _gpu_number(field(9)),
-                    'clock_sm_mhz':  _gpu_number(field(10)),
-                    'clock_mem_mhz': _gpu_number(field(11)),
-                    'fan_pct':       _gpu_number(field(12)),
-                    'pstate':        field(13) or None,
-                    'processes': [],
-                })
-        processes = get_gpu_processes(uuid_by_index)
-        for gpu in gpus:
-            gpu["processes"] = processes.get(gpu["index"], [])
-        return gpus
-    except Exception:
-        return []
-
-
+    gpus = platforms.active().gpu_info()
+    processes = get_gpu_processes({gpu["index"]: gpu.get("uuid", "") for gpu in gpus})
+    for gpu in gpus:
+        gpu["processes"] = processes.get(gpu["index"], [])
+    return gpus
 
 
 def determine_llamacpp_build_parallelism(env: dict) -> tuple[int, list[str]]:
@@ -1197,7 +1074,6 @@ def index():
                            service_groups=dict(groups),
                            config_sections=dict(sections),
                            custom_models=models.load_custom_models(),
-                           builtin_chat_variants=builtin_chat_variants(env),
                            transcription_engines=config_fields.TRANSCRIPTION_ENGINES,
                            models_dir=str(core.MODELS_DIR),
                            asset_version=asset_version())
@@ -1391,8 +1267,7 @@ def scheduling_verification(window_seconds: int | None = None) -> dict:
     """Assemble everything `scheduling.verify` needs from the running stack."""
     env = config_env.read_env()
     window = telemetry.clamp_window(window_seconds, telemetry.DEFAULT_WINDOW_SECONDS)
-    unit = next((name for name in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend')
-                 if get_service_status(name) == 'active'), None)
+    unit = 'chat-backend-dense' if get_service_status('chat-backend-dense') == 'active' else None
     props = slots = stats = None
     cmdline = ''
     if unit:
@@ -2297,48 +2172,42 @@ def api_llamacpp_update():
 
 @app.route('/api/switch/<variant>', methods=['POST'])
 def api_switch(variant):
-    if variant in BUILTIN_CHAT_VARIANT_IDS:
-        # Stop generic backend if running, then use existing switch script
-        for svc in ('chat-backend', 'qwen-chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b'):
-            core.ServiceManager.stop(svc)
-        ok, output = core.run_script('switch-chat-model.sh', variant)
-        return jsonify(ok=ok, output=output)
+    """Load a custom model's settings into the primary slot and restart it.
 
-    # Custom model switch
-    models = models.load_custom_models()
-    model = next((m for m in models if m['id'] == variant), None)
+    This used to have two branches. The first switched between built-in
+    "variants" -- dense and MoE -- which were alternative models for one shared
+    backend, mutually exclusive because they shared a port. That idea is gone:
+    there are two independent slots now, and choosing a model for one is
+    configuration, not a service switch.
+
+    The second branch, the one that survives, could never run: it opened with
+    `models = models.load_custom_models()`, which makes `models` a local and
+    raises UnboundLocalError before the call it is assigning from. It also
+    shelled `systemctl` directly, so it was Linux-only regardless.
+
+    It writes into the primary slot's own keys rather than the bare CHAT_*
+    family the retired generic unit read.
+    """
+    catalogue = models.load_custom_models()
+    model = next((m for m in catalogue if m['id'] == variant), None)
     if not model:
         return jsonify(ok=False, error='Unknown model variant'), 400
 
-    # Stop all chat backends
-    for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
-        core.ServiceManager.stop(svc)
-
-    # Update env with custom model paths
     updates = {
-        'CHAT_MODEL_PATH': model['model_path'],
-        'CHAT_MODEL_NAME': model.get('model_name', 'chat-custom'),
-        'CHAT_CTX_SIZE': model.get('ctx_size', '32768'),
-        'CHAT_CUSTOM_ARGS_JSON': json.dumps(models.resolve_custom_args_for_model(model)[0]),
+        'CHAT_PRIMARY_MODEL_PATH': model['model_path'],
+        'CHAT_PRIMARY_MODEL_NAME': model.get('model_name', 'chat-custom'),
+        'CHAT_PRIMARY_CTX_SIZE': model.get('ctx_size', '32768'),
+        'CHAT_PRIMARY_MMPROJ_PATH': model.get('mmproj_path', ''),
+        'CHAT_PRIMARY_CUSTOM_ARGS_JSON': json.dumps(
+            models.resolve_custom_args_for_model(model)[0]),
     }
-    if model.get('mmproj_path'):
-        updates['CHAT_MMPROJ_PATH'] = model['mmproj_path']
-    else:
-        updates['CHAT_MMPROJ_PATH'] = ''
+    if model.get('display_name'):
+        updates['CHAT_PRIMARY_LABEL'] = model['display_name']
     config_env.update_env_values(updates)
 
-    # Start generic backend + ensure proxy is running
-    try:
-        r = subprocess.run(['systemctl', 'start', 'chat-backend'],
-                           capture_output=True, text=True, timeout=30)
-        subprocess.run(['systemctl', 'start', 'chat-proxy'],
-                       capture_output=True, timeout=30)
-        return jsonify(ok=(r.returncode == 0),
-                       output=(r.stdout + r.stderr).strip())
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
-
-
+    returncode, output = core.ServiceManager.restart('chat-backend-dense')
+    core.ServiceManager.start('chat-proxy')
+    return jsonify(ok=(returncode == 0), output=output)
 
 
 @app.route('/api/active-chat-model')
@@ -2504,7 +2373,7 @@ def api_saved_configs_save():
     active_services = []
     for svc in SERVICES:
         name = svc.get('name')
-        if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 
+        if not name or name in ('chat-backend-dense', 
                                 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
             continue
         if get_service_status(name) == 'active':
@@ -2579,7 +2448,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
             pooled = router_pooled_units(config_env.read_env())
             for svc in SERVICES:
                 name = svc.get('name')
-                if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe',
+                if not name or name in ('chat-backend-dense',
                                         'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
                     continue
                 if name in pooled:

@@ -137,12 +137,10 @@ Start the default core stack:
 sudo bash scripts/restore-active-stack.sh
 ```
 
-Switch the shared chat backend between built-in presets with:
-
-```bash
-sudo bash scripts/switch-chat-model.sh dense
-sudo bash scripts/switch-chat-model.sh moe
-```
+There are two independent large-model slots — `chat-backend-dense` on 8010 and
+`chat-backend2` on 8020 — each fronted by a proxy serving the think, chat and
+code personas. They run concurrently if there is memory for both; configure each
+from the Configuration tab rather than switching between them.
 
 Validate endpoints after the services are loaded:
 

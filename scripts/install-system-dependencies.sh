@@ -1,8 +1,54 @@
 #!/usr/bin/env bash
-# Ubuntu 24.04 package/toolkit installer. Does not install or replace NVIDIA drivers.
+# System package/toolkit installer.
+#
+# Ubuntu 24.04: apt, plus a CUDA toolkit matched to the installed driver. Does
+# not install or replace NVIDIA drivers.
+#
+# macOS: Homebrew, plus the Xcode command line tools. There is no toolkit to
+# match -- Metal ships with the OS, and llama.cpp builds against it with
+# -DGGML_METAL=ON -- so the macOS path stops after the build prerequisites.
 set -euo pipefail
 
 MODE="${1:---full}"
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  # Deliberately not run as root. Homebrew refuses to run as root, and the
+  # services this installs for are per-user LaunchAgents in the GUI domain --
+  # installing their prerequisites as root would leave a user-domain agent
+  # depending on a root-owned prefix.
+  if [[ "${EUID}" -eq 0 ]]; then
+    echo "Do not run this with sudo on macOS: Homebrew refuses to run as root." >&2
+    echo "Run it as the user the services will run as: bash $0 ${MODE}" >&2
+    exit 1
+  fi
+  if [[ "$(uname -m)" != "arm64" ]]; then
+    echo "Supported target is Apple silicon (arm64)." >&2
+    exit 1
+  fi
+  if ! xcode-select -p >/dev/null 2>&1; then
+    echo "Xcode command line tools are required. Run: xcode-select --install" >&2
+    exit 1
+  fi
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew is required: https://brew.sh" >&2
+    exit 1
+  fi
+
+  # cmake and ninja build llama.cpp; pkg-config is its dependency discovery;
+  # jq is used by the stack scripts. git, curl and python3 ship with the OS or
+  # with the command line tools, so they are not reinstalled here.
+  brew install cmake ninja pkg-config jq
+
+  if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(`.`)[0]')" != "22" ]]; then
+    brew install node@22
+    brew link --overwrite --force node@22
+  fi
+
+  echo "macOS build prerequisites installed."
+  echo "Metal needs no toolkit: llama.cpp is built with -DGGML_METAL=ON."
+  exit 0
+fi
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run with sudo: sudo bash $0 ${MODE}" >&2
   exit 1

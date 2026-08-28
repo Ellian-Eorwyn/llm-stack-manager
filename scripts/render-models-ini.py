@@ -49,11 +49,6 @@ MEMBERS = {
         "default_name": "embed",
         "extra": {"embedding": "true", "pooling": "mean"},
     },
-    "EMBED2": {
-        "model_path_key": "EMBED2_MODEL_PATH",
-        "default_name": "embed2",
-        "extra": {"embedding": "true", "pooling": "mean"},
-    },
     "RERANK": {
         "model_path_key": "RERANKER_MODEL_PATH",
         "default_name": "rank",
@@ -78,7 +73,7 @@ MEMBERS = {
     # carries an audio encoder and a template it can build an ASR prompt from.
     #
     # Deliberately absent from the default MODEL_ROUTER_MEMBERS string: pooling
-    # it is opt-in, exactly as EMBED2 already is.
+    # it is opt-in: it is absent from the default MODEL_ROUTER_MEMBERS string.
     "ASR": {
         "model_path_key": "ASR_MODEL_PATH",
         "mmproj_key": "ASR_MMPROJ_PATH",

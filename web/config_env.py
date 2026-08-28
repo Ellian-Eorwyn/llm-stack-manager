@@ -39,7 +39,6 @@ import re
 
 import core
 from config_fields import (
-    BUILTIN_CHAT_VARIANT_BY_ID,
     CODE_TO_CHAT_MIRRORS,
     CONFIG_FIELDS,
     LEGACY_ENV_KEY_MAP,
@@ -73,22 +72,20 @@ def normalize_env_keys(env: dict) -> dict:
     for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
         if new_key not in normalized and legacy_key in normalized:
             value = normalized[legacy_key]
+            # The shipped labels named the model architecture, which is not
+            # what the slot is. Rewritten on read so an old env file renders
+            # the slot's name rather than a preset's.
             if legacy_key == "CHAT_DENSE_LABEL" and value.strip() == "Backend Dense":
-                value = BUILTIN_CHAT_VARIANT_BY_ID["dense"]["default_label"]
+                value = "Primary Backend"
             elif legacy_key == "CHAT_MOE_LABEL" and value.strip() == "Backend MoE":
-                value = BUILTIN_CHAT_VARIANT_BY_ID["moe"]["default_label"]
+                value = "Secondary Backend"
             normalized[new_key] = value
     backend_defaults = {
-        "CHAT_PRIMARY_LABEL": BUILTIN_CHAT_VARIANT_BY_ID["dense"]["default_label"],
+        "CHAT_PRIMARY_LABEL": "Primary Backend",
         "CHAT_PRIMARY_MODEL_NAME": "chat-dense",
         "CHAT_PRIMARY_MODEL_PATH": normalized.get("CHAT_MODEL_PATH", ""),
         "CHAT_PRIMARY_MMPROJ_PATH": normalized.get("CHAT_MMPROJ_PATH", ""),
         "CHAT_PRIMARY_CTX_SIZE": normalized.get("CHAT_CTX_SIZE", "32768"),
-        "CHAT_SECONDARY_LABEL": BUILTIN_CHAT_VARIANT_BY_ID["moe"]["default_label"],
-        "CHAT_SECONDARY_MODEL_NAME": "chat-moe",
-        "CHAT_SECONDARY_MODEL_PATH": normalized.get("CHAT_MODEL_PATH", ""),
-        "CHAT_SECONDARY_MMPROJ_PATH": normalized.get("CHAT_MMPROJ_PATH", ""),
-        "CHAT_SECONDARY_CTX_SIZE": normalized.get("CHAT_CTX_SIZE", "32768"),
     }
     for key, value in backend_defaults.items():
         normalized.setdefault(key, value)
@@ -96,10 +93,6 @@ def normalize_env_keys(env: dict) -> dict:
         key = field.get("key", "")
         if key.startswith("CHAT_PRIMARY_") and key not in normalized:
             legacy_key = "CHAT_" + key[len("CHAT_PRIMARY_"):]
-            if legacy_key in normalized:
-                normalized[key] = normalized[legacy_key]
-        elif key.startswith("CHAT_SECONDARY_") and key not in normalized:
-            legacy_key = "CHAT_" + key[len("CHAT_SECONDARY_"):]
             if legacy_key in normalized:
                 normalized[key] = normalized[legacy_key]
     normalized.setdefault("CHAT_MODEL_NAME", "chat-custom")
@@ -229,7 +222,6 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("TASK_SPEC_NGRAM_SIZE_M", "48")
     normalized.setdefault("TASK_SPEC_NGRAM_MIN_HITS", "1")
     normalized.setdefault("EMBED_MODEL_NAME", "embed")
-    normalized.setdefault("EMBED2_MODEL_NAME", "embed2")
     normalized.setdefault("EMBED_THREADS", "-1")
     normalized.setdefault("EMBED_THREADS_BATCH", "-1")
     normalized.setdefault("RERANK_MODEL_NAME", "rank")
