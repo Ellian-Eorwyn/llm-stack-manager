@@ -28,8 +28,6 @@ let transcriptionModelsByEngine = {};
 let transcriptionCapabilities = {};
 let transcriptRepoInfoByEngine = {};
 let transcriptDownloadJobIdByEngine = {};
-const builtInChatVariants = window.__STACK__.builtinChatVariants;
-const builtInChatVariantMap = Object.fromEntries(builtInChatVariants.map(v => [v.id, v]));
 let savedConfigs = [];
 let chatTemplates = [];
 let editingChatTemplateId = '';

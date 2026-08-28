@@ -468,15 +468,11 @@ UNIT
     #
     # think/nothink were labelled Legacy and were never in the UI's service
     # table. embed2 was a second embedding slot nothing used.
-    for unit in think nothink embed2; do
+    for unit in think nothink embed2 chat-backend chat-backend-moe; do
         systemctl disable --now "${unit}" 2>/dev/null || true
         [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
     done
 
-    if [[ -z "${LLM_STACK_SETUP_COMPONENTS:-}" ]]; then
-        install_unit "chat-backend" "LLM Chat Custom Shared Backend - llama-server"  "start-chat-backend.sh" 300
-        install_unit "chat-backend-moe" "LLM Chat MoE Shared Backend - llama-server" "start-chat-backend-moe.sh" 300
-    fi
     if setup_has_component primary; then
         install_unit "chat-backend-dense" "LLM Chat Primary Shared Backend - llama-server" "start-chat-backend-dense.sh" 300
         install_unit "chat-proxy" "LLM Chat Proxy - think/chat/code ports" "start-chat-proxy.sh" 30
@@ -536,7 +532,7 @@ UNIT
         install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
     fi
 
-    [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend.service chat-backend-dense.service chat-backend-moe.service|" /etc/systemd/system/chat-proxy.service
+    [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend-dense.service|" /etc/systemd/system/chat-proxy.service
     [[ -f /etc/systemd/system/chat-proxy2.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
     # In router mode the OCR model is not a unit any more, so the SDK's upstream
     # is the router. Keeping Wants=ocr.service here is what pulled the OCR model
@@ -573,9 +569,6 @@ UNIT
         cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}|" /etc/systemd/system/honcho-deriver.service
         cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}" /etc/systemd/system/honcho-deriver.service
     fi
-    [[ -f /etc/systemd/system/chat-backend-dense.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-moe.service chat-backend.service" /etc/systemd/system/chat-backend-dense.service
-    [[ -f /etc/systemd/system/chat-backend-moe.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend.service" /etc/systemd/system/chat-backend-moe.service
-    [[ -f /etc/systemd/system/chat-backend.service ]] && cp_sed_inplace "/^After=network.target/a Conflicts=chat-backend-dense.service chat-backend-moe.service" /etc/systemd/system/chat-backend.service
 
     systemctl daemon-reload
 
@@ -586,7 +579,7 @@ UNIT
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(playwright-server)
     fi
-    NON_DEFAULT_SERVICES=(chat-backend chat-backend-dense chat-backend-moe chat-backend2 chat-proxy chat-proxy2 embed rerank task ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(chat-backend-dense chat-backend2 chat-proxy chat-proxy2 embed rerank task ocr glmocr-sdk)
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         # The router has to be up at boot: it is what the per-model ports point
         # at, and it is the only thing that can bring those models back.
@@ -655,13 +648,9 @@ elif is_mac; then
     echo "Installing launchd services..."
 
     install_mac_service "llm-manager"        "LLM Stack Manager - web UI"                          "start-llm-manager.sh"
-    install_mac_service "chat-backend"       "LLM Chat Custom Shared Backend - llama-server"       "start-chat-backend.sh"
-    install_mac_service "chat-backend-dense" "LLM Chat Dense Shared Backend - llama-server"        "start-chat-backend-dense.sh" \
-        "" "chat-backend-moe chat-backend"
-    install_mac_service "chat-backend-moe"   "LLM Chat MoE Shared Backend - llama-server"          "start-chat-backend-moe.sh" \
-        "" "chat-backend-dense chat-backend"
+    install_mac_service "chat-backend-dense" "LLM Primary Backend - llama-server"                  "start-chat-backend-dense.sh"
     install_mac_service "chat-proxy"         "LLM Chat Proxy - think/chat/code ports"              "start-chat-proxy.sh" \
-        "chat-backend chat-backend-dense chat-backend-moe"
+        "chat-backend-dense"
     install_mac_service "chat-backend2"      "LLM Chat Custom Shared Backend 2 - llama-server"     "start-chat-backend2.sh"
     install_mac_service "chat-proxy2"        "LLM Chat Proxy 2 - think/chat/code ports"            "start-chat-proxy2.sh" \
         "chat-backend2"
@@ -714,7 +703,7 @@ elif is_mac; then
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
     fi
-    NON_DEFAULT_SERVICES=(chat-backend chat-backend-moe ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(ocr glmocr-sdk)
     for svc in "${NON_DEFAULT_SERVICES[@]}"; do
         svc_disable "${svc}" 2>/dev/null || true
     done

@@ -270,12 +270,12 @@ if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
         if is_linux; then
             mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'transcript-backend.service' 'playwright-server.service' 'think.service' 'nothink.service' 'qwen-*' 'honcho-*.service' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
         else
-            active=(llm-manager chat-backend chat-backend-dense chat-backend-moe chat-proxy embed rerank task ocr glmocr-sdk transcript-backend honcho-api honcho-deriver think nothink)
+            active=(llm-manager chat-backend-dense chat-proxy chat-backend2 chat-proxy2 embed rerank task ocr glmocr-sdk transcript-backend honcho-api honcho-deriver)
         fi
         
         for svc in "${active[@]}"; do
             case "${svc}" in
-                llm-manager|chat-backend|chat-backend-dense|chat-backend-moe|chat-proxy|embed|rerank|task|ocr|glmocr-sdk|transcript-backend|playwright-server|honcho-api|honcho-deriver|think|nothink)
+                llm-manager|chat-backend-dense|chat-backend2|chat-proxy|chat-proxy2|embed|rerank|task|ocr|glmocr-sdk|transcript-backend|playwright-server|honcho-api|honcho-deriver)
                     if is_mac || svc_is_active "${svc}"; then
                         svc_restart "${svc}"
                     fi

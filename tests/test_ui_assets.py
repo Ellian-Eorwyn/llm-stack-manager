@@ -173,8 +173,13 @@ class ScriptLoadOrderTests(unittest.TestCase):
             self.assertIn("asset_version", suffix)
 
     def test_the_bootstrap_supplies_what_the_modules_read_from_it(self):
-        """The only two values the scripts still need from the server."""
-        for key in ("builtinChatVariants", "modelsDir"):
+        """The only value the scripts still need from the server.
+
+        `builtinChatVariants` went with the variant model: there is one unit per
+        slot now, so a slot's label comes from its own config rather than from a
+        table mapping three units onto one card.
+        """
+        for key in ("modelsDir",):
             self.assertIn(f"{key}:", self.template,
                           f"window.__STACK__ does not define {key}")
         for path in sorted((STATIC / "js").glob("*.js")):

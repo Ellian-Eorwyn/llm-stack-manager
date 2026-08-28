@@ -46,7 +46,7 @@ PROBE_TIMEOUT_SECONDS = 3
 # env key holding the port; `host_key` falls back to loopback when unset.
 BACKEND_TARGETS = [
     {"name": "chat-primary",   "label": "Primary Backend",   "port_key": "CHAT_BACKEND_PORT",  "host_key": "CHAT_BACKEND_HOST",
-     "units": ["chat-backend-dense", "chat-backend-moe", "chat-backend"]},
+     "units": ["chat-backend-dense"]},
     {"name": "chat-secondary", "label": "Secondary Backend", "port_key": "CHAT_BACKEND2_PORT", "host_key": "CHAT_BACKEND2_HOST",
      "units": ["chat-backend2"]},
     {"name": "embed",          "label": "Embedding",         "port_key": "EMBED_PORT",         "host_key": "EMBED_BACKEND_HOST",

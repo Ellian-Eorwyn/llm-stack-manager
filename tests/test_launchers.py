@@ -29,8 +29,6 @@ GOLDEN = pathlib.Path(__file__).resolve().parent / "launcher-argv.golden.json"
 
 LAUNCHERS = {
     "chat-backend-dense": "start-chat-backend-dense.sh",
-    "chat-backend-moe":   "start-chat-backend-moe.sh",
-    "chat-backend":       "start-chat-backend.sh",
     "chat-backend2":      "start-chat-backend2.sh",
     "embed":              "start-embed.sh",
     "rerank":             "start-rerank.sh",

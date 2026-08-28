@@ -24,7 +24,7 @@ done
 STACK_DIR="${LLM_STACK_DIR:-$(cd "$(dirname "${SELF}")/.." && pwd)}"
 CONFIG_FILE="${STACK_DIR}/config/llm-stack.env"
 
-MODEL_BACKENDS=(chat-backend-dense chat-backend-moe chat-backend chat-backend2 embed rerank task ocr)
+MODEL_BACKENDS=(chat-backend-dense chat-backend2 embed rerank task ocr)
 SUPPORT_SERVICES=(llm-manager chat-proxy chat-proxy2 glmocr-sdk playwright-server)
 
 usage() {

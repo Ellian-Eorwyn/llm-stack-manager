@@ -107,11 +107,23 @@ class ConfigSectionTests(unittest.TestCase):
         self.assertEqual(env["CHAT_PRIMARY_CTX_SIZE"], "32768")
         self.assertEqual(env["CHAT_PRIMARY_BATCH_SIZE"], "2048")
         self.assertEqual(env["CHAT_PRIMARY_GPU_VISIBLE_DEVICES"], "0,1")
-        self.assertEqual(env["CHAT_SECONDARY_LABEL"], "Secondary Backend")
-        self.assertEqual(env["CHAT_SECONDARY_MODEL_PATH"], "/models/secondary.gguf")
-        self.assertEqual(env["CHAT_SECONDARY_CTX_SIZE"], "65536")
+        # The MoE keys described an alternative model for the *one* shared
+        # backend. That slot is retired, so they backfill the concurrent second
+        # slot instead of vanishing -- a host with a MoE model and no second
+        # slot keeps its model.
         self.assertEqual(env["CHAT2_LABEL"], "Secondary Backend")
+        self.assertEqual(env["CHAT2_MODEL_PATH"], "/models/secondary.gguf")
+        self.assertEqual(env["CHAT2_CTX_SIZE"], "65536")
+        self.assertNotIn("CHAT_SECONDARY_LABEL", env)
         self.assertNotIn("CHAT_SECONDARY_BATCH_SIZE", {f["key"] for f in manager.CONFIG_FIELDS})
+
+    def test_a_configured_second_slot_is_not_overwritten_by_legacy_moe_keys(self):
+        """The backfill never overwrites, so the two cannot collide."""
+        env = config_env.normalize_env_keys({
+            "CHAT_MOE_MODEL_PATH": "/models/old-moe.gguf",
+            "CHAT2_MODEL_PATH": "/models/current-b.gguf",
+        })
+        self.assertEqual(env["CHAT2_MODEL_PATH"], "/models/current-b.gguf")
 
     def test_removed_backend_fields_are_not_in_config_surface(self):
         sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
@@ -648,9 +660,7 @@ class MetricsFlagTests(unittest.TestCase):
     def test_launchers_still_written_in_shell_gate_the_flag_on_the_env_key(self):
         root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
         for script, prefix in [
-            ("start-chat-backend.sh", "CHAT"),
             ("start-chat-backend2.sh", "CHAT2"),
-            ("start-chat-backend-moe.sh", "CHAT"),
             ("start-chat-backend-dense.sh", "CHAT"),
             ("start-task.sh", "TASK"),
         ]:
@@ -684,9 +694,7 @@ class MetricsFlagTests(unittest.TestCase):
         """
         root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
         for script in [
-            "start-chat-backend.sh",
             "start-chat-backend2.sh",
-            "start-chat-backend-moe.sh",
             "start-chat-backend-dense.sh",
             "start-task.sh",
         ]:
@@ -700,9 +708,7 @@ class MetricsFlagTests(unittest.TestCase):
     def test_thinking_level_reaches_every_chat_launcher(self):
         root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
         for script, prefix in [
-            ("start-chat-backend.sh", "CHAT"),
             ("start-chat-backend2.sh", "CHAT2"),
-            ("start-chat-backend-moe.sh", "CHAT"),
             ("start-chat-backend-dense.sh", "CHAT"),
         ]:
             text = (root / script).read_text()
@@ -771,7 +777,7 @@ class UpdateCliTests(unittest.TestCase):
         cheap = re.search(r"CHEAP_RESTART_SERVICES=\(([^)]*)\)", self.update)
         self.assertIsNotNone(cheap)
         services = cheap.group(1).split()
-        for backend in ("chat-backend-dense", "chat-backend-moe", "chat-backend",
+        for backend in ("chat-backend-dense",
                         "chat-backend2", "embed", "rerank", "task", "ocr"):
             self.assertNotIn(backend, services)
         self.assertIn("llm-manager", services)
@@ -1128,7 +1134,9 @@ class ServiceHealthTests(unittest.TestCase):
             patch.object(manager, "get_service_status", return_value="inactive"),
         ):
             statuses = manager.all_service_statuses()
-        self.assertIn("chat-backend-moe", statuses)
+        # chat-proxy's upstream has no card of its own in this stubbed panel,
+        # and still has to be asked about.
+        self.assertIn("chat-backend-dense", statuses)
         self.assertIn("chat-proxy", statuses)
 
 

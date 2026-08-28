@@ -65,10 +65,6 @@ from routes import setup as setup_routes
 # substitution is visible to every importer.
 from config_fields import (
     BEE_KV_CACHE_OPTIONS,
-    BUILTIN_CHAT_VARIANTS,
-    BUILTIN_CHAT_VARIANT_BY_ID,
-    BUILTIN_CHAT_VARIANT_BY_SERVICE,
-    BUILTIN_CHAT_VARIANT_IDS,
     CODE_TO_CHAT_MIRRORS,
     CONFIG_FIELDS,
     CORE_CONFIG_SECTIONS,
@@ -124,10 +120,8 @@ SERVICES = [
 ]
 
 LLAMACPP_MODEL_SERVICES = [
-    "chat-backend",
-    "chat-backend2",
     "chat-backend-dense",
-    "chat-backend-moe",
+    "chat-backend2",
     "embed",
     "rerank",
     "task",
@@ -169,9 +163,7 @@ def apply_router_restart_hints(restart_needed: set, env: dict) -> set:
 # services panel can show a context for every model service it renders.
 SERVICE_ENV_PREFIXES = {
     "chat-backend-dense": "CHAT_PRIMARY",
-    "chat-backend": "CHAT_PRIMARY",
     "chat-backend2": "CHAT2",
-    "chat-backend-moe": "CHAT2",
     "embed": "EMBED",
     "rerank": "RERANK",
     "task": "TASK",
@@ -266,29 +258,24 @@ def saved_config_apply_updates(config: dict) -> dict:
     return updates
 
 
-def builtin_chat_variants(env: dict | None = None) -> list[dict]:
-    env = config_env.normalize_env_keys(env or config_env.read_env())
-    items = []
-    for item in BUILTIN_CHAT_VARIANTS:
-        items.append({
-            **item,
-            "label": env.get(item["label_key"], item["default_label"]).strip() or item["default_label"],
-            "desc": item["default_desc"],
-        })
-    return items
-
-
 def patch_service_labels(env: dict | None = None) -> list[dict]:
-    env = env or config_env.read_env()
-    variant_by_service = {item["service"]: item for item in builtin_chat_variants(env)}
+    """`SERVICES` with each backend slot's operator-set label applied.
+
+    The label used to come from a variant table that also decided which of three
+    mutually exclusive units served the slot. There is one unit per slot now, so
+    all that survives is "the slot's name is configurable", which is a single
+    lookup from the service's config section to its `*_LABEL` key.
+    """
+    env = config_env.normalize_env_keys(env or config_env.read_env())
+    labels = {
+        "chat-backend-dense": ("CHAT_PRIMARY_LABEL", "Primary Backend"),
+        "chat-backend2": ("CHAT2_LABEL", "Secondary Backend"),
+    }
     patched = []
     for svc in SERVICES:
-        item = variant_by_service.get(svc["name"])
-        if item:
-            updated = dict(svc)
-            updated["label"] = item["label"]
-            updated["desc"] = item["desc"]
-            patched.append(updated)
+        key, default = labels.get(svc["name"], (None, None))
+        if key:
+            patched.append(dict(svc, label=env.get(key, default).strip() or default))
         else:
             patched.append(svc)
     return patched
@@ -352,35 +339,11 @@ def record_service_expectation(name: str, action: str, ok: bool, source: str = '
 
 
 def active_chat_model_snapshot(env: dict | None = None) -> dict:
-    """Return the active primary chat backend in a form saved configs can replay."""
-    env = env or config_env.read_env()
-    for item in builtin_chat_variants(env):
-        if get_service_status(item['service']) == 'active':
-            return {
-                "variant": item["id"],
-                "service": item["service"],
-                "label": item["label"],
-                "kind": "builtin",
-            }
-
-    if get_service_status('chat-backend') == 'active':
-        model_path = env.get('CHAT_MODEL_PATH', '')
-        for model in models.load_custom_models():
-            if model.get('model_path') == model_path:
-                return {
-                    "variant": model.get("id"),
-                    "service": "chat-backend",
-                    "label": model.get("display_name") or model.get("model_name") or "Custom",
-                    "kind": "custom",
-                    "model_path": model_path,
-                }
-        return {
-            "variant": "generic",
-            "service": "chat-backend",
-            "label": "Custom",
-            "kind": "generic",
-            "model_path": model_path,
-        }
+    """The active primary chat backend, in a form saved configs can replay."""
+    env = config_env.normalize_env_keys(env or config_env.read_env())
+    if get_service_status('chat-backend-dense') == 'active':
+        label = env.get("CHAT_PRIMARY_LABEL", "Primary Backend").strip() or "Primary Backend"
+        return {"service": "chat-backend-dense", "label": label, "kind": "builtin"}
 
     return {"variant": None, "service": None, "label": "", "kind": "none"}
 
@@ -435,23 +398,22 @@ def clear_default_saved_config_name(name: str | None = None):
 
 
 def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str, list[str]]:
-    active = active or {}
-    variant = active.get("variant")
-    service = active.get("service")
-    if variant in BUILTIN_CHAT_VARIANT_IDS:
-        ok, output = core.run_script('switch-chat-model.sh', variant)
-        return ok, output, [BUILTIN_CHAT_VARIANT_BY_ID[variant]["service"], "chat-proxy"]
+    """Bring the primary slot up to match a saved profile.
 
-    if service != "chat-backend":
+    A saved profile used to record which of three mutually exclusive units
+    served the slot, and replaying it meant running switch-chat-model.sh. With
+    one unit per slot there is nothing to switch: the profile's settings are
+    already applied by the time this runs, so all that is left is starting the
+    slot and its proxy.
+    """
+    active = active or {}
+    if not active.get("service"):
         core.ServiceManager.start('chat-proxy')
         return True, "No saved chat backend was active; left chat backend unchanged.", []
 
-    for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend',
-                'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
-        core.ServiceManager.stop(svc)
-    r = core.ServiceManager.start('chat-backend')
+    returncode, output = core.ServiceManager.restart('chat-backend-dense')
     core.ServiceManager.start('chat-proxy')
-    return r.returncode == 0, (r.stdout + r.stderr).strip(), ["chat-backend", "chat-proxy"]
+    return returncode == 0, output, ["chat-backend-dense", "chat-proxy"]
 
 
 def process_cmdline(pid: int) -> str:
@@ -1112,7 +1074,6 @@ def index():
                            service_groups=dict(groups),
                            config_sections=dict(sections),
                            custom_models=models.load_custom_models(),
-                           builtin_chat_variants=builtin_chat_variants(env),
                            transcription_engines=config_fields.TRANSCRIPTION_ENGINES,
                            models_dir=str(core.MODELS_DIR),
                            asset_version=asset_version())
@@ -1306,8 +1267,7 @@ def scheduling_verification(window_seconds: int | None = None) -> dict:
     """Assemble everything `scheduling.verify` needs from the running stack."""
     env = config_env.read_env()
     window = telemetry.clamp_window(window_seconds, telemetry.DEFAULT_WINDOW_SECONDS)
-    unit = next((name for name in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend')
-                 if get_service_status(name) == 'active'), None)
+    unit = 'chat-backend-dense' if get_service_status('chat-backend-dense') == 'active' else None
     props = slots = stats = None
     cmdline = ''
     if unit:
@@ -2212,48 +2172,42 @@ def api_llamacpp_update():
 
 @app.route('/api/switch/<variant>', methods=['POST'])
 def api_switch(variant):
-    if variant in BUILTIN_CHAT_VARIANT_IDS:
-        # Stop generic backend if running, then use existing switch script
-        for svc in ('chat-backend', 'qwen-chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b'):
-            core.ServiceManager.stop(svc)
-        ok, output = core.run_script('switch-chat-model.sh', variant)
-        return jsonify(ok=ok, output=output)
+    """Load a custom model's settings into the primary slot and restart it.
 
-    # Custom model switch
-    models = models.load_custom_models()
-    model = next((m for m in models if m['id'] == variant), None)
+    This used to have two branches. The first switched between built-in
+    "variants" -- dense and MoE -- which were alternative models for one shared
+    backend, mutually exclusive because they shared a port. That idea is gone:
+    there are two independent slots now, and choosing a model for one is
+    configuration, not a service switch.
+
+    The second branch, the one that survives, could never run: it opened with
+    `models = models.load_custom_models()`, which makes `models` a local and
+    raises UnboundLocalError before the call it is assigning from. It also
+    shelled `systemctl` directly, so it was Linux-only regardless.
+
+    It writes into the primary slot's own keys rather than the bare CHAT_*
+    family the retired generic unit read.
+    """
+    catalogue = models.load_custom_models()
+    model = next((m for m in catalogue if m['id'] == variant), None)
     if not model:
         return jsonify(ok=False, error='Unknown model variant'), 400
 
-    # Stop all chat backends
-    for svc in ('chat-backend-dense', 'chat-backend-moe', 'chat-backend', 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend'):
-        core.ServiceManager.stop(svc)
-
-    # Update env with custom model paths
     updates = {
-        'CHAT_MODEL_PATH': model['model_path'],
-        'CHAT_MODEL_NAME': model.get('model_name', 'chat-custom'),
-        'CHAT_CTX_SIZE': model.get('ctx_size', '32768'),
-        'CHAT_CUSTOM_ARGS_JSON': json.dumps(models.resolve_custom_args_for_model(model)[0]),
+        'CHAT_PRIMARY_MODEL_PATH': model['model_path'],
+        'CHAT_PRIMARY_MODEL_NAME': model.get('model_name', 'chat-custom'),
+        'CHAT_PRIMARY_CTX_SIZE': model.get('ctx_size', '32768'),
+        'CHAT_PRIMARY_MMPROJ_PATH': model.get('mmproj_path', ''),
+        'CHAT_PRIMARY_CUSTOM_ARGS_JSON': json.dumps(
+            models.resolve_custom_args_for_model(model)[0]),
     }
-    if model.get('mmproj_path'):
-        updates['CHAT_MMPROJ_PATH'] = model['mmproj_path']
-    else:
-        updates['CHAT_MMPROJ_PATH'] = ''
+    if model.get('display_name'):
+        updates['CHAT_PRIMARY_LABEL'] = model['display_name']
     config_env.update_env_values(updates)
 
-    # Start generic backend + ensure proxy is running
-    try:
-        r = subprocess.run(['systemctl', 'start', 'chat-backend'],
-                           capture_output=True, text=True, timeout=30)
-        subprocess.run(['systemctl', 'start', 'chat-proxy'],
-                       capture_output=True, timeout=30)
-        return jsonify(ok=(r.returncode == 0),
-                       output=(r.stdout + r.stderr).strip())
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
-
-
+    returncode, output = core.ServiceManager.restart('chat-backend-dense')
+    core.ServiceManager.start('chat-proxy')
+    return jsonify(ok=(returncode == 0), output=output)
 
 
 @app.route('/api/active-chat-model')
@@ -2419,7 +2373,7 @@ def api_saved_configs_save():
     active_services = []
     for svc in SERVICES:
         name = svc.get('name')
-        if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe', 
+        if not name or name in ('chat-backend-dense', 
                                 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
             continue
         if get_service_status(name) == 'active':
@@ -2494,7 +2448,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
             pooled = router_pooled_units(config_env.read_env())
             for svc in SERVICES:
                 name = svc.get('name')
-                if not name or name in ('chat-backend', 'chat-backend-dense', 'chat-backend-moe',
+                if not name or name in ('chat-backend-dense',
                                         'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
                     continue
                 if name in pooled:

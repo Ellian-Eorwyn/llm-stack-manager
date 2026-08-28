@@ -5,7 +5,6 @@
 # Binds to 127.0.0.1:CHAT_BACKEND_PORT — not publicly accessible.
 # chat-proxy.service exposes this on THINK_PORT and NOTHINK_PORT.
 #
-# Switch from MoE:  sudo bash scripts/switch-chat-model.sh dense
 # =============================================================================
 set -euo pipefail
 

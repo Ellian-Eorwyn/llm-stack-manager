@@ -161,7 +161,7 @@ SERVICE_PROBES = _llama_probes() | {
 # generated config. `tests/test_health.py` asserts it stays consistent with the
 # component-level map so the two cannot drift apart.
 SERVICE_DEPENDENCIES = {
-    "chat-proxy": [["chat-backend-dense", "chat-backend-moe", "chat-backend"]],
+    "chat-proxy": [["chat-backend-dense"]],
     "chat-proxy2": [["chat-backend2"]],
     "glmocr-sdk": [["ocr"]],
     "honcho-api": [["chat-proxy"], ["embed"]],

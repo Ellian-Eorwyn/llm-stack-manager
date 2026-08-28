@@ -60,11 +60,15 @@ class DependencyGraphTests(unittest.TestCase):
     def test_glmocr_sdk_declares_its_ocr_upstream(self):
         self.assertEqual(health.SERVICE_DEPENDENCIES["glmocr-sdk"], [["ocr"]])
 
-    def test_dependency_units_includes_backends_with_no_card(self):
-        # The panel shows one primary-backend card, but three units can serve
-        # it; the two without a card still have to be asked about.
-        self.assertIn("chat-backend-moe", health.dependency_units())
-        self.assertIn("chat-backend", health.dependency_units())
+    def test_dependency_units_covers_every_upstream_a_service_declares(self):
+        # There is one unit per slot now, so every upstream in the graph is a
+        # unit with a card. The any-of grouping stays because other services
+        # still use it -- honcho-api is satisfied by the router or by embed.
+        units = health.dependency_units()
+        for group in health.SERVICE_DEPENDENCIES.values():
+            for choices in group:
+                for unit in choices:
+                    self.assertIn(unit, units, unit)
 
 
 class ProbeTargetTests(unittest.TestCase):
@@ -189,16 +193,20 @@ class CollectTests(unittest.TestCase):
         entries = self.collect({"embed": "active"})
         self.assertEqual(entries["embed"]["state"], "active")
 
-    def test_any_of_upstreams_are_satisfied_by_a_unit_without_a_card(self):
-        entries = self.collect({"chat-proxy": "active", "chat-backend-dense": "inactive",
-                                "chat-backend-moe": "active", "chat-backend": "inactive"})
-        self.assertEqual(entries["chat-proxy"]["state"], "active")
+    def test_any_of_upstreams_are_satisfied_by_whichever_choice_is_up(self):
+        # honcho-api takes its embeddings from the router or from the embed
+        # unit; either one satisfies it. The primary backend used to be an
+        # any-of group too, over three units sharing a port -- that is gone.
+        entries = self.collect({"honcho-api": "active", "chat-proxy": "active",
+                                "chat-backend-dense": "active",
+                                "llama-router": "inactive", "embed": "active"})
+        self.assertEqual(entries["honcho-api"]["state"], "active")
 
     def test_degradation_propagates_along_the_chain(self):
         entries = self.collect({
             "honcho-deriver": "active", "honcho-api": "active",
             "chat-proxy": "active", "embed": "active",
-            "chat-backend-dense": "inactive", "chat-backend-moe": "inactive",
+            "chat-backend-dense": "inactive",
             "chat-backend": "inactive",
         })
         self.assertEqual(entries["chat-proxy"]["state"], "degraded")

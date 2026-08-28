@@ -16,9 +16,7 @@ fi
 ALL_SERVICES=(
     think
     nothink
-    chat-backend
     chat-backend-dense
-    chat-backend-moe
     chat-proxy
     chat-backend2
     chat-proxy2
@@ -115,15 +113,14 @@ for key, value in updates.items():
         content += f"\n{key}={rendered}\n"
 config_path.write_text(re.sub(r"\n{3,}", "\n\n", content))
 
+# A saved profile used to record which of three mutually exclusive units served
+# the primary slot. There is one unit per slot now, so any profile that had a
+# chat backend active resolves to the same one -- including old profiles naming
+# a retired variant, which would otherwise resolve to a unit that no longer
+# exists and leave the stack with no chat backend at all.
 active = data.get("_active_chat_model") if isinstance(data.get("_active_chat_model"), dict) else {}
-variant = active.get("variant")
-service = active.get("service")
-if variant == "moe":
-    print("chat-backend-moe")
-elif variant == "dense":
+if active.get("variant") or active.get("service"):
     print("chat-backend-dense")
-elif service == "chat-backend":
-    print("chat-backend")
 PYDEFAULT
 )"
     if [[ -n "${resolved_backend}" ]]; then

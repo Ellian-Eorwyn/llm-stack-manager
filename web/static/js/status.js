@@ -183,9 +183,7 @@ async function startRestoreActiveStack(btn) {
 // -- switch model (built-in + custom) --
 async function switchModel(btn, variant) {
   const orig = btn.textContent;
-  const targetLabel = builtInChatVariantMap[variant]?.label
-    || customModels.find(m => m.id === variant)?.display_name
-    || variant;
+  const targetLabel = customModels.find(m => m.id === variant)?.display_name || variant;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>';
   toast(`Switching to ${targetLabel}...`, 'info');

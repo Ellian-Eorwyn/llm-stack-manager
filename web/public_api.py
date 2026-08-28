@@ -97,8 +97,6 @@ CONFIG_SECTIONS = (
 # that is loading exactly what it was told to.
 CONFIGURED_MODEL_KEYS = {
     "chat-backend-dense": ("CHAT_PRIMARY_MODEL_PATH", "CHAT_DENSE_MODEL_PATH", "CHAT_MODEL_PATH"),
-    "chat-backend-moe":   ("CHAT_SECONDARY_MODEL_PATH", "CHAT_MOE_MODEL_PATH", "CHAT_MODEL_PATH"),
-    "chat-backend":       ("CHAT_MODEL_PATH",),
     "chat-backend2":      ("CHAT2_MODEL_PATH",),
     "embed":              ("EMBEDDING_MODEL_PATH",),
     "rerank":             ("RERANKER_MODEL_PATH",),

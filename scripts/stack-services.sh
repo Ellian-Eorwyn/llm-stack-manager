@@ -3,9 +3,7 @@
 
 STACK_CORE_SERVICES=(
   llm-manager
-  chat-backend
   chat-backend-dense
-  chat-backend-moe
   chat-proxy
   chat-backend2
   chat-proxy2
