@@ -24,7 +24,14 @@ def main() -> int:
         print(f"unknown backend slot {slot!r}; "
               f"expected one of {', '.join(sorted(backends.SLOTS))}", file=sys.stderr)
         return 2
-    argv = backends.build_command(slot, os.environ, sys.argv[1:])
+    said: list[str] = []
+    argv = backends.build_command(slot, os.environ, sys.argv[1:], said)
+    # The decisions worth explaining -- a device this build cannot use, a
+    # --fit-ctx that auto-fit makes inert -- go to stderr, because stdout is
+    # the argv stream. The launcher's own banner is on stdout, and both end up
+    # in the journal together.
+    for message in said:
+        print(f"[{slot}] {message}", file=sys.stderr)
     # Every element is NUL-*terminated*, not NUL-separated: bash's
     # `read -r -d ''` needs the delimiter after the last token too, and joining
     # instead of terminating silently drops the final argument.

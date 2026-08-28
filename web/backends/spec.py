@@ -67,7 +67,7 @@ class Flag:
     #: See `lookup`.
     empty_is_set: bool = False
 
-    def resolve(self, env: dict, prefixes: tuple[str, ...]) -> list[str]:
+    def resolve(self, env: dict, prefixes: tuple[str, ...], ctx=None) -> list[str]:
         value = lookup(env, self.keys, prefixes, self.empty_is_set)
         if value is None:
             value = self.default
@@ -95,7 +95,7 @@ class Toggle:
     default: str = "off"
     otherwise: str | None = None
 
-    def resolve(self, env: dict, prefixes: tuple[str, ...]) -> list[str]:
+    def resolve(self, env: dict, prefixes: tuple[str, ...], ctx=None) -> list[str]:
         value = str(lookup(env, (self.key,), prefixes) or self.default).strip()
         if value == self.when:
             return [self.name]
@@ -138,13 +138,30 @@ class Slot:
     omit: frozenset[str] = frozenset()
     #: Emitted verbatim, after the common flags.
     literals: tuple[str, ...] = ()
-    extra_toggles: tuple[Toggle, ...] = ()
-    #: JSON list of extra arguments, appended last.
-    custom_args_key: str = ""
+    #: Everything after the common toggles, in order. Toggles, flags, and the
+    #: decided arguments in `backends/options.py` -- anything with a
+    #: `resolve(env, prefixes, ctx)`. The order here is the order on the
+    #: command line, which is why it is a tuple and not a set of features.
+    tail: tuple = ()
+    #: JSON list of extra arguments, appended last. Empty means the slot
+    #: offers none.
+    custom_args_keys: tuple[str, ...] = ()
+    #: What `budget.py` calls this slot. Not always the slot's own name: the
+    #: budget model knows `chat-primary` where the unit is `chat-backend-dense`.
+    budget_name: str = ""
+    #: The settings the memory-fit report carries, in order. A pair is
+    #: (label, key suffix); an empty suffix marks one the launcher supplies,
+    #: because it is resolved rather than read -- the tensor split after `auto`
+    #: has been expanded, and the number of visible devices.
+    preflight_fields: tuple[tuple[str, str], ...] = ()
 
     @property
     def prefixes(self) -> tuple[str, ...]:
         return (self.prefix, *self.legacy_prefixes)
+
+    @property
+    def budget(self) -> str:
+        return self.budget_name or self.name
 
     def engine(self, env: dict) -> str:
         key = self.engine_key or f"{self.prefix}_ENGINE"

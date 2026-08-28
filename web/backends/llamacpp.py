@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 
 import platforms
 
+from .options import Context
 from .slots import COMMON_FLAGS, COMMON_TOGGLES
 from .spec import Slot, lookup
 
@@ -79,16 +79,16 @@ def even_tensor_split(ratio: str, visible_devices: str) -> str:
     return ",".join(["1"] * max(count, 1))
 
 
-def custom_args(env: dict, key: str) -> list[str]:
+def custom_args(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> list[str]:
     """Operator-supplied extra arguments, shell-split.
 
     A JSON list of strings, each split with `shlex` so one entry may carry
     several arguments. Anything unparseable yields nothing rather than raising:
     a malformed custom-args field must not stop a backend from starting.
     """
-    if not key:
+    if not keys:
         return []
-    raw = env.get(key) or ""
+    raw = lookup(env, keys, prefixes) or ""
     if not raw or raw == "[]":
         return []
     try:
@@ -102,8 +102,15 @@ def custom_args(env: dict, key: str) -> list[str]:
     return out
 
 
-def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
-    """The full argv, binary first."""
+def build(slot: Slot, env: dict, extra: list[str] | None = None,
+          said: list[str] | None = None) -> list[str]:
+    """The full argv, binary first.
+
+    `said` collects what the launcher would have echoed -- an ignored device, a
+    `--fit-ctx` that auto-fit makes inert. It is a list to append to rather
+    than a return value because the argv is what every caller wants and the
+    messages are what one caller wants.
+    """
     prefixes = slot.prefixes
     argv = [str(env.get("LLAMA_SERVER_BIN") or "llama-server")]
 
@@ -126,15 +133,18 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
 
     argv += list(slot.literals)
 
-    for toggle in COMMON_TOGGLES + slot.extra_toggles:
-        argv += toggle.resolve(env, prefixes)
+    # The operator's own arguments come last on the command line, but they are
+    # parsed first: several of the tail's decisions are "unless they already
+    # passed this themselves".
+    custom = custom_args(env, slot.custom_args_keys, prefixes)
+    ctx = Context(slot=slot, custom=tuple(custom),
+                  stack_dir=str(env.get("STACK_DIR") or ""), said=said or [])
 
-    # Emptied means cleared here: a slot whose own mmproj key has been cleared
-    # must not inherit the legacy one.
-    mmproj = _first(env, slot.mmproj_keys, prefixes, empty_is_set=True).strip()
-    if mmproj and os.path.isfile(mmproj):
-        argv += ["--mmproj", mmproj]
+    for toggle in COMMON_TOGGLES:
+        argv += toggle.resolve(env, prefixes, ctx)
+    for option in slot.tail:
+        argv += option.resolve(env, prefixes, ctx)
 
-    argv += custom_args(env, slot.custom_args_key)
+    argv += custom
     argv += list(extra or [])
     return argv

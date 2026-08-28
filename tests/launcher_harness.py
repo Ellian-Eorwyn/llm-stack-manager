@@ -129,6 +129,24 @@ class LauncherSandbox:
                 lines.append(f'{key}={value}')
         self.env_file.write_text("\n".join(lines) + "\n")
 
+    def exported(self) -> dict[str, str]:
+        """The env file as `EnvironmentFile=` would present it.
+
+        Raw, not expanded: systemd does not expand `${LISTEN_HOST}` in an
+        environment file, and neither does this. The launcher's own `source`
+        expands it for the launcher's own variables.
+        """
+        out = {}
+        for line in self.env_file.read_text().splitlines():
+            if line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            out[key.strip()] = value
+        return out
+
     def normalise(self, argv: list[str]) -> list[str]:
         """Replace the sandbox path with a stable token.
 
@@ -140,7 +158,13 @@ class LauncherSandbox:
 
     def run(self, script: str, *args: str) -> tuple[list[str], str, int]:
         """(argv the launcher would exec, what it said, exit code)."""
-        environ = {**os.environ, "LLM_STACK_PLATFORM": self.platform}
+        # systemd gives every unit `EnvironmentFile=config/llm-stack.env` and the
+        # launchd wrapper sources it under `set -a`, so a launcher starts with
+        # the file's values already in its environment as well as sourcing it
+        # itself. That is not a detail: the custom-argument blocks read
+        # `os.environ` from a Python heredoc, and without this they would see
+        # nothing here while seeing everything in production.
+        environ = {**os.environ, **self.exported(), "LLM_STACK_PLATFORM": self.platform}
         if self.record_budget:
             environ["BUDGET_PY"] = str(self.budget)
         proc = subprocess.run(

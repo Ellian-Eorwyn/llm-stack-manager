@@ -14,6 +14,7 @@ a flag moving from before a positional to after it.
 
 from __future__ import annotations
 
+from . import options
 from .spec import Flag, Slot, Toggle
 
 # The flags every llama.cpp slot takes, in emission order. Suffixes are
@@ -31,25 +32,158 @@ COMMON_FLAGS = (
     Flag("--threads-batch",   ("THREADS_BATCH",), "-1"),
     Flag("--cache-type-k",    ("CACHE_TYPE_K",), "q8_0"),
     Flag("--cache-type-v",    ("CACHE_TYPE_V",), "q8_0"),
+    # The prompt cache. Only the slots that hold a conversation take these; the
+    # auxiliary slots omit them.
+    Flag("--cache-ram",       ("CACHE_RAM",), "8192"),
+    Flag("--ctx-checkpoints", ("CTX_CHECKPOINTS",), "8"),
     Flag("--flash-attn",      ("FLASH_ATTN",), "on"),
     Flag("--temp",            ("TEMP",), "1.0"),
     Flag("--top-p",           ("TOP_P",), "0.95"),
     Flag("--top-k",           ("TOP_K",), "20"),
     Flag("--min-p",           ("MIN_P",), "0.00"),
+    # Task only, and between --min-p and --reasoning-format where it emitted
+    # them.
+    Flag("--presence-penalty", ("PRESENCE_PENALTY",), "0.00"),
+    Flag("--repeat-penalty",   ("REPEAT_PENALTY",), "1.00"),
     Flag("--reasoning-format", ("REASONING_FORMAT",), "none"),
     Flag("--fit",             ("FIT",), "on"),
 )
 
-# Emitted after the literals, in this order.
+# Emitted after the literals, before the slot's own tail.
 COMMON_TOGGLES = (
     Toggle("--log-prefix", "LOG_PREFIX", when="true", default="true"),
     Toggle("--metrics",    "METRICS",    when="on",   default="on"),
     Toggle("--no-mmap",    "NO_MMAP",    when="true", default="false"),
     Toggle("--mlock",      "MLOCK",      when="true", default="false"),
-    Toggle("--jinja",      "JINJA",      when="on",   default="off"),
 )
 
+#: What the memory-fit report carries for a slot holding a conversation, in
+#: the order the launchers passed it. An empty suffix is one the launcher
+#: resolves rather than reads.
+_LARGE_PREFLIGHT = (
+    ("ctx_size", "CTX_SIZE"), ("parallel", "N_PARALLEL"), ("ubatch", "UBATCH_SIZE"),
+    ("cache_type_k", "CACHE_TYPE_K"), ("cache_type_v", "CACHE_TYPE_V"),
+    ("ctx_checkpoints", "CTX_CHECKPOINTS"), ("cache_ram", "CACHE_RAM"),
+    ("tensor_split", ""), ("devices", ""),
+    ("swa_full", "SWA_FULL"), ("fit", "FIT"), ("fit_ctx", "FIT_CTX"),
+    ("spec_method", "SPEC_METHOD"),
+)
+
+#: An auxiliary slot has no prompt cache, no auto-fit and no draft model, so it
+#: reports the five settings it does have.
+_AUX_PREFLIGHT = (
+    ("ctx_size", "CTX_SIZE"), ("parallel", "N_PARALLEL"),
+    ("cache_type_k", "CACHE_TYPE_K"), ("cache_type_v", "CACHE_TYPE_V"),
+    ("tensor_split", ""),
+)
+
+#: The prompt-cache and sampling flags an auxiliary slot never passed.
+_AUX_OMIT = frozenset({"--cache-ram", "--ctx-checkpoints",
+                       "--presence-penalty", "--repeat-penalty"})
+
+#: The three offload flags llama.cpp states both ways round, in the order the
+#: launchers emitted them.
+_OFFLOAD = (
+    Toggle("--kv-offload",     "KV_OFFLOAD",     when="on", default="on",
+           otherwise="--no-kv-offload"),
+    Toggle("--op-offload",     "OP_OFFLOAD",     when="on", default="on",
+           otherwise="--no-op-offload"),
+    Toggle("--mmproj-offload", "MMPROJ_OFFLOAD", when="on", default="on",
+           otherwise="--no-mmproj-offload"),
+)
+
+#: What a large-model slot emits after the common toggles. Both chat slots and
+#: the task slot share it apart from where `--mmproj` falls and which shape of
+#: template kwargs they ask for, so the two differences are arguments.
+def _large_model_tail(kwargs: options.TemplateKwargs, template: options.TemplateFile,
+                      mmproj_early: bool = False) -> tuple:
+    mmproj = (options.MMProj(),)
+    return (
+        options.Device(),
+        *_OFFLOAD,
+        options.SwaFull(),
+        *(mmproj if mmproj_early else ()),
+        Flag("--fit-target", ("FIT_TARGET",), empty_is_set=True),
+        options.FitCtx(),
+        Toggle("--cache-idle-slots", "CACHE_IDLE_SLOTS", when="on", default="on",
+               otherwise="--no-cache-idle-slots"),
+        options.CacheReuse(),
+        options.Jinja(),
+        kwargs,
+        template,
+        *(() if mmproj_early else mmproj),
+        options.Speculative(),
+    )
+
+
 SLOTS = {
+    "chat-backend-dense": Slot(
+        name="chat-backend-dense",
+        prefix="CHAT_PRIMARY",
+        # The slot was `CHAT_DENSE_*` before it was `CHAT_PRIMARY_*`, and the
+        # bare `CHAT_*` names are the shared originals. Only the five keys
+        # LEGACY_ENV_KEY_MAP declares were ever spelled CHAT_DENSE_*, so the
+        # rest read two levels and those five read three.
+        legacy_prefixes=("CHAT",),
+        model_keys=("!CHAT_PRIMARY_MODEL_PATH", "!CHAT_DENSE_MODEL_PATH",
+                    "!CHAT_MODEL_PATH"),
+        alias_keys=("!CHAT_PRIMARY_MODEL_NAME", "!CHAT_DENSE_MODEL_NAME"),
+        alias_default="chat-dense",
+        mmproj_keys=("!CHAT_PRIMARY_MMPROJ_PATH", "!CHAT_DENSE_MMPROJ_PATH",
+                     "!CHAT_MMPROJ_PATH"),
+        key_chains={"CTX_SIZE": ("!CHAT_PRIMARY_CTX_SIZE", "!CHAT_DENSE_CTX_SIZE",
+                                 "!CHAT_CTX_SIZE")},
+        # Not CHAT_PRIMARY_PORT: both chat slots bind the shared backend port,
+        # and every consumer in the stack -- the proxies, telemetry, health --
+        # talks to that name.
+        port_keys=("!CHAT_BACKEND_PORT",),
+        port_default="8010",
+        host_keys=("!CHAT_BACKEND_HOST",),
+        defaults={"CTX_SIZE": "32768", "BATCH_SIZE": "2048", "FLASH_ATTN": "auto",
+                  "REASONING_FORMAT": "deepseek"},
+        omit=frozenset({"--presence-penalty", "--repeat-penalty"}),
+        tail=_large_model_tail(options.TemplateKwargs(style="preserve"),
+                               options.TemplateFile(keys=("TEMPLATE_ID",))),
+        custom_args_keys=("CUSTOM_ARGS_JSON",),
+        # `budget.py` knows the slot by what it holds, not by its unit name.
+        budget_name="chat-primary",
+        preflight_fields=_LARGE_PREFLIGHT,
+    ),
+    "chat-backend2": Slot(
+        name="chat-backend2",
+        prefix="CHAT2",
+        model_keys=("!CHAT2_MODEL_PATH",),
+        alias_default="chat-moe",
+        mmproj_keys=("MMPROJ_PATH",),
+        port_keys=("!CHAT2_BACKEND_PORT",),
+        port_default="8020",
+        host_keys=("!CHAT2_BACKEND_HOST",),
+        defaults={"CTX_SIZE": "32768", "BATCH_SIZE": "2048", "FLASH_ATTN": "auto",
+                  "REASONING_FORMAT": "deepseek"},
+        omit=frozenset({"--presence-penalty", "--repeat-penalty"}),
+        tail=_large_model_tail(options.TemplateKwargs(style="preserve"),
+                               options.TemplateFile(keys=("TEMPLATE_ID",))),
+        custom_args_keys=("CUSTOM_ARGS_JSON",),
+        budget_name="chat-secondary",
+        preflight_fields=_LARGE_PREFLIGHT,
+    ),
+    "task": Slot(
+        name="task",
+        prefix="TASK",
+        model_keys=("!TASK_MODEL_PATH",),
+        alias_default="task",
+        port_default="8007",
+        defaults={"CTX_SIZE": "32000", "BATCH_SIZE": "2048", "FLASH_ATTN": "auto"},
+        # The task slot emits --mmproj early, before --fit-target, where the
+        # chat slots emit it last. Declared rather than normalised: the golden
+        # file is only worth having if it is compared against unchanged.
+        tail=_large_model_tail(options.TemplateKwargs(
+                                   style="enable", thinking_keys=("THINKING",)),
+                               options.TemplateFile(keys=("CHAT_TEMPLATE_ID",)),
+                               mmproj_early=True),
+        custom_args_keys=("CUSTOM_ARGS_JSON",),
+        preflight_fields=_LARGE_PREFLIGHT,
+    ),
     "embed": Slot(
         name="embed",
         prefix="EMBED",
@@ -59,7 +193,10 @@ SLOTS = {
         # The embedding slot has always defaulted its KV cache to f16 rather
         # than the q8_0 the chat backends use.
         defaults={"CACHE_TYPE_K": "f16", "CACHE_TYPE_V": "f16"},
+        omit=_AUX_OMIT,
         literals=("--embedding", "--pooling", "mean"),
+        preflight_fields=_AUX_PREFLIGHT,
+        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj()),
     ),
     "rerank": Slot(
         name="rerank",
@@ -70,7 +207,10 @@ SLOTS = {
         alias_default="rank",
         port_default="8006",
         defaults={"CACHE_TYPE_K": "f16", "CACHE_TYPE_V": "f16"},
+        omit=_AUX_OMIT,
         literals=("--reranking",),
+        preflight_fields=_AUX_PREFLIGHT,
+        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj()),
     ),
     "ocr": Slot(
         name="ocr",
@@ -84,15 +224,11 @@ SLOTS = {
                   "TEMP": "0.1", "TOP_K": "1", "FIT": "off",
                   "CTX_SIZE": "8192", "BATCH_SIZE": "2048"},
         # OCR never passed one; llama-server's own default applies.
-        omit=frozenset({"--reasoning-format"}),
-        extra_toggles=(
-            Toggle("--kv-offload",     "KV_OFFLOAD",     when="on", default="on",
-                   otherwise="--no-kv-offload"),
-            Toggle("--op-offload",     "OP_OFFLOAD",     when="on", default="on",
-                   otherwise="--no-op-offload"),
-            Toggle("--mmproj-offload", "MMPROJ_OFFLOAD", when="on", default="on",
-                   otherwise="--no-mmproj-offload"),
-        ),
-        custom_args_key="OCR_CUSTOM_ARGS_JSON",
+        omit=_AUX_OMIT | frozenset({"--reasoning-format"}),
+        tail=(Toggle("--jinja", "JINJA", when="on", default="off"),
+              *_OFFLOAD,
+              options.MMProj()),
+        preflight_fields=_AUX_PREFLIGHT,
+        custom_args_keys=("CUSTOM_ARGS_JSON",),
     ),
 }
