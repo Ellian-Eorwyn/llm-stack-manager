@@ -184,6 +184,32 @@ resolve_split_opts() {
     return 0
 }
 
+# Expand a tensor-split ratio of `auto` into an even share per visible device.
+#
+# "1" for one device, "1,1" for two. llama.cpp does not understand the literal
+# string `auto`, so it has to be expanded before it is passed -- and against the
+# *visible* devices rather than every device on the host, because a slot pinned
+# to one card of two wants "1", not "1,1".
+auto_tensor_split() {
+    local ratio="$1" devices="${2//[[:space:]]/}"
+    if [[ -n "${ratio}" && "${ratio}" != "auto" ]]; then
+        printf '%s' "${ratio}"
+        return 0
+    fi
+    if [[ -z "${ratio}" ]]; then
+        printf ''
+        return 0
+    fi
+    local count=0 part split="1" i
+    IFS=',' read -ra parts <<< "${devices}"
+    for part in ${parts[@]+"${parts[@]}"}; do
+        [[ -n "${part}" ]] && count=$((count + 1))
+    done
+    if ((count < 1)); then count=1; fi
+    for ((i = 1; i < count; i++)); do split+=",1"; done
+    printf '%s' "${split}"
+}
+
 # Add --device, if the configured device exists on this machine's backend.
 #
 # The device name is backend-specific: a CUDA build enumerates CUDA0, CUDA1, a

@@ -29,11 +29,17 @@ BACKEND_SENSITIVE_PATHS=(
     "scripts/start-rerank"
     "scripts/start-task"
     "scripts/start-ocr"
+    # The one launcher the consolidated slots run through.
+    "scripts/start-backend.sh"
     # Sourced by every launcher, and it decides which flags reach llama-server.
     "scripts/lib/"
     # The launchers consult the budget model at startup to skip flags the
     # loaded model cannot act on, so a change here changes the next launch.
     "web/budget.py"
+    # What a slot *is*: its flags, defaults and engine. A change here changes
+    # the command line a backend is next started with, exactly as editing its
+    # launcher used to.
+    "web/backends/"
 )
 
 usage() {

@@ -646,21 +646,36 @@ class MetricsFlagTests(unittest.TestCase):
         self.assertEqual(manager.RESTART_HINTS["EMBED_METRICS"], ["embed"])
         self.assertEqual(manager.RESTART_HINTS["TASK_METRICS"], ["task"])
 
-    def test_launchers_gate_the_flag_on_the_env_key(self):
+    def test_launchers_still_written_in_shell_gate_the_flag_on_the_env_key(self):
         root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
         for script, prefix in [
             ("start-chat-backend.sh", "CHAT"),
             ("start-chat-backend2.sh", "CHAT2"),
             ("start-chat-backend-moe.sh", "CHAT"),
             ("start-chat-backend-dense.sh", "CHAT"),
-            ("start-embed.sh", "EMBED"),
-            ("start-embed2.sh", "EMBED2"),
-            ("start-rerank.sh", "RERANK"),
             ("start-task.sh", "TASK"),
-            ("start-ocr.sh", "OCR"),
         ]:
             text = (root / script).read_text()
             self.assertIn(f'"${{{prefix}_METRICS:-on}}" == "on" ]] && OPTS+=(--metrics)', text, script)
+
+    def test_consolidated_slots_gate_the_flag_on_the_env_key(self):
+        """The same guarantee for the slots that moved to the registry.
+
+        Asserted as behaviour rather than as source text: the gate is a Toggle
+        in web/backends/slots.py now, and grepping the shell for it would pass
+        for a launcher that never reaches its exec.
+        """
+        env = {"LLAMA_SERVER_BIN": "/bin/llama-server", "LISTEN_HOST": "127.0.0.1",
+               "EMBEDDING_MODEL_PATH": "/m.gguf", "RERANKER_MODEL_PATH": "/m.gguf",
+               "OCR_MODEL_PATH": "/m.gguf"}
+        with platform_harness.as_linux():
+            import backends
+            for slot, prefix in (("embed", "EMBED"), ("embed2", "EMBED2"),
+                                 ("rerank", "RERANK"), ("ocr", "OCR")):
+                with self.subTest(slot):
+                    self.assertIn("--metrics", backends.build_command(slot, dict(env)))
+                    self.assertNotIn("--metrics", backends.build_command(
+                        slot, dict(env, **{f"{prefix}_METRICS": "off"})))
 
     def test_mtp_runs_without_a_draft_model(self):
         """Most MTP GGUFs carry their own blk.N.nextn.* head, and llama.cpp
