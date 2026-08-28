@@ -350,6 +350,11 @@ WRAPPER
     <true/>
     <key>ThrottleInterval</key>
     <integer>5</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${LAUNCHD_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>${log_file}</string>
     <key>StandardErrorPath</key>

@@ -48,6 +48,34 @@ config_flag() {
 MODEL_ROUTER_ENABLED="$(config_flag MODEL_ROUTER_ENABLED off)"
 MODEL_ROUTER_MEMBERS="$(config_flag MODEL_ROUTER_MEMBERS "EMBED,OCR,RERANK,TASK")"
 TRANSCRIPT_ENABLED="$(config_flag TRANSCRIPT_ENABLED off)"
+
+# Which process serves a slot. The launcher name is already a parameter of both
+# the systemd and launchd install paths, so selecting an engine is choosing a
+# different script rather than branching anywhere else. `mlx` is Apple silicon
+# only; asking for it elsewhere is a configuration error worth failing on rather
+# than silently serving from llama.cpp and leaving the operator to wonder why
+# the Metal path is not being used.
+EMBED_ENGINE="$(config_flag EMBED_ENGINE llamacpp)"
+TRANSCRIPT_ENGINE="$(config_flag TRANSCRIPT_ENGINE sidecar)"
+
+resolve_engine_script() {
+    local slot="$1" engine="$2" default_script="$3" mlx_script="$4"
+    case "${engine}" in
+        llamacpp|sidecar) echo "${default_script}" ;;
+        mlx|parakeet-mlx)
+            if ! is_mac; then
+                echo "  ERROR: ${slot} engine '${engine}' needs Apple silicon" >&2
+                exit 1
+            fi
+            echo "${mlx_script}" ;;
+        *)
+            echo "  ERROR: unknown ${slot} engine '${engine}'" >&2
+            exit 1 ;;
+    esac
+}
+
+EMBED_SCRIPT="$(resolve_engine_script embed "${EMBED_ENGINE}" "start-embed.sh" "start-embed-mlx.sh")"
+TRANSCRIPT_SCRIPT="$(resolve_engine_script transcription "${TRANSCRIPT_ENGINE}" "start-transcribe.sh" "start-parakeet-mlx.sh")"
 HONCHO_ENV_TEMPLATE="${CONFIG_DIR}/honcho.env.example"
 HONCHO_ENV_FILE="${CONFIG_DIR}/honcho.env"
 SERVICE_USER="$(cp_stat_user "${STACK_DIR}")"
@@ -452,7 +480,7 @@ UNIT
         install_unit "chat-backend2" "LLM Chat Secondary Shared Backend - llama-server" "start-chat-backend2.sh" 300
         install_unit "chat-proxy2" "LLM Chat Proxy 2 - think/chat/code ports" "start-chat-proxy2.sh" 30
     fi
-    setup_has_component embedding && install_unit "embed" "LLM Embedding Model - llama-server" "start-embed.sh" 120
+    setup_has_component embedding && install_unit "embed" "LLM Embedding Model - ${EMBED_ENGINE}" "${EMBED_SCRIPT}" 120
     setup_has_component embedding2 && install_unit "embed2" "LLM Embedding 2 Model - llama-server" "start-embed2.sh" 120
     setup_has_component reranker && install_unit "rerank" "LLM Reranker Model - llama-server" "start-rerank.sh" 120
     setup_has_component task && install_unit "task" "LLM Task Model - llama-server" "start-task.sh" 120
@@ -460,7 +488,7 @@ UNIT
     setup_has_component glmocr-sdk && install_unit "glmocr-sdk" "LLM OCR GLM-OCR SDK Parser" "start-glmocr-sdk.sh" 300
     # Holds no VRAM until its first request — the model is loaded on demand and
     # released when idle — so installing the unit costs nothing while it is off.
-    setup_has_component transcribe && install_unit "transcript-backend" "LLM Transcription Sidecar - speech to text" "start-transcribe.sh" 120
+    setup_has_component transcribe && install_unit "transcript-backend" "LLM Transcription - ${TRANSCRIPT_ENGINE}" "${TRANSCRIPT_SCRIPT}" 120
     # One llama-server owning embed/ocr/rank/task on demand. The member units
     # above stay installed but stopped, so turning the flag off and starting
     # them is the whole rollback.
@@ -598,8 +626,14 @@ elif is_mac; then
         LAUNCHD_WAIT_FOR="${_launched_wait_for}"
         LAUNCHD_CONFLICTS="${_launched_conflicts}"
 
-        # llm-manager runs as root; everything else runs as SERVICE_USER
-        if [[ "${name}" == "llm-manager" ]]; then
+        # In the system domain llm-manager runs as root, because installing
+        # packages and controlling services needs it. A LaunchAgent cannot: the
+        # GUI domain runs everything as the session's own user, and UserName is
+        # not honoured there. So the root special-case applies to the system
+        # domain only -- in the user domain the manager runs as SERVICE_USER
+        # like everything else, and the operations that need privilege prompt
+        # for it rather than already having it.
+        if [[ "${name}" == "llm-manager" && "$(svc_domain)" == "system" ]]; then
             local _saved_user="${SERVICE_USER}"
             local _saved_group="${SERVICE_GROUP}"
             SERVICE_USER="root"
@@ -629,7 +663,7 @@ elif is_mac; then
     install_mac_service "chat-backend2"      "LLM Chat Custom Shared Backend 2 - llama-server"     "start-chat-backend2.sh"
     install_mac_service "chat-proxy2"        "LLM Chat Proxy 2 - think/chat/code ports"            "start-chat-proxy2.sh" \
         "chat-backend2"
-    install_mac_service "embed"              "LLM Embedding Model - llama-server"                  "start-embed.sh"
+    install_mac_service "embed"              "LLM Embedding Model - ${EMBED_ENGINE}"               "${EMBED_SCRIPT}"
     install_mac_service "embed2"             "LLM Embedding 2 Model - llama-server"                "start-embed2.sh"
     install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
     install_mac_service "task"               "LLM Task Model - llama-server"                       "start-task.sh"
@@ -648,7 +682,7 @@ elif is_mac; then
         "${_ocr_upstream}"
     # No upstream: only the optional `router` engine talks to llama-router, and
     # the local runtimes need nothing at all. See the note in web/health.py.
-    install_mac_service "transcript-backend" "LLM Transcription Sidecar - speech to text"          "start-transcribe.sh"
+    install_mac_service "transcript-backend" "LLM Transcription - ${TRANSCRIPT_ENGINE}"             "${TRANSCRIPT_SCRIPT}"
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         install_mac_service "honcho-api"     "Local Honcho Memory API"                             "start-honcho-api.sh" \
             "chat-proxy ${_embed_upstream}"

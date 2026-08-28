@@ -225,9 +225,57 @@ def dependency_units() -> set[str]:
                for group in groups for member in group})
 
 
+# A service whose engine changes what "ready" looks like.
+#
+# The default probes assume llama-server: `/props` for the embedding slot, and
+# `{"status": "ok"}` from the transcription sidecar. Neither holds for the MLX
+# servers -- the MLX embedding server has no `/props` at all and answers 404,
+# and the Parakeet server reports `{"status": "healthy"}`. Both would have been
+# reported as degraded while serving correctly, which is the same class of
+# quietly-wrong the platform layer exists to stop.
+#
+# Faking `/props` in the MLX server would be worse than this table: telemetry
+# parses that payload for slot and context accounting, and an imitation of it
+# would produce numbers about a server that does not have slots.
+ENGINE_PROBES = {
+    ("embed", "mlx"): {
+        "kind": "http", "path": "/health",
+        "host_key": "EMBED_BACKEND_HOST", "port_key": "EMBED_PORT",
+        "default_port": "8005", "expect_field": ("status", "healthy"),
+    },
+    ("transcript-backend", "parakeet-mlx"): {
+        "kind": "http", "path": "/health",
+        "host_key": "TRANSCRIPT_HOST", "port_key": "TRANSCRIPT_PORT",
+        "default_port": "8014", "expect_field": ("status", "healthy"),
+    },
+}
+
+#: Which env key names the engine for a service, and what it defaults to.
+SERVICE_ENGINE_KEYS = {
+    "embed": ("EMBED_ENGINE", "llamacpp"),
+    "transcript-backend": ("TRANSCRIPT_ENGINE", "sidecar"),
+}
+
+
+def probe_spec(name: str, env: dict) -> dict | None:
+    """The readiness probe for a service, given how it is configured.
+
+    Reached through this rather than by indexing `SERVICE_PROBES` directly, so
+    that a service served by a different engine is judged by that engine's
+    definition of ready.
+    """
+    engine_key, default = SERVICE_ENGINE_KEYS.get(name, (None, None))
+    if engine_key:
+        engine = str(env.get(engine_key) or default).strip()
+        override = ENGINE_PROBES.get((name, engine))
+        if override:
+            return override
+    return SERVICE_PROBES.get(name)
+
+
 def endpoint_for(name: str, env: dict) -> tuple[str, str] | None:
     """(host, port) for a service's probe, or None if it has no probe."""
-    spec = SERVICE_PROBES.get(name)
+    spec = probe_spec(name, env)
     if not spec:
         return None
     port = str(env.get(spec["port_key"]) or spec.get("default_port") or "").strip()
@@ -241,7 +289,7 @@ def endpoint_for(name: str, env: dict) -> tuple[str, str] | None:
 
 def probe(name: str, env: dict, timeout: float = PROBE_TIMEOUT_SECONDS) -> dict | None:
     """Run one service's readiness probe. None when the service has none."""
-    spec = SERVICE_PROBES.get(name)
+    spec = probe_spec(name, env)
     endpoint = endpoint_for(name, env)
     if not spec or not endpoint:
         return None

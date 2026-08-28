@@ -406,3 +406,53 @@ class ActiveAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EngineSelectionTests(unittest.TestCase):
+    """A slot served by a different engine is judged by that engine's rules.
+
+    Both of these were live defects when the MLX servers were first wired in:
+    the manager reported them degraded while they served correctly, because it
+    was asking a llama-server question of something that is not llama-server.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
+        import health
+        self.health = health
+
+    def test_the_default_embedding_probe_is_still_llama_servers(self):
+        spec = self.health.probe_spec("embed", {})
+        self.assertEqual(spec["path"], "/props")
+
+    def test_the_mlx_embedding_server_is_not_asked_for_props(self):
+        # It has no /props and answers 404. Faking one would be worse than this
+        # table: telemetry parses that payload for slot and context accounting,
+        # and an imitation would produce numbers about a server with no slots.
+        spec = self.health.probe_spec("embed", {"EMBED_ENGINE": "mlx"})
+        self.assertEqual(spec["path"], "/health")
+        self.assertEqual(spec["expect_field"], ("status", "healthy"))
+
+    def test_the_parakeet_server_reports_healthy_not_ok(self):
+        # The sidecar returns {"status": "ok"}; Parakeet returns
+        # {"status": "healthy"}. Probing for the wrong one fails a working
+        # service.
+        sidecar = self.health.probe_spec("transcript-backend", {})
+        parakeet = self.health.probe_spec(
+            "transcript-backend", {"TRANSCRIPT_ENGINE": "parakeet-mlx"})
+        self.assertEqual(sidecar["expect_field"], ("status", "ok"))
+        self.assertEqual(parakeet["expect_field"], ("status", "healthy"))
+
+    def test_an_unknown_engine_falls_back_rather_than_losing_the_probe(self):
+        # A typo in the config should not silently remove a service's readiness
+        # check; it should behave as the default engine does.
+        spec = self.health.probe_spec("embed", {"EMBED_ENGINE": "typo"})
+        self.assertEqual(spec, self.health.SERVICE_PROBES["embed"])
+
+    def test_every_engine_probe_names_a_service_that_exists(self):
+        for (service, engine), spec in self.health.ENGINE_PROBES.items():
+            with self.subTest(service=service, engine=engine):
+                self.assertIn(service, self.health.SERVICE_PROBES)
+                self.assertIn(service, self.health.SERVICE_ENGINE_KEYS)
+                for key in ("kind", "path", "host_key", "port_key"):
+                    self.assertIn(key, spec)

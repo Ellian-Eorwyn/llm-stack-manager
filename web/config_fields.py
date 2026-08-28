@@ -280,6 +280,7 @@ CORE_CONFIG_SECTIONS = {
     "SearXNG",
     "Playwright",
     "Transcription",
+    "Apple Silicon (MLX)",
     "Ports",
     "State API",
 }
@@ -864,6 +865,16 @@ CONFIG_FIELDS = [
     {"section": "Transcription", "key": "TRANSCRIPT_API_TOKEN",         "label": "Access Token",           "type": "text",   "hint": "Blank means no authentication. Set it and requests need Authorization: Bearer <token>"},
     {"section": "Transcription", "key": "TRANSCRIPT_ACTIVE_ENGINE",     "label": "Default Engine",         "type": "select", "options": list(TRANSCRIPTION_ENGINE_IDS), "hint": "Used when a request names no engine"},
     {"section": "Transcription", "key": "TRANSCRIPT_ENGINES",           "label": "Installed Engines",      "type": "text",   "hint": "Comma-separated --engines tokens for scripts/install-transcribe.sh"},
+    {"section": "Apple Silicon (MLX)", "key": "EMBED_ENGINE",      "label": "Embedding Server",   "type": "select", "options": ["llamacpp", "mlx"], "hint": "Which process serves the embedding slot. mlx is Apple silicon only"},
+    {"section": "Apple Silicon (MLX)", "key": "TRANSCRIPT_ENGINE",  "label": "Transcription Server", "type": "select", "options": ["sidecar", "parakeet-mlx"], "hint": "Which server runs. Distinct from Active Engine above, which picks the runtime *inside* the sidecar"},
+    {"section": "Apple Silicon (MLX)", "key": "MLX_RUNTIME_VENV",   "label": "Runtime Venv",       "type": "path",   "hint": "Kept apart from the manager's own venv, which depends on nothing but Flask"},
+    {"section": "Apple Silicon (MLX)", "key": "MLX_RUNTIME_PYTHON", "label": "Python",             "type": "text",   "hint": "Interpreter used to create the runtime venv"},
+    {"section": "Apple Silicon (MLX)", "key": "MLX_HF_HOME",        "label": "HuggingFace Cache",  "type": "path",   "hint": "HF_HOME for the MLX services"},
+    {"section": "Apple Silicon (MLX)", "key": "MLX_EMBED_MODEL_PATH",    "label": "Embedding Model",   "type": "path", "hint": "Local MLX model directory; revision pinned in config/mlx-models.lock.json"},
+    {"section": "Apple Silicon (MLX)", "key": "MLX_PARAKEET_MODEL_PATH", "label": "Parakeet Model",    "type": "path", "hint": "Local MLX model directory; revision pinned in config/mlx-models.lock.json"},
+    {"section": "Apple Silicon (MLX)", "key": "MLX_PARAKEET_MODEL_NAME", "label": "Parakeet Alias",    "type": "text", "hint": "The `model` value this endpoint answers to"},
+    {"section": "Apple Silicon (MLX)", "key": "MLX_PARAKEET_CHUNK_SECONDS",   "label": "Chunk Seconds",   "type": "number", "hint": "Chunk length; keeps peak memory predictable on a small unified-memory machine"},
+    {"section": "Apple Silicon (MLX)", "key": "MLX_PARAKEET_OVERLAP_SECONDS", "label": "Overlap Seconds", "type": "number", "hint": "Overlap between chunks, so a word spanning a boundary is not lost"},
     {"section": "Transcription", "key": "TRANSCRIPT_TIMEOUT_SECONDS",   "label": "Request Timeout (sec)",  "type": "number", "hint": "Must cover a cold model load, not just the decode"},
     {"section": "Transcription", "key": "TRANSCRIPT_LOCAL_DEVICE",      "label": "Local Device",           "type": "select", "options": ["cuda", "cpu"]},
     {"section": "Transcription", "key": "TRANSCRIPT_LOCAL_COMPUTE_TYPE","label": "Local Compute Type",     "type": "select", "options": ["float16", "int8", "int8_float16", "float32"]},
@@ -1005,6 +1016,19 @@ SHARED_CHAT_BACKEND_RESTART = ["chat-backend-dense", "chat-backend-moe", "chat-b
 
 # Which services should be restarted after changing a given config key
 RESTART_HINTS = {
+    # MLX. The engine keys change which *launcher* a service runs, so they
+    # need the installer re-run to regenerate the unit, not just a restart --
+    # reported as a restart of the affected service so the UI at least names it.
+    "EMBED_ENGINE":                 ["embed"],
+    "TRANSCRIPT_ENGINE":            ["transcript-backend"],
+    "MLX_RUNTIME_VENV":             ["embed", "transcript-backend"],
+    "MLX_RUNTIME_PYTHON":           ["embed", "transcript-backend"],
+    "MLX_HF_HOME":                  ["embed", "transcript-backend"],
+    "MLX_EMBED_MODEL_PATH":         ["embed"],
+    "MLX_PARAKEET_MODEL_PATH":      ["transcript-backend"],
+    "MLX_PARAKEET_MODEL_NAME":      ["transcript-backend"],
+    "MLX_PARAKEET_CHUNK_SECONDS":   ["transcript-backend"],
+    "MLX_PARAKEET_OVERLAP_SECONDS": ["transcript-backend"],
     "CHAT_DENSE_LABEL":          ["chat-backend-dense"],
     "CHAT_DENSE_MODEL_NAME":     ["chat-backend-dense"],
     "CHAT_DENSE_MODEL_PATH":     ["chat-backend-dense"],
