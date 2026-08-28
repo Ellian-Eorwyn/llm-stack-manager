@@ -49,6 +49,7 @@ import core
 import deploy
 import health
 import models
+import platforms
 import public_api
 import scheduling
 import telemetry
@@ -458,30 +459,20 @@ def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str
 
 def process_cmdline(pid: int) -> str:
     """How a process was actually launched, which is not always how it is configured."""
-    try:
-        return Path(f"/proc/{int(pid)}/cmdline").read_text(errors="ignore").replace("\x00", " ").strip()
-    except Exception:
-        return ""
-
-
-_CGROUP_UNIT_RE = re.compile(r"/([\w\-.@\\]+)\.service\b")
+    return platforms.active().pid_cmdline(pid)
 
 
 def process_unit(pid: int) -> str:
-    """The systemd unit a PID belongs to, read from its cgroup.
+    """The service unit a PID belongs to.
 
-    Matching against each unit's MainPID only ever finds the process systemd
-    started, and the interesting ones are often children: `llama-router` forks a
-    `llama-server` per resident model, and it is those children that hold the
-    VRAM. The cgroup names the unit for every process in it, parent or child,
-    from one file read and no subprocess.
+    Linux reads this from the cgroup, which names the unit for every process in
+    it -- parent or child -- and that matters because the processes holding GPU
+    memory are frequently children: `llama-router` forks a `llama-server` per
+    resident model and none of them is a main PID. macOS has no equivalent and
+    can only match main PIDs, so `label_gpu_process` falling back to the command
+    line carries more weight there.
     """
-    try:
-        text = Path(f"/proc/{int(pid)}/cgroup").read_text(errors="ignore")
-    except (OSError, ValueError):
-        return ""
-    match = _CGROUP_UNIT_RE.search(text)
-    return match.group(1) if match else ""
+    return platforms.active().pid_unit(pid)
 
 
 def process_model_args(cmdline: str) -> tuple[str, str]:
@@ -562,126 +553,53 @@ def label_gpu_process(pid: int, process_name: str, service_pids: dict[int, str])
 
 
 def get_gpu_processes(uuid_by_index: dict[int, str]) -> dict[int, list[dict]]:
+    """Which process is holding how much device memory, on which GPU.
+
+    The platform supplies the raw rows; the labelling below is the same on every
+    platform and stays here. A platform that cannot attribute device memory to a
+    process at all returns `None` from `gpu_compute_apps`, which is different
+    from returning no rows: on unified memory there is no per-process breakdown
+    to be had, and reporting an empty list there would assert that nothing is
+    using the GPU.
+    """
     uuid_to_index = {uuid: index for index, uuid in uuid_by_index.items() if uuid}
     service_pids = service_main_pids()
-    processes = {index: [] for index in uuid_by_index}
-    try:
-        r = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True, text=True, timeout=5,
-        )
-        for line in r.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 4:
-                continue
-            gpu_uuid, pid_text, process_name, used_text = parts[:4]
-            index = uuid_to_index.get(gpu_uuid)
-            if index is None:
-                continue
-            try:
-                pid = int(pid_text)
-                used = int(float(used_text))
-            except ValueError:
-                continue
-            model, alias = process_model_args(process_cmdline(pid))
-            processes.setdefault(index, []).append({
-                "pid": pid,
-                "name": label_gpu_process(pid, process_name, service_pids),
-                "process_name": Path(process_name).name,
-                "used_memory": used,
-                # Which model this particular process is holding. The router runs
-                # one child per resident model under a single unit, so the unit
-                # alone cannot say what the VRAM is being spent on.
-                "model": model,
-                "alias": alias,
-            })
-    # Narrow on purpose: this used to be a bare `except Exception`, and it spent
-    # an unknown length of time swallowing a NameError that discarded every
-    # attribution here while the payload still looked well-formed.
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        print(f"[llm-manager] GPU process attribution failed: {exc}", flush=True)
+    processes: dict[int, list[dict]] = {index: [] for index in uuid_by_index}
+
+    rows = platforms.active().gpu_compute_apps()
+    if rows is None:
+        return processes
+
+    for row in rows:
+        index = uuid_to_index.get(row.get("gpu_uuid"))
+        if index is None:
+            continue
+        pid = row["pid"]
+        process_name = row["process_name"]
+        model, alias = process_model_args(process_cmdline(pid))
+        processes.setdefault(index, []).append({
+            "pid": pid,
+            "name": label_gpu_process(pid, process_name, service_pids),
+            "process_name": Path(process_name).name,
+            "used_memory": row["used_memory"],
+            # Which model this particular process is holding. The router runs
+            # one child per resident model under a single unit, so the unit
+            # alone cannot say what the VRAM is being spent on.
+            "model": model,
+            "alias": alias,
+        })
     for items in processes.values():
         items.sort(key=lambda item: item.get("used_memory", 0), reverse=True)
     return processes
 
 
-# Order matters: this is the `--query-gpu` field list and the column order it
-# comes back in. The first seven are what the UI has always shown; the rest are
-# for API consumers, and every one of them can be `[N/A]` on some card or driver
-# — an eGPU reports no fan, a datacentre card no power limit — so they parse to
-# None rather than failing the row.
-GPU_QUERY_FIELDS = [
-    'index', 'uuid', 'name', 'memory.used', 'memory.total',
-    'utilization.gpu', 'temperature.gpu',
-    'utilization.memory', 'power.draw', 'enforced.power.limit',
-    'clocks.current.sm', 'clocks.current.memory', 'fan.speed', 'pstate',
-]
-
-
-def _gpu_number(value: str):
-    """A numeric nvidia-smi field, or None for the several ways it says N/A."""
-    text = (value or "").strip()
-    if not text or text.startswith("[") or text.lower() in {"n/a", "unknown"}:
-        return None
-    try:
-        number = float(text)
-    except ValueError:
-        return None
-    return int(number) if number.is_integer() else round(number, 2)
-
-
 @core.ttl_cache(2.0)
 def get_gpu_info() -> list:
-    try:
-        r = subprocess.run(
-            ['nvidia-smi',
-             '--query-gpu=' + ','.join(GPU_QUERY_FIELDS),
-             '--format=csv,noheader,nounits'],
-            capture_output=True, text=True, timeout=5,
-        )
-        gpus = []
-        uuid_by_index = {}
-        for line in r.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) >= 7:
-                index = int(parts[0])
-                mem_used, mem_total = int(parts[3]), int(parts[4])
-                uuid_by_index[index] = parts[1]
-
-                def field(position: int) -> str:
-                    return parts[position] if position < len(parts) else ""
-
-                gpus.append({
-                    'index':     index,
-                    'uuid':      parts[1],
-                    'name':      parts[2],
-                    'mem_used':  mem_used,
-                    'mem_total': mem_total,
-                    'util':      int(parts[5]),
-                    'temp':      int(parts[6]),
-                    'mem_pct':   round(100 * mem_used / max(mem_total, 1)),
-                    'mem_free':  max(0, mem_total - mem_used),
-                    'mem_util':      _gpu_number(field(7)),
-                    'power_watts':   _gpu_number(field(8)),
-                    'power_limit_watts': _gpu_number(field(9)),
-                    'clock_sm_mhz':  _gpu_number(field(10)),
-                    'clock_mem_mhz': _gpu_number(field(11)),
-                    'fan_pct':       _gpu_number(field(12)),
-                    'pstate':        field(13) or None,
-                    'processes': [],
-                })
-        processes = get_gpu_processes(uuid_by_index)
-        for gpu in gpus:
-            gpu["processes"] = processes.get(gpu["index"], [])
-        return gpus
-    except Exception:
-        return []
-
-
+    gpus = platforms.active().gpu_info()
+    processes = get_gpu_processes({gpu["index"]: gpu.get("uuid", "") for gpu in gpus})
+    for gpu in gpus:
+        gpu["processes"] = processes.get(gpu["index"], [])
+    return gpus
 
 
 def determine_llamacpp_build_parallelism(env: dict) -> tuple[int, list[str]]:

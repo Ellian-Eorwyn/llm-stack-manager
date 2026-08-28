@@ -51,6 +51,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import telemetry
 
+import platforms
+
 STACK_DIR = Path(__file__).resolve().parent.parent
 EXPECTATIONS_FILE = STACK_DIR / "config" / "service-expectations.json"
 
@@ -562,10 +564,7 @@ PROBER = Prober()
 
 def pid_alive(pid) -> bool:
     """Whether a recorded PID still exists. Used by the lease reaper too."""
-    try:
-        return Path(f"/proc/{int(pid)}").exists()
-    except (TypeError, ValueError):
-        return False
+    return platforms.active().pid_alive(pid)
 
 
 __all__ = [

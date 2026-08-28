@@ -42,6 +42,9 @@ import struct
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import platforms
+
 MIB = 1024 * 1024
 
 # GGUF metadata value types (gguf_metadata_value_type in the spec).
@@ -942,34 +945,23 @@ def _read_env_file(path: Path) -> dict:
     return env
 
 
-def _nvidia_gpus() -> list[dict]:
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,memory.used,memory.total",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    gpus = []
-    for line in result.stdout.strip().splitlines():
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) >= 3:
-            gpus.append({"index": int(parts[0]), "mem_used": int(parts[1]), "mem_total": int(parts[2])})
-    return gpus
+def _local_gpus() -> list[dict]:
+    """The devices this host has, in the shape `recommend()` reads.
+
+    Named for what it does rather than for the vendor tool it used to shell out
+    to: on Apple silicon there is no `nvidia-smi` and no discrete device, and the
+    single entry describes unified memory.
+    """
+    return [
+        {"index": gpu["index"], "mem_used": gpu.get("mem_used") or 0,
+         "mem_total": gpu.get("mem_total") or 0}
+        for gpu in platforms.active().gpu_info()
+    ]
 
 
 def _host_memory() -> dict:
-    info: dict[str, int] = {}
-    try:
-        with open("/proc/meminfo", encoding="utf-8") as handle:
-            for line in handle:
-                key, _, raw = line.partition(":")
-                parts = raw.strip().split()
-                if parts and parts[0].isdigit():
-                    info[key] = int(parts[0])
-    except OSError:
+    info = platforms.active().meminfo()
+    if not info:
         return {}
     return {
         "mem_total_mib": round(info.get("MemTotal", 0) / 1024),
@@ -1028,28 +1020,21 @@ def _observed_vram_mib(model_path: str) -> int | None:
     device, which is exactly the comparison that misleads. Match on the model
     path in each compute process's command line instead.
     """
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
+    platform = platforms.active()
+    rows = platform.gpu_compute_apps()
+    if rows is None:
+        # No per-process device-memory accounting on this platform. Returning 0
+        # here would read as "the model is holding nothing", which is a far
+        # worse answer than declining to answer.
         return None
 
     total = 0
     matched = False
-    for line in result.stdout.strip().splitlines():
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) < 2 or not parts[0].isdigit():
-            continue
-        try:
-            cmdline = Path(f"/proc/{parts[0]}/cmdline").read_bytes().decode("utf-8", errors="replace")
-        except OSError:
-            continue
+    for row in rows:
+        cmdline = platform.pid_cmdline(row["pid"])
         if model_path and model_path in cmdline:
             matched = True
-            total += int(parts[1])
+            total += row["used_memory"]
     return total if matched else None
 
 
@@ -1098,7 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     env = _read_env_file(args.env)
-    gpus, host = _nvidia_gpus(), _host_memory()
+    gpus, host = _local_gpus(), _host_memory()
     overrides: dict = {}
     if args.model:
         overrides["model_path"] = args.model

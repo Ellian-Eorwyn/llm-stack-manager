@@ -33,6 +33,8 @@ from datetime import datetime
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+import platforms
+
 DEFAULT_WINDOW_SECONDS = 3600
 MIN_WINDOW_SECONDS = 60
 MAX_WINDOW_SECONDS = 7 * 24 * 3600
@@ -732,11 +734,20 @@ def backend_snapshot(target: dict, window_seconds: int, registry: TelemetryRegis
 # Sustained paging above this rate is real pressure. Below it, a few pages
 # drifting in as something touches a cold page is not.
 SWAP_ACTIVE_PAGES_PER_SECOND = 256
-_PAGE_MIB = 4 / 1024
+
+
+def _page_mib() -> float:
+    """MiB per page, from the platform rather than from a constant.
+
+    This was `4 / 1024`. Apple Silicon uses 16 KiB pages, so every swap rate
+    this module reported on a Mac was a quarter of the real figure -- and the
+    number that was wrong is the one feeding the `host_swapping` alert.
+    """
+    return platforms.active().page_bytes / (1024 * 1024)
 
 
 class SwapMonitor:
-    """Turns /proc/vmstat's cumulative page counters into a current rate.
+    """Turns the kernel's cumulative swap counters into a current rate.
 
     Swap *usage* is a poor pressure signal: pages written during one bad
     configuration stay resident long after it is fixed, because nothing brings
@@ -750,18 +761,7 @@ class SwapMonitor:
 
     @staticmethod
     def _read_counters() -> tuple[int, int] | None:
-        try:
-            with open("/proc/vmstat", "r", encoding="utf-8") as handle:
-                counters = {}
-                for line in handle:
-                    key, _, value = line.partition(" ")
-                    if key in ("pswpin", "pswpout"):
-                        counters[key] = int(value.strip())
-                if len(counters) == 2:
-                    return counters["pswpin"], counters["pswpout"]
-        except (OSError, ValueError):
-            pass
-        return None
+        return platforms.active().swap_counters()
 
     def sample(self, now: float | None = None) -> dict:
         """Paging rate since the previous call. The first call has no rate."""
@@ -787,8 +787,8 @@ class SwapMonitor:
             "available": True,
             "in_pages_per_second": round(rate_in, 1),
             "out_pages_per_second": round(rate_out, 1),
-            "in_mib_per_second": round(rate_in * _PAGE_MIB, 2),
-            "out_mib_per_second": round(rate_out * _PAGE_MIB, 2),
+            "in_mib_per_second": round(rate_in * _page_mib(), 2),
+            "out_mib_per_second": round(rate_out * _page_mib(), 2),
             # Pressure is pages going *out*: that is the kernel choosing to
             # evict rather than allocate. Pages coming back in with nothing
             # going out is recovery — a model reload touching what an earlier

@@ -37,6 +37,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import platforms
 import setup_engine
 
 
@@ -117,6 +118,20 @@ CACHE_TTL_SECONDS: float | None = None
 # ---------------------------------------------------------------------------
 
 class ServiceManager:
+    """The service manager, whichever one this host has.
+
+    Kept as a class of classmethods because roughly forty call sites across the
+    app, the routes and the tests already reach it that way. The behaviour now
+    lives in `platforms`, and every method here is a one-line delegation -- the
+    `if IS_MAC:` branches that used to be inline are gone, along with the two
+    bugs they were hiding: `launchctl list` was parsed as JSON (it emits an
+    OpenStep plist, so every service read as inactive on macOS, always) and
+    `n_restarts` was hardcoded to 0 (which reads as healthy, not as unknown, and
+    silently disabled flap detection).
+    """
+
+    #: Retained because existing call sites and tests read it. Prefer asking
+    #: `platforms.active().name`, which follows a substituted platform.
     IS_MAC = sys.platform == 'darwin'
 
     @classmethod
@@ -125,72 +140,7 @@ class ServiceManager:
 
     @classmethod
     def state(cls, name: str) -> dict:
-        """Load and activation state in one call.
-
-        `is-active` collapses a crashed unit into "not active", which is how a
-        unit that died and a unit somebody stopped came to look identical. One
-        `systemctl show` answers both questions, and costs one subprocess where
-        `is_active` plus `is_installed` cost two — the status poll runs this for
-        every service every five seconds.
-        """
-        if cls.IS_MAC:
-            label = f"com.llmstack.{name}"
-            r = cls.run_cmd(["launchctl", "list", label], timeout=5)
-            plist = Path(f"/Library/LaunchDaemons/{label}.plist")
-            pid = 0
-            if r.returncode == 0:
-                try:
-                    pid = int(json.loads(r.stdout.strip()).get("PID", 0))
-                except Exception:
-                    pid = 0
-            return {
-                "installed": plist.exists(),
-                "active": pid > 0,
-                "failed": False,
-                "starting": False,
-                "active_state": "active" if pid > 0 else "inactive",
-                "sub_state": "",
-                "result": "",
-                "main_pid": pid,
-                "n_restarts": 0,
-            }
-
-        r = cls.run_cmd(
-            ["systemctl", "show", name,
-             "--property=LoadState,ActiveState,SubState,Result,MainPID,NRestarts"],
-            timeout=5)
-        fields = {}
-        for line in (r.stdout or "").splitlines():
-            key, _, value = line.partition("=")
-            fields[key.strip()] = value.strip()
-        active_state = fields.get("ActiveState", "")
-
-        def as_int(key):
-            try:
-                return int(fields.get(key, "0") or "0")
-            except ValueError:
-                return 0
-
-        return {
-            "installed": r.returncode == 0 and fields.get("LoadState", "") not in ("", "not-found"),
-            "active": active_state == "active",
-            # systemd's own definition. `Result` is reported alongside for the
-            # detail view but is deliberately not part of this test: it survives
-            # a later `stop`, so a unit that crashed once and was then stopped
-            # on purpose would otherwise read as failed forever.
-            "failed": active_state == "failed",
-            # A unit that cannot start spends most of its time here rather than
-            # in `failed`, because `Restart=` bounces it before anyone looks.
-            "starting": active_state in ("activating", "reloading"),
-            "active_state": active_state,
-            "sub_state": fields.get("SubState", ""),
-            "result": fields.get("Result", ""),
-            "main_pid": as_int("MainPID"),
-            # Cumulative since the unit was last reset. The count alone proves
-            # nothing; a count that climbs between polls is a service failing to
-            # come up, which is the state a panel most needs to shout about.
-            "n_restarts": as_int("NRestarts"),
-        }
+        return platforms.active().service_state(name)
 
     @classmethod
     def is_active(cls, name: str) -> bool:
@@ -198,31 +148,15 @@ class ServiceManager:
 
     @classmethod
     def start(cls, name: str, timeout=30) -> subprocess.CompletedProcess:
-        if cls.IS_MAC:
-            label = f"com.llmstack.{name}"
-            plist = f"/Library/LaunchDaemons/{label}.plist"
-            cls.run_cmd(["launchctl", "bootout", f"system/{label}"])
-            return cls.run_cmd(["launchctl", "bootstrap", "system", plist], timeout=timeout)
-        else:
-            return cls.run_cmd(["systemctl", "start", name], timeout=timeout)
+        return platforms.active().service_start(name, timeout=timeout)
 
     @classmethod
     def stop(cls, name: str, timeout=30) -> subprocess.CompletedProcess:
-        if cls.IS_MAC:
-            label = f"com.llmstack.{name}"
-            return cls.run_cmd(["launchctl", "bootout", f"system/{label}"], timeout=timeout)
-        else:
-            return cls.run_cmd(["systemctl", "stop", name], timeout=timeout)
+        return platforms.active().service_stop(name, timeout=timeout)
 
     @classmethod
     def restart(cls, name: str, timeout=120) -> tuple[int, str]:
-        if cls.IS_MAC:
-            cls.stop(name, timeout=timeout)
-            r = cls.start(name, timeout=timeout)
-            return r.returncode, (r.stdout + r.stderr).strip()
-        else:
-            r = cls.run_cmd(["systemctl", "restart", name], timeout=timeout)
-            return r.returncode, (r.stdout + r.stderr).strip()
+        return platforms.active().service_restart(name, timeout=timeout)
 
     @classmethod
     def action(cls, act: str, name: str, timeout=30) -> tuple[int, str]:
@@ -239,26 +173,12 @@ class ServiceManager:
 
     @classmethod
     def get_pid(cls, name: str) -> int:
-        if cls.IS_MAC:
-            label = f"com.llmstack.{name}"
-            r = cls.run_cmd(["launchctl", "list", label], timeout=2)
-            if r.returncode == 0:
-                try:
-                    import json
-                    return int(json.loads(r.stdout.strip()).get("PID", 0))
-                except Exception:
-                    return 0
-            return 0
-        else:
-            r = cls.run_cmd(["systemctl", "show", name, "--property=MainPID", "--value"], timeout=2)
-            try:
-                return int((r.stdout or "0").strip() or "0")
-            except Exception:
-                return 0
+        return platforms.active().service_pid(name)
 
     @classmethod
     def is_installed(cls, name: str) -> bool:
         return cls.state(name)["installed"]
+
 
 SETUP_RUNNER = setup_engine.SetupRunner()
 
@@ -312,17 +232,12 @@ def find_git_repo_root(start: Path) -> Path | None:
 
 
 def read_meminfo() -> dict[str, int]:
-    data: dict[str, int] = {}
-    try:
-        with open("/proc/meminfo", "r", encoding="utf-8") as f:
-            for line in f:
-                key, _, raw_value = line.partition(":")
-                parts = raw_value.strip().split()
-                if parts and parts[0].isdigit():
-                    data[key] = int(parts[0])
-    except Exception:
-        pass
-    return data
+    """Host memory in `/proc/meminfo`'s key names and KiB units, on any platform.
+
+    The name and the shape are kept because every consumer already reads them
+    and the tests already patch them; only the source is now platform-dependent.
+    """
+    return platforms.active().meminfo()
 
 
 def format_kib_as_gib(value_kib: int) -> str:

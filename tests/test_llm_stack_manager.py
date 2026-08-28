@@ -33,6 +33,12 @@ config_env = sys.modules["config_env"]
 config_fields = sys.modules["config_fields"]
 models = sys.modules["models"]
 
+# Imported after the app, for the same reason: it reaches the `platforms`
+# module app.py already put in sys.modules, so a substituted adapter is the one
+# the application sees.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import platform_harness  # noqa: E402
+
 
 class ConfigSectionTests(unittest.TestCase):
     def test_primary_and_secondary_backend_fields_are_separate(self):
@@ -984,8 +990,7 @@ class ServiceHealthTests(unittest.TestCase):
     def test_a_unit_mid_launch_is_its_own_state(self):
         # A service that cannot start spends most of its life here, because
         # Restart= bounces it out of `failed` within seconds.
-        with patch.object(core.ServiceManager, "run_cmd",
-                          side_effect=self._systemctl(ocr=("activating", "loaded"))):
+        with platform_harness.as_linux(run_cmd=self._systemctl(ocr=("activating", "loaded"))):
             self.assertEqual(manager.get_service_status("ocr"), "starting")
 
     def test_statuses_and_restart_counts_come_from_one_pass(self):
@@ -1000,7 +1005,7 @@ class ServiceHealthTests(unittest.TestCase):
         with (
             patch.object(config_env, "read_env", return_value={}),
             patch.object(manager, "patch_service_labels", return_value=[{"name": "ocr"}]),
-            patch.object(core.ServiceManager, "run_cmd", side_effect=run),
+            platform_harness.as_linux(run_cmd=run),
         ):
             statuses, restarts = manager.service_unit_snapshot()
 
@@ -1010,14 +1015,12 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertEqual(len(calls), len(set(calls)))
 
     def test_a_crashed_unit_is_no_longer_indistinguishable_from_a_stopped_one(self):
-        with patch.object(core.ServiceManager, "run_cmd",
-                          side_effect=self._systemctl(embed=("failed", "loaded"))):
+        with platform_harness.as_linux(run_cmd=self._systemctl(embed=("failed", "loaded"))):
             self.assertEqual(manager.get_service_status("embed"), "failed")
             self.assertEqual(manager.get_service_status("rerank"), "inactive")
 
     def test_an_uninstalled_unit_is_unknown(self):
-        with patch.object(core.ServiceManager, "run_cmd",
-                          side_effect=self._systemctl(ghost=("inactive", "not-found"))):
+        with platform_harness.as_linux(run_cmd=self._systemctl(ghost=("inactive", "not-found"))):
             self.assertEqual(manager.get_service_status("ghost"), "unknown")
 
     def test_unit_state_reads_load_and_activation_in_one_call(self):
@@ -1029,7 +1032,7 @@ class ServiceHealthTests(unittest.TestCase):
                 cmd, 0, "LoadState=loaded\nActiveState=active\nSubState=running\n"
                         "Result=success\nMainPID=4242\n", "")
 
-        with patch.object(core.ServiceManager, "run_cmd", side_effect=run):
+        with platform_harness.as_linux(run_cmd=run):
             state = core.ServiceManager.state("embed")
         self.assertEqual(len(calls), 1)
         self.assertTrue(state["active"] and state["installed"])

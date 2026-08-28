@@ -16,3 +16,26 @@ jobs:
           python-version: '3.12'
       - run: bash bootstrap-ubuntu.sh --dry-run
       - run: bash test.sh
+
+  # macOS is a supported platform, so it is a tested one. This job exists
+  # because the previous attempt at macOS support was never run in CI, and over
+  # the sixty commits that followed it decayed into four separate silent
+  # failures -- `launchctl list` parsed as JSON, a hardcoded restart count, a
+  # 4 KiB page-size constant on a 16 KiB-page architecture, and a plist emitting
+  # two keys launchd does not have -- none of which broke a test, because no
+  # test ever ran on the platform they were wrong about.
+  #
+  # It runs the same suite as Ubuntu. Both platforms' adapters are exercised on
+  # both runners (see tests/platform_harness.py), so neither path depends on
+  # which runner it happens to be on.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: bash test.sh

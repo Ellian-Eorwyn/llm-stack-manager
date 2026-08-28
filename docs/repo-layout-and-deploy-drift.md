@@ -66,6 +66,7 @@ UI's 108 inline handlers are checked against the scripts the page loads.
 | Module | What belongs in it |
 |---|---|
 | `core.py` | Paths derived from the install root, `ServiceManager`, subprocess and HTTP helpers, small parsers. Knows nothing about configuration or services. |
+| `platforms/` | Everything that differs between Linux and macOS: the service manager, host memory, PID introspection, GPU readings. `core.ServiceManager` and `core.read_meminfo` are one-line delegations to it. See `docs/platform-layer.md`. |
 | `config_fields.py` | The field registry, restart hints, legacy key names, code↔chat mirrors. Data, no behaviour. |
 | `config_env.py` | The env file and the key names in it: generous on read, strict and canonical on write. |
 | `models.py` | The model catalogue — GGUF files, chat templates, custom models, transcription models, HuggingFace downloads. |
