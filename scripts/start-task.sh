@@ -48,7 +48,7 @@ OPTS=()
 [[ "${TASK_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${TASK_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${TASK_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
-[[ -n "${TASK_DEVICE:-}" ]] && OPTS+=(--device "${TASK_DEVICE}")
+add_device_opt "[task]" "${TASK_DEVICE:-}"
 [[ "${TASK_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${TASK_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${TASK_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)

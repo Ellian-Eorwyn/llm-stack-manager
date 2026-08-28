@@ -456,3 +456,122 @@ class EngineSelectionTests(unittest.TestCase):
                 self.assertIn(service, self.health.SERVICE_ENGINE_KEYS)
                 for key in ("kind", "path", "host_key", "port_key"):
                     self.assertIn(key, spec)
+
+
+class AcceleratedBuildTests(unittest.TestCase):
+    """A CPU-only llama.cpp build is not a broken build.
+
+    It compiles, starts, serves and answers correctly -- it is simply an order
+    of magnitude slower and will exhaust host RAM on a model the GPU would have
+    held. So the check is positive (does it name the accelerator?) rather than
+    a search for error strings.
+    """
+
+    # Verbatim from a Metal build of the pinned revision on an M1 Pro. The
+    # device is MTL0, not Metal0: a check for "metal" matches nothing here and
+    # refuses a correct binary, which is exactly what happened the first time.
+    METAL = ("Available devices:\n"
+             "  MTL0: Apple M1 Pro (12124 MiB, 12123 MiB free)\n"
+             "  BLAS: Accelerate (0 MiB, 0 MiB free)")
+    CUDA = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 3090 (24576 MiB, 6507 MiB free)"
+    CPU_ONLY = "warning: llama.cpp was compiled without support for GPU offload"
+
+    def test_each_platform_accepts_only_its_own_accelerator(self):
+        cases = {
+            ("linux", self.CUDA): "",
+            ("darwin", self.METAL): "",
+        }
+        for (name, probe), expected in cases.items():
+            harness = platform_harness.as_linux if name == "linux" else platform_harness.as_darwin
+            with harness() as platform, self.subTest(name):
+                self.assertEqual(platform.verify_accelerated_build(probe), expected)
+
+    def test_a_metal_build_is_refused_on_linux_and_vice_versa(self):
+        with platform_harness.as_linux() as platform:
+            self.assertTrue(platform.verify_accelerated_build(self.METAL))
+        with platform_harness.as_darwin() as platform:
+            self.assertTrue(platform.verify_accelerated_build(self.CUDA))
+
+    def test_a_cpu_only_build_is_refused_on_both(self):
+        for harness in (platform_harness.as_linux, platform_harness.as_darwin):
+            with harness() as platform, self.subTest(platform.name):
+                self.assertTrue(platform.verify_accelerated_build(self.CPU_ONLY))
+
+    def test_metal_needs_no_toolkit_or_architecture_probe(self):
+        # CUDA needs nvcc located and compute capabilities detected. Metal ships
+        # with the OS: one flag is the whole configuration.
+        with platform_harness.as_darwin() as platform:
+            self.assertEqual(platform.accelerator_cmake_args(), ["-DGGML_METAL=ON"])
+
+
+class UnifiedMemoryBudgetTests(unittest.TestCase):
+    """Overcommitting unified memory is a different failure from overcommitting
+    VRAM, and needs a different verdict."""
+
+    def setUp(self):
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
+        import budget
+        self.budget = budget
+
+    PREDICTION = {
+        "vram": {"upper_mib": 12000, "per_device": [{"upper_mib": 12000}]},
+        "host": {"checkpoint_total_mib": 6000},
+    }
+
+    def test_weights_and_prompt_cache_are_charged_to_the_same_pool(self):
+        # On a discrete GPU the prompt cache is host RAM and a separate budget.
+        # Here it is the same memory the model is in, so omitting it would
+        # under-count by the whole cache: 12,000 fits 16,384 and 18,000 does not.
+        with platform_harness.as_darwin():
+            issues = self.budget._unified_memory_issues(
+                self.PREDICTION, [{"mem_total": 16384, "mem_free": 8000}])
+        self.assertEqual([i["code"] for i in issues], ["memory_overcommit_swaps"])
+        self.assertIn("page", issues[0]["text"])
+
+    def test_the_verdict_says_it_will_not_fail_to_start(self):
+        # The operator response differs from vram_overcommit: there is no crash
+        # loop to find, just a machine that got slow.
+        with platform_harness.as_darwin():
+            issues = self.budget._unified_memory_issues(
+                self.PREDICTION, [{"mem_total": 16384}])
+        self.assertNotIn("vram_overcommit", [i["code"] for i in issues])
+        self.assertIn("will not fail to start", issues[0]["text"])
+
+    def test_a_configuration_that_fits_reports_nothing(self):
+        small = {"vram": {"upper_mib": 2000, "per_device": []},
+                 "host": {"checkpoint_total_mib": 500}}
+        with platform_harness.as_darwin():
+            self.assertEqual(self.budget._unified_memory_issues(
+                small, [{"mem_total": 16384, "mem_free": 12000}]), [])
+
+    def test_fitting_installed_ram_but_not_free_ram_is_only_a_warning(self):
+        small = {"vram": {"upper_mib": 6000, "per_device": []},
+                 "host": {"checkpoint_total_mib": 1000}}
+        with platform_harness.as_darwin():
+            issues = self.budget._unified_memory_issues(
+                small, [{"mem_total": 16384, "mem_free": 4000}])
+        self.assertEqual([i["code"] for i in issues], ["memory_tight"])
+        self.assertEqual(issues[0]["level"], "warn")
+
+    def test_an_explicit_wired_limit_lowers_the_ceiling(self):
+        # llama.cpp reports 12,124 MiB usable of 16,384 installed on an M1 Pro:
+        # macOS caps what the GPU may wire. Where the cap has been set
+        # explicitly it is the real ceiling and installed RAM is not.
+        prediction = {"vram": {"upper_mib": 9000, "per_device": []},
+                      "host": {"checkpoint_total_mib": 1000}}
+        with platform_harness.as_darwin():
+            without = self.budget._unified_memory_issues(
+                prediction, [{"mem_total": 16384, "mem_free": 16000}])
+            with_cap = self.budget._unified_memory_issues(
+                prediction, [{"mem_total": 16384, "mem_free": 16000,
+                              "wired_limit_mib": 8192}])
+        self.assertEqual(without, [])
+        self.assertEqual([i["code"] for i in with_cap], ["memory_overcommit_swaps"])
+
+    def test_the_per_device_context_overhead_is_not_a_cuda_constant(self):
+        # 400 MiB is CUDA's; Metal's is materially smaller, and charging CUDA's
+        # figure per device inflated every Mac prediction.
+        with platform_harness.as_linux() as linux:
+            self.assertEqual(linux.device_context_mib, 400)
+        with platform_harness.as_darwin() as darwin:
+            self.assertLess(darwin.device_context_mib, 400)

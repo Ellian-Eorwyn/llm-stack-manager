@@ -214,6 +214,37 @@ class Platform(ABC):
         is slower by an order of magnitude with nothing saying why.
         """
 
+    #: Whether device memory and host memory are the same pool. On Apple
+    #: silicon they are, which changes what "it does not fit" means: CUDA fails
+    #: the allocation and the unit dies, where unified memory succeeds and the
+    #: host starts swapping. Loud versus slow, and a different fix each time.
+    unified_memory: bool = False
+
+    @property
+    @abstractmethod
+    def device_context_mib(self) -> int:
+        """Fixed per-device overhead a backend pays just for existing.
+
+        Runtime context, command buffers and allocator slack — everything
+        present before a single weight is loaded. Estimated, not measured; the
+        budget model reports it separately from the exact figures so it is
+        clear which part of a prediction is arithmetic and which is judgement.
+        """
+
+    @abstractmethod
+    def verify_accelerated_build(self, probe_output: str) -> str:
+        """Check `llama-server --list-devices` output names this accelerator.
+
+        Returns "" when the build is accelerated, or the reason it is not.
+
+        A CPU-only llama.cpp build is not a broken build -- it compiles, starts,
+        serves, and answers correctly. It is simply an order of magnitude
+        slower and will exhaust host RAM on a model the GPU would have held, so
+        the failure surfaces days later as "the box is slow" rather than as a
+        build error. Hence a positive check for the expected backend rather than
+        a check for the absence of errors.
+        """
+
     @abstractmethod
     def firewall_rules(self, ports: list[int], cidr: str) -> list[list[str]]:
         """Commands that open `ports` to `cidr` only, or `[]` if this platform

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import re
 import shlex
@@ -1189,7 +1190,12 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
 
 class ConfigPreflightTests(unittest.TestCase):
     """The config form has always accepted anything, and the cost of that
-    arrived later — on restart, or as an eviction storm."""
+    arrived later — on restart, or as an eviction storm.
+
+    Pinned to Linux: these assert the discrete-GPU verdicts, where
+    overcommitting VRAM fails the allocation. Unified memory answers
+    differently and has its own tests.
+    """
 
     GPUS = [{"index": 0, "mem_total": 24576, "mem_used": 1000},
             {"index": 1, "mem_total": 24576, "mem_used": 1000}]
@@ -1197,6 +1203,9 @@ class ConfigPreflightTests(unittest.TestCase):
                "SwapTotal": 8388604, "SwapFree": 8388604}
 
     def setUp(self):
+        ctx = platform_harness.as_linux()
+        ctx.__enter__()
+        self.addCleanup(ctx.__exit__, None, None, None)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         spec = importlib.util.spec_from_file_location(
@@ -1846,9 +1855,16 @@ class SplitModeTests(unittest.TestCase):
 
     # -- the launcher helper ------------------------------------------------
 
-    def _resolve(self, mode, model, tensor_split="1,1", main_gpu="0", flash_attn="on"):
+    def _resolve(self, mode, model, tensor_split="1,1", main_gpu="0", flash_attn="on",
+                 platform="Linux"):
         """Run resolve_split_opts the way a start script does and report both
-        the flags it built and what it said about them."""
+        the flags it built and what it said about them.
+
+        `platform` is pinned rather than inherited from the host: these assert
+        the CUDA placement rules, which do not apply on Metal, and they have to
+        keep running on a macOS runner. `LLM_STACK_PLATFORM` is the shell's
+        equivalent of `platforms.set_active`.
+        """
         script = (
             'set -euo pipefail\n'
             f'STACK_DIR={shlex.quote(str(self.ROOT))}\n'
@@ -1857,7 +1873,8 @@ class SplitModeTests(unittest.TestCase):
             f'{shlex.quote(tensor_split)} {shlex.quote(main_gpu)} {shlex.quote(flash_attn)}\n'
             'printf "FLAGS:%s\\n" "${SPLIT_OPTS[*]}"\n'
         )
-        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              env={**os.environ, "LLM_STACK_PLATFORM": platform})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         flags, messages = "", []
         for line in proc.stdout.splitlines():
@@ -1866,6 +1883,24 @@ class SplitModeTests(unittest.TestCase):
             else:
                 messages.append(line)
         return flags.split(), "\n".join(messages)
+
+    def test_metal_collapses_every_mode_to_none(self):
+        """One device and one memory pool: every mode that exists to divide a
+        model between cards is inapplicable, not merely unsupported."""
+        for mode in ("layer", "tensor", "row", "bogus"):
+            with self.subTest(mode=mode):
+                flags, said = self._resolve(mode, self.dense, platform="Darwin")
+                self.assertEqual(flags, ["--split-mode", "none"])
+                self.assertIn("Metal", said)
+
+    def test_metal_drops_placement_flags_it_cannot_act_on(self):
+        # --tensor-split and --main-gpu ask llama-server to choose between GPUs
+        # there is only one of.
+        flags, said = self._resolve("none", self.dense, tensor_split="1,1",
+                                    main_gpu="1", platform="Darwin")
+        self.assertEqual(flags, ["--split-mode", "none"])
+        self.assertIn("Tensor Split", said)
+        self.assertIn("Main GPU", said)
 
     def test_row_never_reaches_llama_server(self):
         flags, said = self._resolve("row", self.dense)

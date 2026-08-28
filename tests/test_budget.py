@@ -3,8 +3,12 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import struct
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import platform_harness  # noqa: E402
 
 
 def _load_budget_module():
@@ -357,8 +361,24 @@ class InterleavedAttentionTest(unittest.TestCase):
         self.assertEqual(recommendation["swa_full"], "off")
 
 
-class PredictionTest(unittest.TestCase):
+class DiscreteGpuTestCase(unittest.TestCase):
+    """Base for the tests that describe a discrete GPU's arithmetic.
+
+    Weights and KV compete for VRAM, the prompt cache competes for host RAM,
+    and overcommitting VRAM fails the allocation. None of that is true of
+    unified memory, so these must be pinned to the Linux platform or they
+    assert Apple silicon's answers on a macOS runner.
+    """
+
     def setUp(self):
+        self._platform = platform_harness.as_linux()
+        self._platform.__enter__()
+        self.addCleanup(self._platform.__exit__, None, None, None)
+
+
+class PredictionTest(DiscreteGpuTestCase):
+    def setUp(self):
+        super().setUp()
         self.qwen = budget.model_geometry(QWEN36_27B)
         self.live = {
             "ctx_size": 262144, "parallel": 2, "devices": 2, "ubatch": 512,
@@ -418,8 +438,9 @@ class PredictionTest(unittest.TestCase):
 # verdicts
 # --------------------------------------------------------------------------
 
-class EvaluateTest(unittest.TestCase):
+class EvaluateTest(DiscreteGpuTestCase):
     def setUp(self):
+        super().setUp()
         self.qwen = budget.model_geometry(QWEN36_27B)
         self.gpus = [{"index": 0, "mem_total": 24576}, {"index": 1, "mem_total": 24576}]
         self.host = {"mem_available_mib": 19800}
@@ -583,8 +604,9 @@ class BudgetForTest(unittest.TestCase):
         self.assertEqual(edited["prediction"]["per_slot_context"], 32768)
 
 
-class RecommendTest(unittest.TestCase):
+class RecommendTest(DiscreteGpuTestCase):
     def setUp(self):
+        super().setUp()
         # The fixture is written from metadata alone, so it carries no weight.
         # Recommendations turn on how much VRAM the weights leave for KV, so
         # stand in the real file's size.

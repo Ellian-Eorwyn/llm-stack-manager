@@ -59,7 +59,7 @@ OPTS=()
 [[ "${OCR_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${OCR_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${OCR_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
-[[ -n "${OCR_DEVICE:-}" ]] && OPTS+=(--device "${OCR_DEVICE}")
+add_device_opt "[ocr]" "${OCR_DEVICE:-}"
 [[ "${OCR_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${OCR_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${OCR_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)

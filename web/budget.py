@@ -73,7 +73,13 @@ KV_TYPE_BYTES = {
 
 # Per-GPU allocation that exists before a single tensor is placed: the CUDA
 # context, cuBLAS workspaces and the allocator's own bookkeeping.
-CUDA_CONTEXT_MIB = 400
+def _device_context_mib() -> int:
+    """Fixed per-device overhead, from the platform.
+
+    Was a hardcoded 400 MiB, which is a CUDA figure and roughly three times
+    Metal's. An estimate on either platform.
+    """
+    return platforms.active().device_context_mib
 # Compute buffers scale with micro-batch and hidden size, but also carry a
 # vocabulary-sized output tensor and, for vision models, an image encoder whose
 # working set dwarfs both. This band is deliberately wide; `--validate` reports
@@ -514,7 +520,8 @@ def predict(geometry: dict, settings: dict) -> dict:
         ) * ctx_size / MIB
 
     compute_mib = compute_buffer_mib(geometry, ubatch, devices, projector_mib)
-    overhead_mib = CUDA_CONTEXT_MIB * devices
+    context_mib = _device_context_mib()
+    overhead_mib = context_mib * devices
 
     exact_vram = weights_mib + projector_mib + kv_mib + recurrent_mib + draft_mib
     estimated_vram = compute_mib + overhead_mib
@@ -532,10 +539,10 @@ def predict(geometry: dict, settings: dict) -> dict:
             "device": index,
             "weights_mib": round(share),
             "kv_mib": round(device_kv),
-            "compute_mib": round(compute_mib / devices + CUDA_CONTEXT_MIB),
-            "total_mib": round(share + device_kv + compute_mib / devices + CUDA_CONTEXT_MIB),
+            "compute_mib": round(compute_mib / devices + context_mib),
+            "total_mib": round(share + device_kv + compute_mib / devices + context_mib),
             "upper_mib": round(share + device_kv
-                               + (compute_mib / devices + CUDA_CONTEXT_MIB) * (1 + COMPUTE_UNCERTAINTY)),
+                               + (compute_mib / devices + context_mib) * (1 + COMPUTE_UNCERTAINTY)),
         }
         for index, share in enumerate(device_weights)
     ]
@@ -576,6 +583,60 @@ def predict(geometry: dict, settings: dict) -> dict:
 # verdict
 # --------------------------------------------------------------------------
 
+
+def _unified_memory_issues(prediction: dict, gpus: list[dict]) -> list[dict]:
+    """Fit against one pool, and say what overcommitting it actually does.
+
+    The prompt cache is charged here alongside weights and KV. On a discrete
+    GPU it is host RAM and genuinely a separate budget; on Apple silicon it is
+    the same memory the model is in, so leaving it out under-counts by the
+    whole cache.
+
+    The verdict is `memory_overcommit_swaps`, not `vram_overcommit`, because it
+    is not the same failure. CUDA returns an allocation error and the unit dies
+    -- loud, immediate, obviously a configuration problem. Unified memory
+    succeeds and pages: the stack comes up, serves, and is inexplicably slow.
+
+    Capacity is `mem_total`, which is host RAM. The Metal device reports a
+    smaller working-set ceiling than that -- 12,124 MiB of 16,384 on an M1 Pro,
+    governed by `iogpu.wired_limit_mb` -- so this is the optimistic bound: a
+    model inside it may still exceed what Metal will wire.
+    """
+    if not gpus:
+        return []
+    device = gpus[0]
+    capacity = device.get("mem_total") or 0
+    if not capacity:
+        return []
+
+    # An explicitly set GPU wired limit is the real ceiling and is lower than
+    # installed RAM; without one, macOS applies a default it does not publish.
+    wired_limit = device.get("wired_limit_mib")
+    if wired_limit:
+        capacity = min(capacity, wired_limit)
+
+    needed = prediction["vram"]["upper_mib"] + prediction["host"]["checkpoint_total_mib"]
+    available = device.get("mem_free")
+    issues: list[dict] = []
+
+    if needed > capacity:
+        issues.append({
+            "level": "error", "code": "memory_overcommit_swaps",
+            "text": f"Needs up to {needed:,} MiB of unified memory (weights, KV and prompt "
+                    f"cache together) against {capacity:,} MiB installed. This will not fail to "
+                    f"start -- it will page, and generation will slow by an order of magnitude. "
+                    f"Reduce context, quantise the KV cache further, or use a smaller model.",
+        })
+    elif available and needed > available:
+        issues.append({
+            "level": "warn", "code": "memory_tight",
+            "text": f"Needs up to {needed:,} MiB but only {available:,} MiB of {capacity:,} MiB "
+                    f"is free right now. It fits once other processes release memory, and pages "
+                    f"until they do.",
+        })
+    return issues
+
+
 def evaluate(geometry: dict, settings: dict, prediction: dict,
              gpus: list[dict] | None = None, host: dict | None = None) -> dict:
     """Structured issues for a configuration, worst first.
@@ -588,26 +649,38 @@ def evaluate(geometry: dict, settings: dict, prediction: dict,
     gpus = gpus or []
     host = host or {}
 
-    # VRAM. Compared against the upper bound so "fits" means fits.
-    devices = prediction["vram"]["per_device"]
-    for index, device in enumerate(devices):
-        gpu = gpus[index] if index < len(gpus) else None
-        if not gpu or not gpu.get("mem_total"):
-            continue
-        capacity = gpu["mem_total"]
-        if device["upper_mib"] > capacity:
-            issues.append({
-                "level": "error", "code": "vram_overcommit",
-                "text": f"GPU {gpu.get('index', index)} needs up to {device['upper_mib']:,} MiB "
-                        f"but has {capacity:,} MiB. Reduce context, quantise the KV cache further, "
-                        f"or move layers to another device.",
-            })
-        elif device["upper_mib"] > capacity * 0.95:
-            issues.append({
-                "level": "warn", "code": "vram_tight",
-                "text": f"GPU {gpu.get('index', index)} is predicted to sit within 5% of its "
-                        f"{capacity:,} MiB capacity. A restart may fail to allocate.",
-            })
+    # Unified memory is a different question with a different answer.
+    #
+    # On a discrete GPU, weights and KV compete for VRAM while the prompt cache
+    # competes for host RAM, and overcommitting VRAM fails loudly: cudaMalloc
+    # returns an error and the unit dies. On Apple silicon both come out of one
+    # pool, and overcommitting it does not fail at all -- the allocation
+    # succeeds and the machine swaps. The operator sees a stack that works and
+    # is inexplicably slow, so the two cases need separate arithmetic and
+    # separate wording.
+    if platforms.active().unified_memory:
+        issues.extend(_unified_memory_issues(prediction, gpus))
+    else:
+        # VRAM. Compared against the upper bound so "fits" means fits.
+        devices = prediction["vram"]["per_device"]
+        for index, device in enumerate(devices):
+            gpu = gpus[index] if index < len(gpus) else None
+            if not gpu or not gpu.get("mem_total"):
+                continue
+            capacity = gpu["mem_total"]
+            if device["upper_mib"] > capacity:
+                issues.append({
+                    "level": "error", "code": "vram_overcommit",
+                    "text": f"GPU {gpu.get('index', index)} needs up to {device['upper_mib']:,} MiB "
+                            f"but has {capacity:,} MiB. Reduce context, quantise the KV cache further, "
+                            f"or move layers to another device.",
+                })
+            elif device["upper_mib"] > capacity * 0.95:
+                issues.append({
+                    "level": "warn", "code": "vram_tight",
+                    "text": f"GPU {gpu.get('index', index)} is predicted to sit within 5% of its "
+                            f"{capacity:,} MiB capacity. A restart may fail to allocate.",
+                })
 
     # Host prompt cache. This is the eviction storm, stated before it happens.
     host_budget = prediction["host"]

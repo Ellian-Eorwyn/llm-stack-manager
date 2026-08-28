@@ -105,7 +105,7 @@ OPTS=()
 [[ "${CHAT_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${CHAT_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${CHAT_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
-[[ -n "${CHAT_DEVICE:-}" ]] && OPTS+=(--device "${CHAT_DEVICE}")
+add_device_opt "[chat-backend-moe]" "${CHAT_DEVICE:-}"
 [[ "${CHAT_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)

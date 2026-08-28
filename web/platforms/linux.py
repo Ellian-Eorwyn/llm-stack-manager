@@ -372,6 +372,29 @@ class LinuxPlatform(base.Platform):
         args.append(f"-DCMAKE_CUDA_ARCHITECTURES={';'.join(architectures)}")
         return args
 
+    #: Phrases llama.cpp prints when it has no usable GPU backend.
+    CPU_ONLY_MARKERS = (
+        "compiled without support for gpu offload",
+        "no usable gpu found",
+        "ggml_cuda: not found",
+    )
+
+    #: A CUDA context costs roughly this much per device before any model
+    #: is loaded. The figure predates this package and is kept unchanged.
+    @property
+    def device_context_mib(self) -> int:
+        return 400
+
+    def verify_accelerated_build(self, probe_output: str) -> str:
+        lowered = (probe_output or "").lower()
+        if "cuda" not in lowered:
+            return "the build reports no CUDA device"
+        for marker in self.CPU_ONLY_MARKERS:
+            if marker in lowered:
+                return f"the build reports: {marker}"
+        return ""
+
+
 
 def _cuda_path_version(path: Path) -> tuple[int, ...]:
     """Sort key for /usr/local/cuda-*/bin/nvcc, newest first.

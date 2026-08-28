@@ -68,7 +68,7 @@ OPTS=()
 [[ "${CHAT2_METRICS:-on}" == "on" ]] && OPTS+=(--metrics)
 [[ "${CHAT2_NO_MMAP:-false}" == "true" ]] && OPTS+=(--no-mmap)
 [[ "${CHAT2_MLOCK:-false}" == "true" ]] && OPTS+=(--mlock)
-[[ -n "${CHAT2_DEVICE:-}" ]] && OPTS+=(--device "${CHAT2_DEVICE}")
+add_device_opt "[chat-backend2]" "${CHAT2_DEVICE:-}"
 [[ "${CHAT2_KV_OFFLOAD:-on}" == "on" ]] && OPTS+=(--kv-offload) || OPTS+=(--no-kv-offload)
 [[ "${CHAT2_OP_OFFLOAD:-on}" == "on" ]] && OPTS+=(--op-offload) || OPTS+=(--no-op-offload)
 [[ "${CHAT2_MMPROJ_OFFLOAD:-on}" == "on" ]] && OPTS+=(--mmproj-offload) || OPTS+=(--no-mmproj-offload)

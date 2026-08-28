@@ -153,6 +153,12 @@ def build_cmake(dep: dict, jobs: int) -> None:
 
 
 def verify_gpu_binary(binary: Path) -> None:
+    """Refuse a CPU-only build.
+
+    Which accelerator to look for is the platform's to say: this check used to
+    require the word "cuda" in the probe output, which a correct Metal build
+    never prints.
+    """
     try:
         result = subprocess.run(
             [str(binary), "--list-devices"],
@@ -163,19 +169,16 @@ def verify_gpu_binary(binary: Path) -> None:
     except Exception as exc:
         raise SystemExit(f"Unable to verify GPU support for {binary}: {exc}") from exc
     output = (result.stdout + result.stderr).strip()
-    lowered = output.lower()
-    cpu_only_markers = (
-        "compiled without support for gpu offload",
-        "no usable gpu found",
-        "ggml_cuda: not found",
-    )
-    if result.returncode != 0 or "cuda" not in lowered or any(marker in lowered for marker in cpu_only_markers):
+    reason = ("the probe exited non-zero" if result.returncode != 0
+              else platforms.active().verify_accelerated_build(output))
+    if reason:
         raise SystemExit(
-            "Built llama-server does not appear to have CUDA GPU offload support. "
+            f"Built llama-server does not appear to have GPU offload support: {reason}. "
             "Refusing to install a CPU-only backend because large models can exhaust RAM. "
             "Probe output was:\n"
             f"{output}"
         )
+
 
 def apply_patches(dep: dict, path: Path) -> None:
     """Re-apply this repo's local patches on top of the pinned checkout.

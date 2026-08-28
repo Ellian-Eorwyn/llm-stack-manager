@@ -372,6 +372,23 @@ class DarwinPlatform(base.Platform):
         mem_free = round(meminfo.get("MemAvailable", 0) / 1024)
         mem_used = max(0, mem_total - mem_free)
 
+        # How much of that the GPU may actually wire down.
+        #
+        # Not the same as installed RAM, and the gap is large: llama.cpp on this
+        # 16 GiB M1 Pro reports `MTL0: Apple M1 Pro (12124 MiB, 12123 MiB free)`
+        # -- about 74%. macOS caps the GPU's wired working set, and
+        # `iogpu.wired_limit_mb` is the knob. It reads 0 for "driver default",
+        # which Apple does not publish, so the cap is reported when it has been
+        # set explicitly and left null when it has not, rather than guessing at
+        # a fraction and presenting the guess as a measurement.
+        wired_limit_mib = None
+        try:
+            raw = self.run_cmd(
+                ["sysctl", "-n", "iogpu.wired_limit_mb"], timeout=5).stdout.strip()
+            wired_limit_mib = int(raw) or None
+        except Exception:
+            pass
+
         # Friendlier than IOAccelerator's class name, which is a chip-generation
         # code ("AGXAcceleratorG13X") that means nothing to an operator.
         try:
@@ -399,6 +416,8 @@ class DarwinPlatform(base.Platform):
                 # the payload so a consumer is not left to infer it.
                 "unified_memory": True,
                 "driver_alloc_mib": round(alloc_bytes / (1024 * 1024)),
+                # None means "driver default", not "no limit".
+                "wired_limit_mib": wired_limit_mib,
                 "util": stats.get("Device Utilization %"),
                 "mem_util": None,
                 # Not readable without elevated privileges. Reported as unknown
@@ -563,3 +582,35 @@ class DarwinPlatform(base.Platform):
         if not self.gpu_info():
             raise RuntimeError("No Metal device found; refusing to configure a CPU-only build")
         return ["-DGGML_METAL=ON"]
+
+    CPU_ONLY_MARKERS = (
+        "compiled without support for gpu offload",
+        "no usable gpu found",
+    )
+
+    unified_memory = True
+
+    #: Metal has no separate runtime context to stand up: the backend allocates
+    #: command buffers and a residency set out of the same pool the weights go
+    #: in. Materially smaller than CUDA's, and an estimate either way.
+    @property
+    def device_context_mib(self) -> int:
+        return 128
+
+    #: What llama.cpp calls the Metal device in `--list-devices`. It is `MTL0`,
+    #: not `Metal0` -- checking for "metal" matches nothing and refuses a
+    #: correctly built binary:
+    #:
+    #:     Available devices:
+    #:       MTL0: Apple M1 Pro (12124 MiB, 12123 MiB free)
+    #:       BLAS: Accelerate (0 MiB, 0 MiB free)
+    DEVICE_PREFIX = "MTL"
+
+    def verify_accelerated_build(self, probe_output: str) -> str:
+        lowered = (probe_output or "").lower()
+        if self.DEVICE_PREFIX.lower() not in lowered:
+            return f"the build reports no {self.DEVICE_PREFIX}* device"
+        for marker in self.CPU_ONLY_MARKERS:
+            if marker in lowered:
+                return f"the build reports: {marker}"
+        return ""

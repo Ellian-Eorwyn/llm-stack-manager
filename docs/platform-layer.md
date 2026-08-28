@@ -221,7 +221,84 @@ build prerequisites with Homebrew. It **refuses to run as root** there:
 Homebrew will not run as root, and the services it is preparing for are
 per-user agents.
 
-## 6. What is not done yet
+## 6. llama.cpp on Metal
+
+Built and verified on an M1 Pro: a 0.5B Q4_K_M model served at **99.7 tok/s**,
+with GPU utilisation going from 0% idle to **93%** during generation as measured
+through `platforms.active().gpu_info()`. The manager's own telemetry reads it
+unchanged — `probe_props`, `probe_slots` and `probe_metrics` all answer, and
+`llamacpp:predicted_tokens_seconds` reported 134.96.
+
+Four things had to change, and three of them were only findable by running it.
+
+**The device is `MTL0`, not `Metal0`.** `--list-devices` prints:
+
+```
+Available devices:
+  MTL0: Apple M1 Pro (12124 MiB, 12123 MiB free)
+  BLAS: Accelerate (0 MiB, 0 MiB free)
+```
+
+The build check looked for the substring `cuda`, so it refused every Metal
+build. Rewriting it to look for `metal` still refused them — `MTL0` does not
+contain it. `verify_accelerated_build()` is a platform method now, and it is a
+*positive* check: a CPU-only build compiles, starts, serves and answers
+correctly, so the absence of errors proves nothing. It is simply an order of
+magnitude slower and exhausts host RAM on a model the GPU would have held.
+
+**Split modes collapse.** One device and one memory pool means every mode that
+exists to divide a model between cards is inapplicable rather than unsupported.
+`resolve_split_opts` returns `none` on Darwin and drops `--tensor-split` and
+`--main-gpu`, which would otherwise ask llama-server to choose between GPUs
+there is only one of. The CUDA rationale in `docs/gpu-split-modes.md` still
+holds where it applies; it just does not apply here.
+
+**`--device CUDA0` is the shipped default.** An Apple silicon host that never
+edited its config would pass it to a Metal build and fail at load — the same
+shape of failure as the split modes, arriving after exec and looking like a
+crash loop. `add_device_opt` drops it with a reason rather than translating it,
+because silently rewriting `CUDA0` into `MTL0` would hide a config that is wrong
+for the host.
+
+**`LLM_STACK_PLATFORM`** is the shell's equivalent of `platforms.set_active`,
+so the CUDA placement rules stay testable on a Mac and the Metal rules on Linux.
+Without it the split-mode tests would only ever run on the platform they were
+written for — the failure mode this whole package exists to prevent.
+
+### Unified memory in the budget model
+
+`CUDA_CONTEXT_MIB = 400` is now `platform.device_context_mib` (Metal's is 128:
+there is no separate runtime context to stand up, just command buffers out of
+the same pool).
+
+The fit check branches. On a discrete GPU, weights and KV compete for VRAM while
+the prompt cache competes for host RAM, and overcommitting VRAM fails loudly —
+`cudaMalloc` errors and the unit dies. On Apple silicon both come from one pool
+and overcommitting does not fail at all: the allocation succeeds and the machine
+pages. So `_unified_memory_issues` charges the prompt cache alongside the
+weights, and reports **`memory_overcommit_swaps`**, whose text says the thing
+that matters — *this will not fail to start, it will page*. A stack that comes
+up, serves, and is inexplicably slow is a harder problem to find than a crash
+loop.
+
+Real output for a 4B model at its full 128K context on this machine:
+
+```
+[error] Needs up to 16,506 MiB of unified memory (weights, KV and prompt cache
+        together) against 16,384 MiB installed. This will not fail to start --
+        it will page, and generation will slow by an order of magnitude.
+```
+
+One caveat is stated in the code and worth repeating: capacity is installed RAM,
+and the Metal device reports less — 12,124 MiB of 16,384 above, because macOS
+caps what the GPU may wire. `iogpu.wired_limit_mb` is the knob, and it reads `0`
+for "driver default", a fraction Apple does not publish. So the limit is
+reported and used when it has been set explicitly, and left `null` otherwise
+rather than guessing at a fraction and presenting the guess as a measurement.
+Where it is unset, the budget's ceiling is optimistic: a model that fits it may
+still exceed what Metal will wire.
+
+## 7. What is not done yet
 
 - **Logs.** `journalctl` is still called directly in `telemetry.py` (seed and
   follow), `routes/public.py` and `app.py`. The launchd plists already redirect
@@ -231,13 +308,11 @@ per-user agents.
   matches main PIDs only — and the pooled router's children are exactly the
   processes worth attributing. `label_gpu_process`'s command-line fallback
   carries more weight there as a result.
-- **The launchd domain.** Services are still bootstrapped into whichever domain
-  their plist is found in, preferring the user domain. Metal access is built
-  around an interactive session and the ecosystem has converged on LaunchAgents,
-  but this has not been verified on hardware yet; see the plan's open items.
-- **The budget model** still charges `CUDA_CONTEXT_MIB` per device and treats
-  VRAM and host RAM as separate budgets. On unified memory they are one pool,
-  gated by `iogpu.wired_limit_mb`.
-- **The setup wizard** still fails preflight on Apple silicon: five of its nine
-  required checks (`os`, `architecture`, `systemd`, `nvidia_driver`,
-  `cuda_compatibility`) cannot pass there.
+- **Headless operation.** Services run as per-user LaunchAgents, which means a
+  logged-in session. On a Mac used as a server that implies auto-login. The
+  domain itself is settled — verified against real launchd, and an MLX
+  embedding server has been serving from a user agent on this hardware for
+  days — but the unattended-boot story has not been worked through.
+- **`CUDA_VISIBLE_DEVICES`** is still exported by fourteen launchers. It is
+  inert on a Metal build rather than wrong, and the launcher consolidation is
+  where it belongs; noted so it is not mistaken for something that works.
