@@ -96,7 +96,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --port "${OCR_PORT:-8009}" \
     --ctx-size "${OCR_CTX_SIZE:-8192}" \
     --n-gpu-layers "${OCR_N_GPU_LAYERS:--1}" \
-    "${SPLIT_OPTS[@]}" \
+    ${SPLIT_OPTS[@]+"${SPLIT_OPTS[@]}"} \
     --batch-size "${OCR_BATCH_SIZE:-2048}" \
     --ubatch-size "${OCR_UBATCH_SIZE:-512}" \
     --parallel "${OCR_N_PARALLEL:-1}" \
@@ -110,6 +110,6 @@ exec "${LLAMA_SERVER_BIN}" \
     --top-k "${OCR_TOP_K:-1}" \
     --min-p "${OCR_MIN_P:-0.00}" \
     --fit "${OCR_FIT:-off}" \
-    "${OPTS[@]}" \
-    "${CUSTOM_ARGS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
+    ${CUSTOM_ARGS[@]+"${CUSTOM_ARGS[@]}"} \
     "$@"

@@ -192,12 +192,12 @@ if [[ "${SPEC_METHOD}" == "draft-model" ]]; then
     SPEC_ARGS+=(
         --spec-draft-model "${TASK_SPEC_DRAFT_MODEL_PATH}"
         --spec-draft-ngl "${TASK_SPEC_DRAFT_N_GPU_LAYERS:-auto}"
-        "${DRAFT_CACHE_SPEC_ARGS[@]}"
-        "${COMMON_SPEC_ARGS[@]}"
+        ${DRAFT_CACHE_SPEC_ARGS[@]+"${DRAFT_CACHE_SPEC_ARGS[@]}"}
+        ${COMMON_SPEC_ARGS[@]+"${COMMON_SPEC_ARGS[@]}"}
     )
     [[ -n "${TASK_SPEC_DRAFT_DEVICES:-}" ]] && SPEC_ARGS+=(--spec-draft-device "${TASK_SPEC_DRAFT_DEVICES}")
 elif [[ "${SPEC_METHOD}" != "off" ]]; then
-    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" "${DRAFT_CACHE_SPEC_ARGS[@]}" "${COMMON_SPEC_ARGS[@]}")
+    SPEC_ARGS+=(--spec-type "${SPEC_METHOD}" ${DRAFT_CACHE_SPEC_ARGS[@]+"${DRAFT_CACHE_SPEC_ARGS[@]}"} ${COMMON_SPEC_ARGS[@]+"${COMMON_SPEC_ARGS[@]}"})
     # draft-mtp is deliberately absent: when no draft model is given,
     # common_speculative_init_result creates the MTP draft context against the
     # *target* model (common/speculative.cpp, the `else if (spec_mtp)` branch),
@@ -218,16 +218,16 @@ elif [[ "${SPEC_METHOD}" != "off" ]]; then
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-mod,* ]]; then
         echo "[task] N-gram mod:       match=${TASK_SPEC_NGRAM_MOD_N_MATCH:-24} min=${TASK_SPEC_NGRAM_MOD_N_MIN:-48} max=${TASK_SPEC_NGRAM_MOD_N_MAX:-64}"
-        SPEC_ARGS+=("${NGRAM_MOD_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MOD_SPEC_ARGS[@]+"${NGRAM_MOD_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-simple,* ]]; then
-        SPEC_ARGS+=("${NGRAM_SIMPLE_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_SIMPLE_SPEC_ARGS[@]+"${NGRAM_SIMPLE_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-map-k,* ]]; then
-        SPEC_ARGS+=("${NGRAM_MAP_K_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MAP_K_SPEC_ARGS[@]+"${NGRAM_MAP_K_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," == *,ngram-map-k4v,* ]]; then
-        SPEC_ARGS+=("${NGRAM_MAP_K4V_SPEC_ARGS[@]}")
+        SPEC_ARGS+=(${NGRAM_MAP_K4V_SPEC_ARGS[@]+"${NGRAM_MAP_K4V_SPEC_ARGS[@]}"})
     fi
     if [[ ",${SPEC_METHOD}," != *,ngram-mod,* && "${TASK_SPEC_NGRAM_MOD:-off}" == "on" ]]; then
         echo "[task] N-gram mod assist requested, but this llama-server build only accepts ngram-mod as a standalone --spec-type; leaving --spec-type=${SPEC_METHOD}."
@@ -257,7 +257,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --port "${TASK_PORT}" \
     --ctx-size "${TASK_CTX_SIZE}" \
     --n-gpu-layers "${TASK_N_GPU_LAYERS}" \
-    "${SPLIT_OPTS[@]}" \
+    ${SPLIT_OPTS[@]+"${SPLIT_OPTS[@]}"} \
     --batch-size "${TASK_BATCH_SIZE}" \
     --ubatch-size "${TASK_UBATCH_SIZE}" \
     --parallel "${TASK_N_PARALLEL}" \
@@ -276,7 +276,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --repeat-penalty "${TASK_REPEAT_PENALTY:-1.00}" \
     --reasoning-format "${TASK_REASONING_FORMAT:-none}" \
     --fit "${TASK_FIT:-on}" \
-    "${OPTS[@]}" \
-    "${SPEC_ARGS[@]}" \
-    "${CUSTOM_ARGS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
+    ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
+    ${CUSTOM_ARGS[@]+"${CUSTOM_ARGS[@]}"} \
     "$@"

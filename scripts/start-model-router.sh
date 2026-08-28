@@ -70,5 +70,5 @@ exec "${LLAMA_SERVER_BIN}" \
     --models-preset "${PRESET_PATH}" \
     --models-max "${ROUTER_MAX}" \
     --models-autoload \
-    "${OPTS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
     "$@"

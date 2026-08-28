@@ -48,7 +48,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --port "${RERANK_PORT}" \
     --ctx-size "${RERANK_CTX_SIZE}" \
     --n-gpu-layers "${RERANK_N_GPU_LAYERS:-${CHAT_N_GPU_LAYERS:--1}}" \
-    "${SPLIT_OPTS[@]}" \
+    ${SPLIT_OPTS[@]+"${SPLIT_OPTS[@]}"} \
     --batch-size "${RERANK_BATCH_SIZE}" \
     --ubatch-size "${RERANK_UBATCH_SIZE:-${CHAT_UBATCH_SIZE:-512}}" \
     --parallel "${RERANK_N_PARALLEL:-1}" \
@@ -64,5 +64,5 @@ exec "${LLAMA_SERVER_BIN}" \
     --reasoning-format "${RERANK_REASONING_FORMAT:-none}" \
     --fit "${RERANK_FIT:-on}" \
     --reranking \
-    "${OPTS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
     "$@"

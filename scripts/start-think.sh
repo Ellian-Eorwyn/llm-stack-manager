@@ -55,6 +55,6 @@ exec "${LLAMA_SERVER_BIN}" \
     --top-p "${CHAT_TOP_P}" \
     --top-k "${CHAT_TOP_K}" \
     --min-p "${CHAT_MIN_P}" \
-    "${OPTS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
     "$@"
 # NOTE: No --chat-template-kwargs here — thinking is ON by default for Qwen3.

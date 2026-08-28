@@ -58,5 +58,5 @@ exec "${LLAMA_SERVER_BIN}" \
     --top-k "${CHAT_TOP_K}" \
     --min-p "${CHAT_MIN_P}" \
     --chat-template-kwargs '{"enable_thinking":false}' \
-    "${OPTS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
     "$@"

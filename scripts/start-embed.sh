@@ -45,7 +45,7 @@ exec "${LLAMA_SERVER_BIN}" \
     --port "${EMBED_PORT}" \
     --ctx-size "${EMBED_CTX_SIZE}" \
     --n-gpu-layers "${EMBED_N_GPU_LAYERS:-${CHAT_N_GPU_LAYERS:--1}}" \
-    "${SPLIT_OPTS[@]}" \
+    ${SPLIT_OPTS[@]+"${SPLIT_OPTS[@]}"} \
     --batch-size "${EMBED_BATCH_SIZE}" \
     --ubatch-size "${EMBED_UBATCH_SIZE:-${CHAT_UBATCH_SIZE:-512}}" \
     --parallel "${EMBED_N_PARALLEL:-1}" \
@@ -62,5 +62,5 @@ exec "${LLAMA_SERVER_BIN}" \
     --fit "${EMBED_FIT:-on}" \
     --embedding \
     --pooling mean \
-    "${OPTS[@]}" \
+    ${OPTS[@]+"${OPTS[@]}"} \
     "$@"
