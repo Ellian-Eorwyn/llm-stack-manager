@@ -23,7 +23,6 @@ ALL_SERVICES=(
     chat-backend2
     chat-proxy2
     embed
-    embed2
     rerank
     task
     ocr
@@ -148,7 +147,6 @@ if [[ -n "${LLM_STACK_SELECTED_COMPONENTS:-}" ]]; then
     selected secondary && DEFAULT_SERVICES+=(chat-backend2 chat-proxy2)
     [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] && DEFAULT_SERVICES+=(llama-router)
     selected embedding && ! router_owns EMBED && DEFAULT_SERVICES+=(embed)
-    selected embedding2 && ! router_owns EMBED2 && DEFAULT_SERVICES+=(embed2)
     selected reranker && ! router_owns RERANK && DEFAULT_SERVICES+=(rerank)
     selected task && ! router_owns TASK && DEFAULT_SERVICES+=(task)
     selected ocr && ! router_owns OCR && DEFAULT_SERVICES+=(ocr)
@@ -161,7 +159,7 @@ else
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         DEFAULT_SERVICES+=(llama-router)
     else
-        DEFAULT_SERVICES+=(embed embed2 rerank task)
+        DEFAULT_SERVICES+=(embed rerank task)
     fi
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_SERVICES+=(honcho-api honcho-deriver)

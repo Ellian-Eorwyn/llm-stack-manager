@@ -10,7 +10,6 @@ STACK_CORE_SERVICES=(
   chat-backend2
   chat-proxy2
   embed
-  embed2
   rerank
   task
   ocr

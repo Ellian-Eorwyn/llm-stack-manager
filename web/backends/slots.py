@@ -61,15 +61,6 @@ SLOTS = {
         defaults={"CACHE_TYPE_K": "f16", "CACHE_TYPE_V": "f16"},
         literals=("--embedding", "--pooling", "mean"),
     ),
-    "embed2": Slot(
-        name="embed2",
-        prefix="EMBED2",
-        model_keys=("!EMBEDDING2_MODEL_PATH", "!EMBEDDING_MODEL_PATH"),
-        alias_default="embed2",
-        port_default="8011",
-        defaults={"CACHE_TYPE_K": "f16", "CACHE_TYPE_V": "f16"},
-        literals=("--embedding", "--pooling", "mean"),
-    ),
     "rerank": Slot(
         name="rerank",
         prefix="RERANK",

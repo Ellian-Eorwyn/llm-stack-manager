@@ -51,8 +51,6 @@ BACKEND_TARGETS = [
      "units": ["chat-backend2"]},
     {"name": "embed",          "label": "Embedding",         "port_key": "EMBED_PORT",         "host_key": "EMBED_BACKEND_HOST",
      "units": ["embed"]},
-    {"name": "embed2",         "label": "Embedding 2",       "port_key": "EMBED2_PORT",        "host_key": "EMBED2_BACKEND_HOST",
-     "units": ["embed2"]},
     {"name": "rerank",         "label": "Reranker",          "port_key": "RERANK_PORT",        "host_key": "RERANK_BACKEND_HOST",
      "units": ["rerank"]},
     {"name": "task",           "label": "Task Model",        "port_key": "TASK_PORT",          "host_key": "TASK_BACKEND_HOST",
@@ -65,7 +63,6 @@ DEFAULT_BACKEND_PORTS = {
     "CHAT_BACKEND_PORT": "8010",
     "CHAT_BACKEND2_PORT": "8020",
     "EMBED_PORT": "8005",
-    "EMBED2_PORT": "8011",
     "RERANK_PORT": "8006",
     "TASK_PORT": "8007",
     "OCR_PORT": "8009",
@@ -81,7 +78,6 @@ DEFAULT_BACKEND_PORTS = {
 # while the router is quietly serving it.
 ROUTER_MEMBER_UNITS = {
     "EMBED": "embed",
-    "EMBED2": "embed2",
     "RERANK": "rerank",
     "TASK": "task",
     "OCR": "ocr",

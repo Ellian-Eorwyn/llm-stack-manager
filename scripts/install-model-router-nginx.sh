@@ -57,7 +57,6 @@ fi
 # rather than defaulted, so turning a member off leaves its port alone.
 declare -A MEMBER_PORTS=(
     [EMBED]="${EMBED_PORT:-}"
-    [EMBED2]="${EMBED2_PORT:-}"
     [RERANK]="${RERANK_PORT:-}"
     [TASK]="${TASK_PORT:-}"
     [OCR]="${OCR_PORT:-}"

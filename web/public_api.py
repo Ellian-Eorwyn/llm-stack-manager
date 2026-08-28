@@ -101,7 +101,6 @@ CONFIGURED_MODEL_KEYS = {
     "chat-backend":       ("CHAT_MODEL_PATH",),
     "chat-backend2":      ("CHAT2_MODEL_PATH",),
     "embed":              ("EMBEDDING_MODEL_PATH",),
-    "embed2":             ("EMBED2_MODEL_PATH",),
     "rerank":             ("RERANKER_MODEL_PATH",),
     "task":               ("TASK_MODEL_PATH",),
     "ocr":                ("OCR_MODEL_PATH",),

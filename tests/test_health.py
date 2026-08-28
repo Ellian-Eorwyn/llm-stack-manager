@@ -220,8 +220,8 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(entries["embed"]["state"], "failed")
 
     def test_an_uninstalled_unit_stays_unknown(self):
-        entries = self.collect({"embed2": "unknown"})
-        self.assertEqual(entries["embed2"]["state"], "unknown")
+        entries = self.collect({"rerank": "unknown"})
+        self.assertEqual(entries["rerank"]["state"], "unknown")
 
     def test_a_service_mid_launch_is_not_reported_as_down(self):
         entries = self.collect({"ocr": "starting"})

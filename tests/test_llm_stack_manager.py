@@ -633,7 +633,6 @@ class MetricsFlagTests(unittest.TestCase):
             ("CHAT_PRIMARY_METRICS", "Primary Backend"),
             ("CHAT2_METRICS", "Secondary Backend"),
             ("EMBED_METRICS", "Embedding"),
-            ("EMBED2_METRICS", "Embedding 2"),
             ("RERANK_METRICS", "Reranker"),
             ("TASK_METRICS", "Task Model"),
             ("OCR_METRICS", "OCR"),
@@ -670,8 +669,7 @@ class MetricsFlagTests(unittest.TestCase):
                "OCR_MODEL_PATH": "/m.gguf"}
         with platform_harness.as_linux():
             import backends
-            for slot, prefix in (("embed", "EMBED"), ("embed2", "EMBED2"),
-                                 ("rerank", "RERANK"), ("ocr", "OCR")):
+            for slot, prefix in (("embed", "EMBED"), ("rerank", "RERANK"), ("ocr", "OCR")):
                 with self.subTest(slot):
                     self.assertIn("--metrics", backends.build_command(slot, dict(env)))
                     self.assertNotIn("--metrics", backends.build_command(
@@ -1960,7 +1958,7 @@ class SplitModeTests(unittest.TestCase):
         self.assertEqual(said, "")
 
     def test_backends_without_a_main_gpu_do_not_gain_one(self):
-        """embed, embed2 and rerank have never emitted --main-gpu."""
+        """embed and rerank have never emitted --main-gpu."""
         flags, _ = self._resolve("layer", self.dense, main_gpu="")
         self.assertNotIn("--main-gpu", flags)
 

@@ -177,7 +177,7 @@ SERVICE_DEPENDENCIES = {
 # `setup_engine.COMPONENT_DEPENDENCIES`. Router mode is a runtime choice.
 ROUTER_DEPENDENCY_OVERRIDES = {
     "glmocr-sdk": [["llama-router"]],
-    "honcho-api": [["chat-proxy"], ["llama-router", "embed", "embed2"]],
+    "honcho-api": [["chat-proxy"], ["llama-router", "embed"]],
 }
 
 # `transcript-backend` deliberately appears in neither map. Its local engines —

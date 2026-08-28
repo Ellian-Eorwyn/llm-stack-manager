@@ -33,7 +33,6 @@ LAUNCHERS = {
     "chat-backend":       "start-chat-backend.sh",
     "chat-backend2":      "start-chat-backend2.sh",
     "embed":              "start-embed.sh",
-    "embed2":             "start-embed2.sh",
     "rerank":             "start-rerank.sh",
     "task":               "start-task.sh",
     "ocr":                "start-ocr.sh",

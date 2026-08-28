@@ -229,7 +229,6 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("TASK_SPEC_NGRAM_SIZE_M", "48")
     normalized.setdefault("TASK_SPEC_NGRAM_MIN_HITS", "1")
     normalized.setdefault("EMBED_MODEL_NAME", "embed")
-    normalized.setdefault("EMBED2_MODEL_NAME", "embed2")
     normalized.setdefault("EMBED_THREADS", "-1")
     normalized.setdefault("EMBED_THREADS_BATCH", "-1")
     normalized.setdefault("RERANK_MODEL_NAME", "rank")

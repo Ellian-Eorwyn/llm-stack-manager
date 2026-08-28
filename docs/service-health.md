@@ -22,7 +22,7 @@ collapsed into `inactive`. There was a `failed` pill in the CSS that nothing
 could ever produce for a systemd service.
 
 **Half the stack is off at any time and nothing said whether that was meant.**
-`ocr`, `rerank`, `task`, `embed2`, `chat-backend2`, `honcho-api` and
+`ocr`, `rerank`, `task`, `chat-backend2`, `honcho-api` and
 `honcho-deriver` were all inactive, rendered identically to a service that had
 just died.
 

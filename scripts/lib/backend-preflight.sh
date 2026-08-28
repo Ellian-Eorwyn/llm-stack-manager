@@ -112,7 +112,7 @@ add_fit_ctx_opt() {
 #       "${TENSOR_SPLIT}" "${MAIN_GPU}" "${FLASH_ATTN}"
 #
 # Pass an empty main_gpu for the backends that never emitted --main-gpu
-# (embed, embed2, rerank); the helper will not introduce one.
+# (embed, rerank); the helper will not introduce one.
 resolve_split_opts() {
     local prefix="$1" mode="$2" model_path="$3"
     local tensor_split="$4" main_gpu="$5" flash_attn="${6:-auto}"

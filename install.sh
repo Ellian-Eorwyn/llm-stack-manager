@@ -453,7 +453,6 @@ UNIT
         remove_unselected_units primary chat-backend-dense chat-proxy
         remove_unselected_units secondary chat-backend2 chat-proxy2
         remove_unselected_units embedding embed
-        remove_unselected_units embedding2 embed2
         remove_unselected_units reranker rerank
         remove_unselected_units task task
         remove_unselected_units ocr ocr
@@ -461,14 +460,20 @@ UNIT
         remove_unselected_units playwright playwright-server
         remove_unselected_units honcho honcho-api honcho-deriver
         remove_unselected_units transcribe transcript-backend
-        for unit in think nothink chat-backend chat-backend-moe; do
-            systemctl disable --now "${unit}" 2>/dev/null || true
-            [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
-        done
     fi
+
+    # Retired units, removed on every install rather than only when component
+    # selection is in play: a host that predates the wizard would otherwise keep
+    # a unit whose launcher no longer exists, and find out at the next restart.
+    #
+    # think/nothink were labelled Legacy and were never in the UI's service
+    # table. embed2 was a second embedding slot nothing used.
+    for unit in think nothink embed2; do
+        systemctl disable --now "${unit}" 2>/dev/null || true
+        [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
+    done
+
     if [[ -z "${LLM_STACK_SETUP_COMPONENTS:-}" ]]; then
-        install_unit "think"        "LLM Chat Thinking Legacy - llama-server"        "start-think.sh"        300
-        install_unit "nothink"      "LLM Chat Nothink Legacy - llama-server"         "start-nothink.sh"      300
         install_unit "chat-backend" "LLM Chat Custom Shared Backend - llama-server"  "start-chat-backend.sh" 300
         install_unit "chat-backend-moe" "LLM Chat MoE Shared Backend - llama-server" "start-chat-backend-moe.sh" 300
     fi
@@ -481,7 +486,6 @@ UNIT
         install_unit "chat-proxy2" "LLM Chat Proxy 2 - think/chat/code ports" "start-chat-proxy2.sh" 30
     fi
     setup_has_component embedding && install_unit "embed" "LLM Embedding Model - ${EMBED_ENGINE}" "${EMBED_SCRIPT}" 120
-    setup_has_component embedding2 && install_unit "embed2" "LLM Embedding 2 Model - llama-server" "start-embed2.sh" 120
     setup_has_component reranker && install_unit "rerank" "LLM Reranker Model - llama-server" "start-rerank.sh" 120
     setup_has_component task && install_unit "task" "LLM Task Model - llama-server" "start-task.sh" 120
     setup_has_component ocr && install_unit "ocr" "LLM OCR GLM-OCR Backend - llama-server" "start-ocr.sh" 120
@@ -539,10 +543,10 @@ UNIT
     # onto a full GPU and bounced it 32 times — see docs/service-health.md.
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         OCR_UPSTREAM_UNIT="llama-router.service"
-        EMBED_UPSTREAM_UNITS="llama-router.service embed2.service"
+        EMBED_UPSTREAM_UNITS="llama-router.service"
     else
         OCR_UPSTREAM_UNIT="ocr.service"
-        EMBED_UPSTREAM_UNITS="embed.service embed2.service"
+        EMBED_UPSTREAM_UNITS="embed.service"
     fi
     if [[ -f /etc/systemd/system/glmocr-sdk.service ]]; then
         cp_sed_inplace "s|^After=network.target$|After=network.target ${OCR_UPSTREAM_UNIT}|" /etc/systemd/system/glmocr-sdk.service
@@ -582,7 +586,7 @@ UNIT
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(playwright-server)
     fi
-    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-dense chat-backend-moe chat-backend2 chat-proxy chat-proxy2 embed embed2 rerank task ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(chat-backend chat-backend-dense chat-backend-moe chat-backend2 chat-proxy chat-proxy2 embed rerank task ocr glmocr-sdk)
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         # The router has to be up at boot: it is what the per-model ports point
         # at, and it is the only thing that can bring those models back.
@@ -651,8 +655,6 @@ elif is_mac; then
     echo "Installing launchd services..."
 
     install_mac_service "llm-manager"        "LLM Stack Manager - web UI"                          "start-llm-manager.sh"
-    install_mac_service "think"              "LLM Chat Thinking Legacy - llama-server"             "start-think.sh"
-    install_mac_service "nothink"            "LLM Chat Nothink Legacy - llama-server"              "start-nothink.sh"
     install_mac_service "chat-backend"       "LLM Chat Custom Shared Backend - llama-server"       "start-chat-backend.sh"
     install_mac_service "chat-backend-dense" "LLM Chat Dense Shared Backend - llama-server"        "start-chat-backend-dense.sh" \
         "" "chat-backend-moe chat-backend"
@@ -664,7 +666,6 @@ elif is_mac; then
     install_mac_service "chat-proxy2"        "LLM Chat Proxy 2 - think/chat/code ports"            "start-chat-proxy2.sh" \
         "chat-backend2"
     install_mac_service "embed"              "LLM Embedding Model - ${EMBED_ENGINE}"               "${EMBED_SCRIPT}"
-    install_mac_service "embed2"             "LLM Embedding 2 Model - llama-server"                "start-embed2.sh"
     install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
     install_mac_service "task"               "LLM Task Model - llama-server"                       "start-task.sh"
     install_mac_service "ocr"                "LLM OCR GLM-OCR Backend - llama-server"              "start-ocr.sh"
@@ -673,10 +674,10 @@ elif is_mac; then
     # the router, and waiting on `ocr` would summon a model nothing manages.
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         _ocr_upstream="llama-router"
-        _embed_upstream="llama-router embed2"
+        _embed_upstream="llama-router"
     else
         _ocr_upstream="ocr"
-        _embed_upstream="embed embed2"
+        _embed_upstream="embed"
     fi
     install_mac_service "glmocr-sdk"         "LLM OCR GLM-OCR SDK Parser"                          "start-glmocr-sdk.sh" \
         "${_ocr_upstream}"
@@ -709,11 +710,11 @@ elif is_mac; then
     chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${STACK_DIR}/scripts/launchd-wrapper-"*.sh 2>/dev/null || true
 
     # Enable default services, disable non-default
-    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed embed2 rerank task)
+    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
     if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
     fi
-    NON_DEFAULT_SERVICES=(think nothink chat-backend chat-backend-moe ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(chat-backend chat-backend-moe ocr glmocr-sdk)
     for svc in "${NON_DEFAULT_SERVICES[@]}"; do
         svc_disable "${svc}" 2>/dev/null || true
     done

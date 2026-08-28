@@ -785,7 +785,6 @@ BACKEND_PREFIXES = {
     "chat-primary": "CHAT_PRIMARY",
     "chat-secondary": "CHAT2",
     "embed": "EMBED",
-    "embed2": "EMBED2",
     "rerank": "RERANK",
     "task": "TASK",
     "ocr": "OCR",

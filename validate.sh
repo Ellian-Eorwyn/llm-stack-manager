@@ -97,7 +97,7 @@ if should_check chat-proxy; then
 else
     skip "Primary proxy"
 fi
-for entry in "embed:${EMBED_PORT}" "rerank:${RERANK_PORT}" "task:${TASK_PORT}" "embed2:${EMBED2_PORT:-}"; do
+for entry in "embed:${EMBED_PORT}" "rerank:${RERANK_PORT}" "task:${TASK_PORT}"; do
     service="${entry%%:*}"
     port="${entry##*:}"
     [[ -z "${port}" ]] && continue

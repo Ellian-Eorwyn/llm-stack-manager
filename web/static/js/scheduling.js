@@ -213,7 +213,6 @@ async function saveCfgSection(section, btn) {
     showPreflight(section, d.preflight);
     if (d.ok) {
       cfgCurrent = { ...cfgCurrent, ...updates };
-      refreshBuiltInModelButtons(updates);
       cfgDirty[section] = false;
       const hint = document.getElementById('rhint-' + section.replace(/ /g, '-'));
       const restartNeeded = d.restart_needed || [];

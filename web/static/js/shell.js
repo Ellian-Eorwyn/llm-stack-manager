@@ -101,21 +101,6 @@ function openServiceConfig(sectionName) {
   }
 }
 
-function refreshBuiltInModelButtons(updates) {
-  const slotMappings = [
-    { key: 'CHAT_PRIMARY_LABEL', variant: 'dense' },
-  ];
-  slotMappings.forEach(({ key, variant }) => {
-    if (!(key in updates) || !builtInChatVariantMap[variant]) return;
-    builtInChatVariantMap[variant].label = updates[key];
-    const btn = document.querySelector(`.builtin-switch-btn[data-variant="${variant}"]`);
-    if (btn) {
-      btn.dataset.label = updates[key];
-      btn.textContent = `Switch to ${updates[key]}`;
-    }
-  });
-}
-
 // -- drag and drop layout --
 function applyGroupLayout() {
   const container = document.getElementById('svc-groups-container');

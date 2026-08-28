@@ -78,15 +78,6 @@ class FallbackChainTests(unittest.TestCase):
             f = flags(backends.build_command("embed", dict(BASE, EMBED_N_GPU_LAYERS="")))
         self.assertEqual(f["--n-gpu-layers"], "-1")
 
-    def test_the_second_embedding_slot_falls_back_to_the_first_model(self):
-        with as_linux():
-            f = flags(backends.build_command("embed2", BASE))
-        self.assertEqual(f["--model"], "/models/embed.gguf")
-        with as_linux():
-            f = flags(backends.build_command(
-                "embed2", dict(BASE, EMBEDDING2_MODEL_PATH="/models/two.gguf")))
-        self.assertEqual(f["--model"], "/models/two.gguf")
-
 
 class SlotIdentityTests(unittest.TestCase):
 
