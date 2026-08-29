@@ -28,6 +28,10 @@ PRESET_PATH="${MODEL_ROUTER_PRESET_PATH:-${STACK_DIR}/config/models.ini}"
 ROUTER_PORT="${MODEL_ROUTER_PORT:-8013}"
 ROUTER_MAX="${MODEL_ROUTER_MAX:-2}"
 SLEEP_IDLE="${MODEL_ROUTER_SLEEP_IDLE_SECONDS:-600}"
+# One source for which models the router owns: the `<MEMBER>_POOLED`
+# switches, else MODEL_ROUTER_MEMBERS, else the table default.
+ROUTER_MEMBERS="$(STACK_DIR="${STACK_DIR}" python3 "${STACK_DIR}/scripts/lib/router-members.py")"
+export MODEL_ROUTER_MEMBERS="${ROUTER_MEMBERS}"
 # Loopback, not LISTEN_HOST. nginx owns the public per-model ports and proxies
 # here, so binding this to the LAN would only add a second, unauthenticated way
 # in on a port nothing is expected to use.
@@ -54,7 +58,7 @@ python3 "${STACK_DIR}/scripts/render-models-ini.py" "${PRESET_PATH}"
 echo "[model-router] Port:          ${ROUTER_PORT}"
 echo "[model-router] Host:          ${ROUTER_HOST}"
 echo "[model-router] Models max:    ${ROUTER_MAX}"
-echo "[model-router] Members:       ${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}"
+echo "[model-router] Members:       ${ROUTER_MEMBERS}"
 echo "[model-router] GPUs:          ${CUDA_VISIBLE_DEVICES}"
 echo "[model-router] Idle unload:   ${SLEEP_IDLE}s"
 

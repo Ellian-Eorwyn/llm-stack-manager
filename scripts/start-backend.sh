@@ -65,7 +65,20 @@ if [[ "${ENGINE}" == "llamacpp" ]]; then
     export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 
     # Inert on a Metal build, and left in place for the CUDA hosts that need it.
-    [[ -n "${FACT_VISIBLE}" ]] && export CUDA_VISIBLE_DEVICES="${FACT_VISIBLE}"
+    #
+    # Renumbering is what makes MAIN_GPU mean two different cards depending on
+    # who started the model: a slot with GPU_VISIBLE_DEVICES=1 and MAIN_GPU=0
+    # runs on physical GPU 1, while the same MAIN_GPU=0 under llama-router --
+    # which sets its own visible list -- runs on physical GPU 0.
+    #
+    # LLM_ABSOLUTE_GPU_INDICES=on stops it, and is off by default because the
+    # stored values were written in renumbered space: switching the meaning
+    # moves models between cards unless the values move with it.
+    # `scripts/lib/gpu-indices.py` reports what would move and prints the
+    # absolute values that keep everything where it is.
+    if [[ "${LLM_ABSOLUTE_GPU_INDICES:-off}" != "on" ]]; then
+        [[ -n "${FACT_VISIBLE}" ]] && export CUDA_VISIBLE_DEVICES="${FACT_VISIBLE}"
+    fi
 
     tensor_split="${FACT_TENSOR_SPLIT}"
     if [[ "${tensor_split}" == "auto" || -z "${tensor_split}" ]]; then

@@ -33,6 +33,10 @@ import shlex
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
+
+from backends import router  # noqa: E402
+
 
 # `*_CHAT_TEMPLATE_ID` names a file under the stack's own config directory
 # rather than a path, the same indirection the start scripts perform. This
@@ -431,8 +435,7 @@ def render(env: dict, members=None, warn=None) -> str:
     """
     warn = warn or (lambda message: None)
     if members is None:
-        raw = _clean(env.get("MODEL_ROUTER_MEMBERS")) or "EMBED,OCR,RERANK,TASK"
-        members = [m.strip() for m in raw.split(",") if m.strip()]
+        members = router.pooled_members(env, warn=warn)
 
     # `version` goes inside `[*]` rather than at the top of the file. Top-level
     # keys land in the preset named "default", and the router then advertises

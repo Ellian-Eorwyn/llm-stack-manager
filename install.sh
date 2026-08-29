@@ -46,7 +46,10 @@ config_flag() {
 }
 
 MODEL_ROUTER_ENABLED="$(config_flag MODEL_ROUTER_ENABLED off)"
-MODEL_ROUTER_MEMBERS="$(config_flag MODEL_ROUTER_MEMBERS "EMBED,OCR,RERANK,TASK")"
+# Derived, so the installer and the router cannot disagree about which
+# models are pooled. `router-members.py` reads the `<MEMBER>_POOLED`
+# switches first and the string behind them.
+MODEL_ROUTER_MEMBERS="$(STACK_DIR="${STACK_DIR}" python3 "${STACK_DIR}/scripts/lib/router-members.py" 2>/dev/null || config_flag MODEL_ROUTER_MEMBERS "")"
 TRANSCRIPT_ENABLED="$(config_flag TRANSCRIPT_ENABLED off)"
 
 # Which process serves a slot. The launcher name is already a parameter of both

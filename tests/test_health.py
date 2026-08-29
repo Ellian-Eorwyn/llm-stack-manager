@@ -89,11 +89,24 @@ class ExpectationMigrationTests(unittest.TestCase):
 
     def test_an_expectation_recorded_under_the_old_name_still_applies(self):
         path = self._file({"chat-backend-dense": {"expected": "on"},
-                           "chat-backend2": {"expected": "off"}})
+                           "chat-backend2": {"expected": "off"},
+                           "chat-proxy": {"expected": "on"},
+                           "chat-proxy2": {"expected": "off"}})
         entries = health.read_expectations(path)
         self.assertEqual(entries["llm-a"]["expected"], "on")
         self.assertEqual(entries["llm-b"]["expected"], "off")
+        self.assertEqual(entries["llm-a-proxy"]["expected"], "on")
+        self.assertEqual(entries["llm-b-proxy"]["expected"], "off")
         self.assertNotIn("chat-backend-dense", entries)
+        self.assertNotIn("chat-proxy", entries)
+
+    def test_every_renamed_unit_is_covered_not_just_the_backends(self):
+        """The proxies renamed a step after the backends and were missed once.
+        Anything the installer retires by name has to be here, or the
+        expectation recorded against it is silently dropped."""
+        from backends.proxies import PROXIES
+        renamed = set(health.LEGACY_UNIT_NAMES.values())
+        self.assertEqual(renamed, {"llm-a", "llm-b"} | set(PROXIES))
 
     def test_a_new_name_wins_over_the_residue_of_the_old_one(self):
         """Both can sit in the file while the old spelling drains out."""

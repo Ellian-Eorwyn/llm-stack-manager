@@ -181,7 +181,10 @@ class TaskSettingCoverageTests(unittest.TestCase):
     # child and owns CUDA_VISIBLE_DEVICES for all of them. The SPEC_* family
     # needs the method-dependent branching of start-task.sh:127-214, which a
     # flat suffix table cannot express; it is off in the shipped config.
-    KNOWINGLY_DROPPED = {"PORT", "GPU_VISIBLE_DEVICES"}
+    # POOLED decides whether the router owns this model at all, which is a
+    # question about the pool rather than a setting the model is started
+    # with. It reaches the preset by the member being present or absent.
+    KNOWINGLY_DROPPED = {"PORT", "GPU_VISIBLE_DEVICES", "POOLED"}
 
     def _task(self, **overrides):
         return _sections(renderer.render(dict(BASE_ENV, **overrides)))["task"]
@@ -354,6 +357,134 @@ class MemberSelectionTests(unittest.TestCase):
                          set(_sections(renderer.render(env))) - {"*"})
 
 
+class AbsoluteGpuIndexTests(unittest.TestCase):
+    """`MAIN_GPU` means two different cards depending on who starts the model.
+
+    A slot with `GPU_VISIBLE_DEVICES=1` and `MAIN_GPU=0` runs on physical GPU 1,
+    because llama.cpp only sees one device and calls it 0. The same `MAIN_GPU=0`
+    under `llama-router`, which sets its own visible list, runs on physical
+    GPU 0. Absolute indices fix that and cannot just be switched on: the stored
+    values were written in the renumbered space, so changing the meaning moves
+    models between cards. On the host this was written for, `rerank` and `ocr`
+    would both have jumped from GPU 1 to GPU 0 with nothing in the config
+    changing.
+    """
+
+    def setUp(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location(
+            "gpu_indices", root / "scripts" / "lib" / "gpu-indices.py")
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+
+    def test_a_slot_pinned_to_the_second_card_is_reported_as_moving(self):
+        rows = {r["slot"]: r for r in self.mod.translate(
+            {"RERANK_GPU_VISIBLE_DEVICES": "1", "RERANK_MAIN_GPU": "0"})}
+        self.assertTrue(rows["rerank"]["moves"])
+        self.assertEqual(rows["rerank"]["main_gpu"], 1)
+
+    def test_an_identity_visible_list_moves_nothing(self):
+        rows = {r["slot"]: r for r in self.mod.translate(
+            {"LLM_A_GPU_VISIBLE_DEVICES": "0,1", "LLM_A_MAIN_GPU": "0"})}
+        self.assertFalse(rows["llm-a"]["moves"])
+        self.assertEqual(rows["llm-a"]["main_gpu"], 0)
+
+    def test_a_tensor_split_is_widened_to_the_whole_machine(self):
+        """One weight per *visible* device becomes one per device, with zeros
+        for the cards the slot never used -- otherwise the split silently
+        describes a different set of GPUs."""
+        rows = {r["slot"]: r for r in self.mod.translate(
+            {"RERANK_GPU_VISIBLE_DEVICES": "1", "RERANK_MAIN_GPU": "0",
+             "RERANK_TENSOR_SPLIT": "1"})}
+        self.assertEqual(rows["rerank"]["tensor_split"], "0,1")
+
+    def test_the_switch_is_off_by_default(self):
+        """It changes where models run. That is an operator's decision, made
+        after reading the report, not a default that arrives with an update."""
+        script = (pathlib.Path(__file__).resolve().parents[1]
+                  / "scripts" / "start-backend.sh").read_text()
+        self.assertIn('LLM_ABSOLUTE_GPU_INDICES:-off', script)
+        self.assertIn("CUDA_VISIBLE_DEVICES", script)
+
+
+class PoolMembershipTests(unittest.TestCase):
+    """One source for which models the router owns.
+
+    The default string was written out in thirteen files -- four shell scripts,
+    five Python modules, the field hint and the docs -- which is twelve chances
+    to add a member and have half the stack disagree about whether it is in the
+    pool. `ASR` proved the point: in the member table, out of the default
+    string, and every copy had to get that distinction right.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
+        from backends import router  # noqa: PLC0415
+        self.router = router
+
+    def test_the_default_pool_leaves_the_audio_model_out(self):
+        """Pooling ASR is opt-in: its only caller is the transcription sidecar,
+        and it would compete for VRAM with models serving interactive traffic."""
+        self.assertIn("ASR", self.router.MEMBER_PREFIXES)
+        self.assertNotIn("ASR", self.router.DEFAULT_POOLED)
+        self.assertEqual(self.router.pooled_members({}), list(self.router.DEFAULT_POOLED))
+
+    def test_a_host_that_only_has_the_string_keeps_working(self):
+        """Every host is this host until someone touches a switch."""
+        self.assertEqual(
+            self.router.pooled_members({"MODEL_ROUTER_MEMBERS": "EMBED,ASR"}),
+            ["EMBED", "ASR"])
+
+    def test_inherit_is_not_a_switch(self):
+        """A select cannot render "unset" without showing its first option, so
+        the field says `inherit` explicitly. It must not count as configured, or
+        every host would silently start overriding its own string."""
+        env = {"MODEL_ROUTER_MEMBERS": "EMBED,ASR"}
+        env.update({self.router.pooled_key(p): "inherit"
+                    for p in self.router.MEMBER_PREFIXES})
+        self.assertEqual(self.router.pooled_members(env), ["EMBED", "ASR"])
+
+    def test_one_switch_makes_the_switches_authoritative(self):
+        """A mixture -- some members switched, the rest from a stale string --
+        is the ambiguity this replaces, not a feature."""
+        self.assertEqual(
+            self.router.pooled_members({"MODEL_ROUTER_MEMBERS": "EMBED,ASR",
+                                        "OCR_POOLED": "on"}),
+            ["EMBED", "OCR", "RERANK", "TASK"])
+
+    def test_a_member_switched_off_leaves_the_pool(self):
+        self.assertNotIn("OCR", self.router.pooled_members({"OCR_POOLED": "off"}))
+
+    def test_the_order_is_the_registry_not_the_string(self):
+        """Two hosts listing the same members differently must render the same
+        preset, or a diff of two configs is unreadable."""
+        self.assertEqual(
+            self.router.pooled_members({"MODEL_ROUTER_MEMBERS": "TASK,EMBED"}),
+            self.router.pooled_members({"MODEL_ROUTER_MEMBERS": "EMBED,TASK"}))
+
+    def test_a_name_nothing_serves_is_reported(self):
+        warnings = []
+        self.router.pooled_members({"MODEL_ROUTER_MEMBERS": "EMBED,NOSUCH"},
+                                   warn=warnings.append)
+        self.assertTrue(any("NOSUCH" in w for w in warnings))
+
+    def test_every_consumer_derives_rather_than_repeating_the_default(self):
+        """The duplication this exists to end. A copy that drifts is a stack
+        that disagrees with itself about what the router owns."""
+        root = pathlib.Path(__file__).resolve().parents[1]
+        allowed = {"web/backends/router.py", "scripts/lib/router-members.py"}
+        offenders = []
+        for path in list(root.glob("scripts/**/*.py")) + list(root.glob("scripts/*.sh")) \
+                + list(root.glob("web/**/*.py")) + [root / "install.sh"]:
+            rel = str(path.relative_to(root))
+            if rel in allowed or ".test-venv" in rel or "/.venv/" in rel:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "EMBED,OCR,RERANK,TASK" in text and "e.g." not in text:
+                offenders.append(rel)
+        self.assertEqual(offenders, [])
+
+
 class PooledUnitTests(unittest.TestCase):
     def test_nothing_is_pooled_while_the_router_is_off(self):
         self.assertEqual(telemetry.pooled_units({"MODEL_ROUTER_ENABLED": "off"}), set())
@@ -385,14 +516,17 @@ class PooledUnitTests(unittest.TestCase):
         self.assertEqual(len(eager), 2)
         self.assertTrue(any("MODEL_ROUTER_MAX" in w for w in warnings))
 
-    def test_the_cap_keeps_the_members_in_the_order_they_were_listed(self):
+    def test_the_cap_drops_by_registry_order_not_by_the_string(self):
+        """Registry order, not the order the string happens to list them in --
+        two hosts naming the same members differently must render the same
+        preset, so the cap has to drop the same one on both."""
         env = dict(BASE_ENV, MODEL_ROUTER_MEMBERS="TASK,EMBED,OCR", MODEL_ROUTER_MAX="1",
                    EMBED_LOAD_ON_STARTUP="on", OCR_LOAD_ON_STARTUP="on",
                    TASK_LOAD_ON_STARTUP="on")
         sections = _sections(renderer.render(env, warn=lambda _m: None))
         eager = [name for name, opts in sections.items()
                  if opts.get("load-on-startup") == "true"]
-        self.assertEqual(eager, ["task"])
+        self.assertEqual(eager, ["embed"])
 
     def test_a_pool_within_its_limit_is_left_alone(self):
         env = dict(BASE_ENV, MODEL_ROUTER_MAX="2", EMBED_LOAD_ON_STARTUP="on")

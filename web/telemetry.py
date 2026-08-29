@@ -34,6 +34,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 import backends
+from backends import router
 
 import platforms
 
@@ -113,7 +114,7 @@ def pooled_units(env: dict) -> frozenset:
     five-second poll, and the answer only changes when the config does.
     """
     return _pooled_units(router_enabled(env),
-                         str(env.get("MODEL_ROUTER_MEMBERS") or "EMBED,OCR,RERANK,TASK"))
+                         ",".join(router.pooled_members(env)))
 
 
 # --------------------------------------------------------------------------
