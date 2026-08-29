@@ -399,6 +399,19 @@ class InstallParityTests(unittest.TestCase):
         self.assertIn('for unit in "${RETIRED_SERVICES[@]}"', self.text)
         self.assertIn('for name in "${RETIRED_SERVICES[@]}"', self.text)
 
+    def test_root_is_required_only_where_it_is_needed(self):
+        """The macOS user domain writes nothing root owns.
+
+        The check used to be unconditional, so `install.sh` on a Mac demanded
+        sudo -- which would then write root-owned plists into a *user*
+        LaunchAgents directory, and launchctl refuses to bootstrap those. Every
+        chown on that path targets the operator's own uid and is `|| true`.
+        """
+        guard = re.search(r'if \[\[ "\$\{EUID\}" -ne 0 \]\](.*?)\nfi', self.text, re.S)
+        self.assertIsNotNone(guard, "install.sh lost its root check entirely")
+        self.assertIn("is_linux", guard.group(1))
+        self.assertIn('LLM_LAUNCHD_DOMAIN:-user}" == "system"', guard.group(1))
+
     def test_the_renamed_chat_units_are_among_the_retired(self):
         """Their launchers were renamed with them, so an agent or unit left
         behind points at a script that no longer exists."""
