@@ -65,7 +65,7 @@ function showTab(tab) {
   // this page is served from. Refused with a reason rather than rendered
   // against another host's state, which would read as working.
   const button = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
-  if (typeof fleetHost !== 'undefined' && fleetHost && button?.dataset.localOnly) {
+  if (typeof fleetBlocks === 'function' && fleetBlocks(button)) {
     toast(`${button.textContent.trim()} runs on the machine you are sitting at — `
           + `switch back to This machine first.`, 'warn');
     return;

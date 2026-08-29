@@ -1702,13 +1702,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       </select>
       <button class="btn btn-primary btn-sm" onclick="loadSavedConfig(false)">Apply</button>
       <button class="btn btn-success btn-sm" onclick="loadSavedConfig(true)">Apply + Launch</button>
-      <button class="btn btn-ghost btn-sm" onclick="setDefaultSavedConfig()">Set Default</button>
-      <button class="btn btn-ghost btn-sm" onclick="clearDefaultSavedConfig()">Clear Default</button>
-      <button class="btn btn-danger btn-sm" onclick="deleteSavedConfig()">Delete</button>
+      <button data-local-only="1" class="btn btn-ghost btn-sm" onclick="setDefaultSavedConfig()">Set Default</button>
+      <button data-local-only="1" class="btn btn-ghost btn-sm" onclick="clearDefaultSavedConfig()">Clear Default</button>
+      <button data-local-only="1" class="btn btn-danger btn-sm" onclick="deleteSavedConfig()">Delete</button>
       <span class="active-indicator" id="saved-config-meta"></span>
       <div class="qdivider"></div>
-      <input type="text" id="save-config-name" placeholder="Config name..." style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:var(--radius);font-size:13px;width:180px;">
-      <button class="btn btn-success btn-sm" onclick="saveCurrentConfig()">Save Current</button>
+      <input data-local-only="1" type="text" id="save-config-name" placeholder="Config name..." style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:var(--radius);font-size:13px;width:180px;">
+      <button data-local-only="1" class="btn btn-success btn-sm" onclick="saveCurrentConfig()">Save Current</button>
+      <!-- Apply and the list are proxied to the selected machine; the rest of
+           this bar writes profiles on the machine you are sitting at, so it is
+           hidden when a peer is selected rather than acting on the wrong one. -->
     </div>
     <div class="config-note">
       <strong>How To Use This Page</strong>

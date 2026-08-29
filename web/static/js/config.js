@@ -651,6 +651,10 @@ function showPreflight(section, preflight) {
 
 // -- saved configurations --
 async function patchSelectedSavedConfig(section, updates) {
+  // Saved profiles belong to the machine this page is served from: there is no
+  // hub route for `/patch`, so on a peer this would quietly write the peer's
+  // values into *this* machine's profile and toast that it worked.
+  if (typeof fleetHost !== 'undefined' && fleetHost) return;
   const sel = document.getElementById('saved-config-select');
   const name = sel?.value || '';
   if (!name) return;

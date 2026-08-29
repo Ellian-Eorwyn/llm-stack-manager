@@ -1698,8 +1698,15 @@ class ModuleBoundaryTests(unittest.TestCase):
     both safe and more readable than `config_fields.CONFIG_FIELDS` everywhere.
     """
 
+    # `fleet` and `control_api` are here because the fleet suite rests on
+    # `patch.object(fleet, "fetch", ...)` -- a spoke in `tests/test_fleet.py` is
+    # two Flask test clients spliced in at that one seam, and a single
+    # `from fleet import fetch` anywhere would defeat every test in that file
+    # without failing one. `web/fleet.py`'s own docstring says so; until now
+    # nothing checked it.
     BEHAVIOUR_MODULES = {"core", "config_env", "models", "graphiti", "deploy",
-                         "health", "telemetry", "scheduling", "budget"}
+                         "health", "telemetry", "scheduling", "budget",
+                         "fleet", "control_api"}
 
     # `web/.venv` is the manager's own virtualenv, created in place by
     # start-llm-manager.sh, so on any machine that has run the manager these

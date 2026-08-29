@@ -25,30 +25,40 @@ let fleetHosts = [];
 // `/api/saved-configs/<name>/patch` and `/default` are local-only operations
 // the control API does not implement. A prefix match would have rewritten them
 // into hub routes that do not exist.
-const FLEET_PROXIED = [
-  '/api/status',
-  '/api/config',
-  '/api/config/preflight',
-  '/api/saved-configs',
-];
+// The hub routes this page may reach, by method. Method-aware because the hub's
+// routes are: `/api/saved-configs` is a GET there and has no POST, so rewriting
+// a save into it produced a 405 whose HTML body made `r.json()` throw. A
+// path-only whitelist cannot tell those apart.
+//
+// A list of what *is* forwarded rather than what is not, for the same reason
+// the server has one: a default of "forward it" on an unauthenticated port is
+// how one page bug becomes a request to every machine in the fleet.
+const FLEET_PROXIED = {
+  'GET /api/status': true,
+  'GET /api/config': true,
+  'POST /api/config': true,
+  'POST /api/config/preflight': true,
+  'GET /api/saved-configs': true,
+};
 
 // The two proxied paths that carry a name in them. Anchored at both ends and
 // spelled out segment by segment, so they match exactly the two hub routes and
 // nothing that merely starts the same way.
 const FLEET_PROXIED_PATTERNS = [
-  /^\/api\/service\/[^/]+\/[^/]+$/,
-  /^\/api\/saved-configs\/[^/]+\/apply$/,
+  ['POST', /^\/api\/service\/[^/]+\/[^/]+$/],
+  ['POST', /^\/api\/saved-configs\/[^/]+\/apply$/],
 ];
 
-function fleetProxies(path) {
-  return FLEET_PROXIED.includes(path)
-    || FLEET_PROXIED_PATTERNS.some(rule => rule.test(path));
+function fleetProxies(path, method) {
+  const verb = String(method || 'GET').toUpperCase();
+  return FLEET_PROXIED[`${verb} ${path}`] === true
+    || FLEET_PROXIED_PATTERNS.some(([m, rule]) => m === verb && rule.test(path));
 }
 
-function fleetPath(url) {
+function fleetPath(url, method) {
   if (!fleetHost || typeof url !== 'string') return url;
   const path = url.split('?')[0];
-  if (!fleetProxies(path)) return url;
+  if (!fleetProxies(path, method)) return url;
   return '/api/fleet/' + encodeURIComponent(fleetHost) + url.slice('/api'.length);
 }
 
@@ -62,6 +72,20 @@ function fleetControllable() {
 
 function fleetControlRefused() {
   return String(currentFleetHost()?.control_refused || '');
+}
+
+// Whether an element is blocked for the machine currently selected.
+//
+// One predicate, because there were two and they disagreed. `applyFleetMode`
+// honoured the `data-fleet-control` exception and enabled the Configuration tab
+// for a writable peer; `showTab` looked only at `data-local-only` and refused
+// it. So the remote config form was unreachable through the UI -- the feature
+// was there, tested, and could not be opened.
+function fleetBlocks(el) {
+  if (!fleetHost || !el || !el.hasAttribute || !el.hasAttribute('data-local-only')) {
+    return false;
+  }
+  return !(fleetControllable() && el.hasAttribute('data-fleet-control'));
 }
 
 // -- selection --
@@ -141,8 +165,7 @@ function applyFleetMode() {
   // stays local-only unless someone decides otherwise -- the default that
   // matters when the next tab is added.
   document.querySelectorAll('[data-local-only]').forEach(el => {
-    const proxied = writable && el.hasAttribute('data-fleet-control');
-    const blocked = remote && !proxied;
+    const blocked = fleetBlocks(el);
     if (el.classList.contains('tab-btn')) {
       el.classList.toggle('is-local-only-blocked', blocked);
       el.disabled = blocked;
