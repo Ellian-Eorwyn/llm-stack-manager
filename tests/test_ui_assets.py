@@ -160,6 +160,17 @@ class ScriptLoadOrderTests(unittest.TestCase):
         other module, so nothing may load after it."""
         self.assertEqual(self.order[-1], "boot.js")
 
+    def test_fleet_loads_before_anything_that_fetches(self):
+        """`fetchJSON` asks fleet.js which machine a request is for, through a
+        `typeof` guard so util.js can stay first and depend on nothing. Every
+        module that fetches on load must run after the answer is bound, or the
+        first poll of a session goes to the wrong host."""
+        position = self.order.index("fleet.js")
+        self.assertEqual(position, 1, "fleet.js loads immediately after util.js")
+        for name in ("shell.js", "status.js", "config.js", "models.js"):
+            self.assertGreater(self.order.index(name), position,
+                               f"{name} loads before the selected host is bound")
+
     def test_util_loads_first(self):
         """`escapeHtml`, `toast` and `fetchJSON` are used by every other module."""
         self.assertEqual(self.order[0], "util.js")
@@ -197,3 +208,96 @@ class ScriptLoadOrderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FleetUiTests(unittest.TestCase):
+    """The browser half of the fleet.
+
+    Two properties are worth pinning, and neither is visual. A request must not
+    silently go to the wrong machine, and a page looking at another machine must
+    not look like one looking at this one.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.template = TEMPLATE.read_text()
+        cls.fleet = (STATIC / "js" / "fleet.js").read_text()
+        cls.util = (STATIC / "js" / "util.js").read_text()
+
+    def test_the_fetch_wrapper_asks_which_host_a_request_is_for(self):
+        # The one mechanism. Seventy-eight call sites in the other modules do
+        # not know a fleet exists.
+        self.assertIn("fleetPath(url)", self.util)
+        self.assertIn("typeof fleetPath === 'function'", self.util,
+                      "util.js must stay first in the load order, so the call is guarded")
+
+    def test_only_whitelisted_paths_are_proxied(self):
+        """A list of what *is* forwarded, mirroring `web/routes/fleet.py`.
+
+        A default of "forward it" on an unauthenticated port is how one page bug
+        becomes a request to every machine in the fleet.
+        """
+        self.assertIn("FLEET_PROXIED", self.fleet)
+        self.assertIn("FLEET_PROXIED.includes(path)", self.fleet)
+        self.assertNotIn("startsWith('/api/')", self.fleet)
+
+    def test_the_selection_does_not_outlive_the_tab(self):
+        """A remote selection that survives a restart, or that can be
+        bookmarked and shared, is how someone edits the wrong machine believing
+        it is theirs."""
+        self.assertIn("sessionStorage.setItem", self.fleet)
+        # Use, not mention: the comment above it names localStorage to say why
+        # it is not the one being used.
+        self.assertNotIn("localStorage.", self.fleet)
+
+    def test_a_remote_host_is_visible_in_the_page_itself(self):
+        for marker in ("fleet-remote", "fleet-banner", "fleet-picker"):
+            with self.subTest(marker):
+                self.assertIn(marker, self.template)
+
+    def test_the_picker_is_hidden_until_there_is_a_fleet(self):
+        self.assertIn('id="fleet-picker" hidden', self.template)
+
+    def test_the_tabs_that_act_on_this_machine_say_so(self):
+        """Setup, the installers, the config form and the log stream all reach
+        this host. Marked in the markup rather than listed in JavaScript, so a
+        new tab is local-only unless someone decides otherwise."""
+        marked = re.findall(r'data-tab="(\w+)" data-local-only', self.template)
+        self.assertEqual(sorted(marked),
+                         ["config", "logs", "playwright", "searxng", "setup", "transcribe"])
+
+    def test_showtab_refuses_a_local_only_tab_on_a_remote_host(self):
+        shell = (STATIC / "js" / "shell.js").read_text()
+        self.assertIn("dataset.localOnly", shell)
+
+    def test_the_controls_that_act_on_this_machine_are_marked_too(self):
+        """Not just the tabs.
+
+        `bulkAction('stop')` and `updateApp` are not proxied, so a live Stop All
+        on a page whose header names another machine would stop the local stack
+        -- which is exactly the failure the picker exists to prevent. The deploy
+        badge is marked for a quieter reason: it reports this checkout's git
+        state, which is not the peer's.
+        """
+        for marker in ('class="quick-bar" data-local-only',
+                       'data-local-only="1" onclick="updateApp',
+                       'id="deploy-badge" data-state="current" data-local-only',
+                       'id="group-telemetry" data-local-only'):
+            with self.subTest(marker):
+                self.assertIn(marker, self.template)
+
+    def test_hiding_by_attribute_actually_hides(self):
+        """The user agent's `[hidden] { display: none }` loses to any rule that
+        sets `display` on the element itself, and most panels here set one.
+
+        Without the override this is not a style nit: `.quick-bar` is
+        `display: flex`, so `hidden` on it did nothing at all, and Stop All
+        stayed clickable on a page pointed at another machine.
+        """
+        self.assertIn("[hidden] { display: none !important; }", self.template)
+
+    def test_the_poll_does_not_ask_a_peer_for_endpoints_it_cannot_serve(self):
+        # Four unproxied endpoints, four 404s every five seconds otherwise.
+        status = (STATIC / "js" / "status.js").read_text()
+        self.assertIn("if (remote) return;", status)
+        self.assertIn("renderRemoteServices(d)", status)

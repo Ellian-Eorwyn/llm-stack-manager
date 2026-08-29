@@ -15,13 +15,21 @@ function startPolling() {
 
 async function poll() {
   if (document.hidden) return;
+  const remote = typeof fleetHost !== 'undefined' && Boolean(fleetHost);
   try {
     const d = await fetchJSON('/api/status');
-    applyStatuses(d.services, d.health);
+    if (remote) {
+      renderRemoteServices(d);
+    } else {
+      applyStatuses(d.services, d.health);
+      applyServiceContexts(d.contexts);
+      applyDeployment(d.deployment);
+    }
     applyGpus(d.gpus);
-    applyServiceContexts(d.contexts);
-    applyDeployment(d.deployment);
   } catch {}
+  // Everything below reads an endpoint the hub does not proxy. Skipped rather
+  // than left to 404 four times every five seconds.
+  if (remote) return;
   try { await pollTelemetry(); } catch {}
   try { await pollActiveModel(); } catch {}
   try { await pollModelRouter(); } catch {}

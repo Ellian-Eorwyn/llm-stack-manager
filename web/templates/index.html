@@ -9,6 +9,12 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* The user-agent's `[hidden] { display: none }` loses to any rule that sets
+   `display` on the element itself, and most panels here set one. Without this,
+   hiding something by attribute silently does nothing -- which it did, to the
+   Stop All button, on a page pointed at another machine. */
+[hidden] { display: none !important; }
+
 :root {
   --bg:       #030712;
   --surface:  rgba(17, 24, 39, 0.6);
@@ -443,6 +449,38 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   color: var(--dim);
   font-size: 13px;
   max-width: 760px;
+}
+.fleet-picker select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+/* A page looking at another machine must never look like one looking at this
+   one. This accent and the banner are the whole of that. */
+.app-shell.fleet-remote { box-shadow: inset 0 3px 0 0 var(--accent); }
+.app-shell.fleet-remote .fleet-picker select { border-color: var(--accent); }
+.fleet-banner {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  color: var(--dim);
+  font-size: 13px;
+}
+.fleet-stale {
+  color: var(--warning);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+.fleet-empty { color: var(--dim); font-size: 13px; }
+.tab-btn.is-local-only-blocked { opacity: 0.45; cursor: not-allowed; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
 .cfg-omitted {
   border: 1px solid var(--border);
@@ -938,16 +976,23 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   <div class="hdr-title">LLM <span>Stack</span> Manager</div>
   <div class="hdr-gpus" id="gpu-stats"></div>
   <div class="hdr-actions">
+    <!-- Hidden unless config/fleet.json lists a peer, so a single-machine
+         install sees no change at all. -->
+    <div class="fleet-picker" id="fleet-picker" hidden>
+      <label class="sr-only" for="fleet-host">Host</label>
+      <select id="fleet-host" onchange="selectFleetHost(this.value)"
+              title="Which machine this page is looking at"></select>
+    </div>
     <!-- Hidden until the deployed tree is behind, dirty, or unknowable. A
          manager running current code should not nag about it. -->
-    <div class="deploy-badge" id="deploy-badge" data-state="current">
+    <div class="deploy-badge" id="deploy-badge" data-state="current" data-local-only="1">
       <button class="deploy-pill" id="deploy-pill" onclick="toggleDeployDetail()"
               aria-expanded="false" title="Deployment status">
         <span class="deploy-dot"></span><span id="deploy-pill-text">Checking…</span>
       </button>
       <div class="deploy-detail" id="deploy-detail"></div>
     </div>
-    <button class="btn btn-primary" onclick="updateApp(this)">Update App</button>
+    <button class="btn btn-primary" data-local-only="1" onclick="updateApp(this)">Update App</button>
   </div>
 </header>
 
@@ -955,13 +1000,13 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 <aside class="side-nav">
   <div class="side-nav-group">
     <div class="side-nav-title">Manager</div>
-    <button class="tab-btn" data-tab="setup"><span class="nav-icon">W</span><span class="nav-label">Setup Wizard</span></button>
+    <button class="tab-btn" data-tab="setup" data-local-only="1"><span class="nav-icon">W</span><span class="nav-label">Setup Wizard</span></button>
     <button class="tab-btn active" data-tab="services"><span class="nav-icon">S</span><span class="nav-label">Services</span></button>
-    <button class="tab-btn" data-tab="searxng"><span class="nav-icon">X</span><span class="nav-label">SearXNG</span></button>
-    <button class="tab-btn" data-tab="playwright"><span class="nav-icon">P</span><span class="nav-label">Playwright</span></button>
-    <button class="tab-btn" data-tab="transcribe"><span class="nav-icon">T</span><span class="nav-label">Transcription</span></button>
-    <button class="tab-btn" data-tab="config"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
-    <button class="tab-btn" data-tab="logs"><span class="nav-icon">L</span><span class="nav-label">Logs</span></button>
+    <button class="tab-btn" data-tab="searxng" data-local-only="1"><span class="nav-icon">X</span><span class="nav-label">SearXNG</span></button>
+    <button class="tab-btn" data-tab="playwright" data-local-only="1"><span class="nav-icon">P</span><span class="nav-label">Playwright</span></button>
+    <button class="tab-btn" data-tab="transcribe" data-local-only="1"><span class="nav-icon">T</span><span class="nav-label">Transcription</span></button>
+    <button class="tab-btn" data-tab="config" data-local-only="1"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
+    <button class="tab-btn" data-tab="logs" data-local-only="1"><span class="nav-icon">L</span><span class="nav-label">Logs</span></button>
   </div>
   <div class="side-nav-group side-nav-secondary" id="config-side-nav">
     <div class="side-nav-title">Config Sections</div>
@@ -1044,8 +1089,12 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 <!-- ====== Services tab ====== -->
 <div id="tab-services" class="tab-panel active">
 
-  <!-- Quick actions bar -->
-  <div class="quick-bar">
+  <div class="fleet-banner" id="fleet-banner" role="status" hidden></div>
+
+  <!-- Quick actions bar. Local-only: `bulkAction` and the model installer reach
+       this host, and leaving them live while a peer is selected is the exact
+       "acted on the wrong machine" failure the picker exists to prevent. -->
+  <div class="quick-bar" data-local-only="1">
     <span class="active-indicator" id="active-model-label"></span>
     <span class="qlabel">All services</span>
     <button class="btn btn-ghost btn-sm" onclick="bulkAction('stop')">Stop All</button>
@@ -1141,8 +1190,9 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     </div>
   </div>
 
-  <!-- Backend telemetry -->
-  <div class="svc-group" id="group-telemetry">
+  <!-- Backend telemetry. Reads /api/backend/telemetry, which the hub does not
+       proxy, so an empty panel is all a peer could ever fill it with. -->
+  <div class="svc-group" id="group-telemetry" data-local-only="1">
     <div class="group-hdr">
       <span>Backend Telemetry</span>
       <span class="tele-unit" id="telemetry-window"></span>
@@ -1152,6 +1202,11 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   </div>
 
   <!-- Built-in service groups -->
+  <!-- A peer's services, rendered from its snapshot. Not the cards below:
+       those are this host's SERVICES, and another machine does not have the
+       same ones -- reusing them would show a service that is not there and
+       hide one that is. -->
+  <div id="fleet-services" hidden></div>
   <div id="svc-groups-container">
   {% for group_name, services in service_groups.items() %}
   <div class="svc-group" id="group-{{ group_name | lower | replace(' ', '-') | replace('/', '-') }}">
@@ -2270,6 +2325,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
      inline onclick handlers, which resolve against the global scope. Load order is
      a dependency order — shell.js owns the shared state, boot.js runs last. -->
 <script src="{{ url_for('static', filename='js/util.js') }}?v={{ asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/fleet.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/shell.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/status.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/deploy.js') }}?v={{ asset_version }}"></script>
