@@ -61,6 +61,15 @@ function initSidebar() {
 
 // -- tabs --
 function showTab(tab) {
+  // The setup wizard, the installers and the log stream all act on the machine
+  // this page is served from. Refused with a reason rather than rendered
+  // against another host's state, which would read as working.
+  const button = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+  if (typeof fleetHost !== 'undefined' && fleetHost && button?.dataset.localOnly) {
+    toast(`${button.textContent.trim()} runs on the machine you are sitting at — `
+          + `switch back to This machine first.`, 'warn');
+    return;
+  }
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.tab === tab);
   });

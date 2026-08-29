@@ -6,6 +6,9 @@
 
 // -- boot --
 async function boot() {
+  // First: `fetchJSON` asks fleet.js where every request goes, and the panels
+  // below all fetch.
+  await initFleet();
   initSidebar();
   initDeployBadge();
   initCollapsibleSections();
