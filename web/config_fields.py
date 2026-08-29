@@ -35,6 +35,7 @@ exceptions.
 from collections import defaultdict
 
 import backends
+import platforms
 
 LLAMA_KV_CACHE_OPTIONS = ["q8_0", "f16", "f32", "bf16", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl"]
 
@@ -972,6 +973,59 @@ CONFIG_FIELDS = _rebuilt_config_fields
 # shared setting reaches every unit that might be hosting it.
 SHARED_CHAT_BACKEND_RESTART = [slot.name for slot in backends.SLOTS.values()
                                if slot.group == "chat"]
+
+
+# Which platform capability a setting needs in order to do anything. Matched on
+# the key's suffix, because the same setting exists under eight prefixes and
+# listing twenty-seven keys would be a list to forget to update.
+#
+# `*_DEVICE` is deliberately absent. It is not inert on a Metal build -- `MTL0`
+# is a real answer there -- it is only the shipped `CUDA0` default that is
+# wrong, and that is a different problem from a control with nothing behind it.
+CAPABILITY_BY_SUFFIX = {
+    "_GPU_VISIBLE_DEVICES": "gpu_visible_devices",
+    "_MAIN_GPU": "gpu_indices",
+    "_TENSOR_SPLIT": "gpu_indices",
+    "_SPLIT_MODE": "split_modes",
+}
+
+
+def applicable_fields(inert: dict[str, str] | None = None,
+                      fields: list[dict] | None = None) -> tuple[list[dict], dict[str, str]]:
+    """(the fields this host can act on, {omitted key: why}).
+
+    The Mac renders `CHAT_PRIMARY_GPU_VISIBLE_DEVICES`, `_MAIN_GPU`,
+    `_TENSOR_SPLIT` and `_SPLIT_MODE` today -- twenty-seven controls across
+    seven sections -- and every one of them does nothing:
+    `CUDA_VISIBLE_DEVICES` is not read by a Metal build, and
+    `resolve_split_opts` collapses the placement flags before they reach
+    llama-server. The operator sets one, the UI says saved, the backend starts,
+    and the setting is not in the command line.
+
+    This filters what is *rendered*. It deliberately does not filter what is
+    *written*: `filter_config_updates` still accepts these keys, so a config
+    file carrying them keeps them and a host that can act on them still reads
+    them. Hiding a control is a statement about this machine; deleting the
+    value would be a statement about every machine that shares the file.
+    """
+    if inert is None:
+        inert = platforms.active().inert_config_capabilities
+    if fields is None:
+        fields = CONFIG_FIELDS
+    if not inert:
+        return list(fields), {}
+
+    keep, omitted = [], {}
+    for field in fields:
+        key = field.get("key", "")
+        reason = next((inert[capability]
+                       for suffix, capability in CAPABILITY_BY_SUFFIX.items()
+                       if key.endswith(suffix) and capability in inert), "")
+        if reason:
+            omitted[key] = reason
+        else:
+            keep.append(field)
+    return keep, omitted
 
 # Which services should be restarted after changing a given config key
 RESTART_HINTS = {

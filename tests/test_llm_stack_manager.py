@@ -914,12 +914,13 @@ class ConfigFieldRenderingTests(unittest.TestCase):
     eight fields were in that state, including every backend's --metrics
     toggle."""
 
-    def _render(self):
+    def _render(self, platform=platform_harness.as_linux):
         template_dir = pathlib.Path(__file__).resolve().parents[1] / "web" / "templates"
         original = list(manager.app.jinja_loader.searchpath)
         manager.app.jinja_loader.searchpath = [str(template_dir)]
         try:
             with (
+                platform(),
                 manager.app.test_client() as client,
                 patch.object(config_env, "read_env", return_value={}),
                 patch.object(models, "load_custom_models", return_value=[]),
@@ -934,6 +935,46 @@ class ConfigFieldRenderingTests(unittest.TestCase):
                    if f.get("section") in manager.CORE_CONFIG_SECTIONS
                    and f"cfg-{f['key']}" not in html]
         self.assertEqual(missing, [], f"{len(missing)} config fields render nowhere")
+
+    def test_a_metal_host_is_not_offered_placement_it_cannot_perform(self):
+        """The other half of the same rule.
+
+        A field that renders nowhere is invisible; a field that renders on a
+        machine that cannot act on it is worse, because it saves, it restarts
+        the backend, and the setting never reaches the command line.
+        `CUDA_VISIBLE_DEVICES` is not read by a Metal build and
+        `resolve_split_opts` collapses every split mode there, so twenty-seven
+        controls across seven sections are exactly that.
+        """
+        html = self._render(platform_harness.as_darwin)
+        _fields, omitted = config_fields.applicable_fields(
+            platform_harness.DarwinPlatform().inert_config_capabilities)
+        self.assertEqual(len(omitted), 27)
+        for key in omitted:
+            with self.subTest(key):
+                self.assertNotIn(f'"cfg-{key}"', html)
+        # Left out, not silently dropped.
+        self.assertIn("settings not shown on this host.", html)
+        for reason in set(omitted.values()):
+            self.assertIn(reason, html)
+
+    def test_the_settings_a_metal_host_can_act_on_are_still_offered(self):
+        # `--device` is not inert on Metal -- MTL0 is a real answer -- so the
+        # control stays. Only the shipped CUDA0 default is wrong for the host,
+        # which is a different problem.
+        html = self._render(platform_harness.as_darwin)
+        for key in ("CHAT_PRIMARY_DEVICE", "CHAT_PRIMARY_N_GPU_LAYERS",
+                    "CHAT_PRIMARY_CTX_SIZE", "TASK_DEVICE"):
+            with self.subTest(key):
+                self.assertIn(f"cfg-{key}", html)
+
+    def test_every_field_carries_its_key_in_the_dom(self):
+        # `data-cfg-key` is what lets a control be found without re-deriving
+        # the curated panel layouts in JavaScript.
+        html = self._render()
+        for key in ("CHAT_PRIMARY_CTX_SIZE", "OCR_TEMP", "TASK_METRICS"):
+            with self.subTest(key):
+                self.assertIn(f'data-cfg-key="{key}"', html)
 
     def test_no_field_is_rendered_twice(self):
         """The catch-all must not duplicate what a curated panel already drew."""

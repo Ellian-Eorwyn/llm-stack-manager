@@ -595,3 +595,41 @@ class UnifiedMemoryBudgetTests(unittest.TestCase):
             self.assertEqual(linux.device_context_mib, 400)
         with platform_harness.as_darwin() as darwin:
             self.assertLess(darwin.device_context_mib, 400)
+
+
+class InertConfigTests(unittest.TestCase):
+    """What a platform cannot configure, and why.
+
+    A control that reports success and changes nothing is the worst of the
+    three states a setting can be in: worse than missing, because the operator
+    sets it and believes it took, and worse than wrong, because nothing says
+    so. On a Metal build `CUDA_VISIBLE_DEVICES` is not read at all and
+    `resolve_split_opts` collapses every split mode before it reaches
+    llama-server, so the whole GPU-placement surface is in that state.
+    """
+
+    def test_linux_withholds_nothing(self):
+        with platform_harness.as_linux() as platform:
+            self.assertEqual(platform.inert_config_capabilities, {})
+
+    def test_darwin_names_the_three_it_cannot_act_on(self):
+        with platform_harness.as_darwin() as platform:
+            self.assertEqual(set(platform.inert_config_capabilities),
+                             {"gpu_visible_devices", "gpu_indices", "split_modes"})
+
+    def test_every_reason_is_a_sentence_an_operator_can_act_on(self):
+        # These are rendered into the page verbatim, so "unsupported" would be
+        # a worse answer than the field simply being absent.
+        with platform_harness.as_darwin() as platform:
+            for capability, reason in platform.inert_config_capabilities.items():
+                with self.subTest(capability):
+                    self.assertTrue(reason.endswith("."), reason)
+                    self.assertGreater(len(reason.split()), 5, reason)
+
+    def test_the_capability_names_are_ones_the_config_surface_asks_about(self):
+        # A reason for a capability nothing consults is a reason nobody sees.
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
+        import config_fields
+        with platform_harness.as_darwin() as platform:
+            self.assertEqual(set(platform.inert_config_capabilities),
+                             set(config_fields.CAPABILITY_BY_SUFFIX.values()))

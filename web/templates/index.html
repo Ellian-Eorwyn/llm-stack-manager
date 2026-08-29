@@ -444,6 +444,19 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   font-size: 13px;
   max-width: 760px;
 }
+.cfg-omitted {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--dim);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 18px;
+  color: var(--dim);
+  font-size: 13px;
+  max-width: 760px;
+}
+.cfg-omitted strong { color: var(--text); font-weight: 600; }
+.cfg-omitted ul { margin: 6px 0 0 18px; }
+.cfg-omitted li { margin-top: 2px; }
 .cfg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
 .cfg-grid.tight { margin-bottom: 0; }
 .cfg-panel-grid {
@@ -1523,7 +1536,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 
 <!-- ====== Configuration tab ====== -->
 {% macro render_config_field(f, section) -%}
-<div class="field {% if f.type in ('path', 'executable_path', 'custom_args', 'template_manager') %}wide{% endif %}">
+<div class="field {% if f.type in ('path', 'executable_path', 'custom_args', 'template_manager') %}wide{% endif %}" data-cfg-key="{{ f.key }}">
   <label for="cfg-{{ f.key }}">{{ f.label }}</label>
   {% if f.type == 'select' %}
   <select id="cfg-{{ f.key }}" name="{{ f.key }}" onchange="markDirty('{{ section }}')">
@@ -1684,6 +1697,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
           </p>
         </div>
       </div>
+
+      {% if omitted_config.get(section) %}
+      {% set note = omitted_config[section] %}
+      <div class="cfg-omitted" role="note">
+        <strong>{{ note.count }} setting{{ '' if note.count == 1 else 's' }} not shown on this host.</strong>
+        <ul>
+          {% for reason in note.reasons %}<li>{{ reason }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% endif %}
 
       {# Sections below lay their fields out by hand, listing the keys each
          panel holds. A key in none of those lists used to render nowhere: it
