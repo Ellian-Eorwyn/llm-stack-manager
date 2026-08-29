@@ -43,6 +43,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import backends
 import platforms
 
 MIB = 1024 * 1024
@@ -781,16 +782,13 @@ def evaluate(geometry: dict, settings: dict, prediction: dict,
 # --------------------------------------------------------------------------
 
 # Each backend the model can price, and the env prefix its settings live under.
-BACKEND_PREFIXES = {
-    "chat-primary": "CHAT_PRIMARY",
-    "chat-secondary": "CHAT2",
-    "embed": "EMBED",
-    "rerank": "RERANK",
-    "task": "TASK",
-    "ocr": "OCR",
+# Keyed by the name the budget model knows, which is not the unit name: the
+# unit is `chat-backend-dense` and the price is quoted for `chat-primary`.
+BACKEND_PREFIXES = {slot.budget: slot.prefix for slot in backends.SLOTS.values()} | {
     # Only pooled when ASR is in MODEL_ROUTER_MEMBERS, but priced either way:
     # an audio GGUF the budget cannot see is one the pre-flight check silently
-    # leaves out of the VRAM total.
+    # leaves out of the VRAM total. It has no slot because it has no unit --
+    # the audio model is only ever a router child.
     "asr": "ASR",
 }
 

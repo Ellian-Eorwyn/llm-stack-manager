@@ -155,6 +155,31 @@ class Slot:
     #: has been expanded, and the number of visible devices.
     preflight_fields: tuple[tuple[str, str], ...] = ()
 
+    # -- how the rest of the stack refers to this slot -----------------------
+    #
+    # Four vocabularies name the same thing, and no single one of them will do:
+    # the unit is `chat-backend-dense`, the budget model calls it
+    # `chat-primary`, the setup wizard calls it `primary`, and its settings
+    # live under `CHAT_PRIMARY_`. Each of those was written out independently
+    # in a different module, which is why renaming a slot used to mean editing
+    # twelve files.
+
+    #: What the setup wizard calls it. Empty for a slot the wizard cannot
+    #: install on its own.
+    component: str = ""
+    #: "chat" or "auxiliary", for the services panel's two groups.
+    group: str = "auxiliary"
+    label: str = ""
+    desc: str = ""
+    config_section: str = ""
+    #: The human port string the services panel shows. Not machine-readable --
+    #: `health` derives its port map from `port_keys` for that reason.
+    ports_display: str = ""
+    #: Where telemetry and health dial it, which is not always where it binds:
+    #: a slot may listen on `LISTEN_HOST` (0.0.0.0) and still be probed on
+    #: loopback. Empty means loopback.
+    probe_host_keys: tuple[str, ...] = ()
+
     @property
     def prefixes(self) -> tuple[str, ...]:
         return (self.prefix, *self.legacy_prefixes)
@@ -162,6 +187,28 @@ class Slot:
     @property
     def budget(self) -> str:
         return self.budget_name or self.name
+
+    @property
+    def port_key(self) -> str:
+        """The single env key holding this slot's port, for the tables that
+        want a name rather than a chain."""
+        keys = self.absolute(self.port_keys)
+        return keys[0] if keys else ""
+
+    @property
+    def probe_host_key(self) -> str:
+        keys = self.absolute(self.probe_host_keys)
+        return keys[0] if keys else ""
+
+    def absolute(self, keys: tuple[str, ...]) -> tuple[str, ...]:
+        """`keys` as whole env names, expanding relative ones over the prefixes."""
+        out: list[str] = []
+        for key in keys:
+            if key.startswith("!"):
+                out.append(key[1:])
+            else:
+                out.extend(f"{prefix}_{key}" for prefix in self.prefixes)
+        return tuple(out)
 
     def engine(self, env: dict) -> str:
         key = self.engine_key or f"{self.prefix}_ENGINE"

@@ -47,6 +47,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+import backends
 import config_fields
 import core
 import telemetry
@@ -84,7 +85,7 @@ SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 # and therefore the ones that explain why it is behaving as it is.
 CONFIG_SECTIONS = (
     "Primary Backend", "Secondary Backend", "Shared Backend", "Task Model",
-    "Embedding", "Embedding 2", "Reranker", "OCR", "Model Router", "Ports",
+    "Embedding", "Reranker", "OCR", "Model Router", "Ports",
     # Agents on the tailnet call the sidecar directly, so which engine and model
     # it is set to is exactly the sort of thing they need to read first.
     # `SECRET_KEY_RE` already redacts TRANSCRIPT_API_TOKEN and every *_API_KEY.
@@ -92,17 +93,11 @@ CONFIG_SECTIONS = (
 )
 
 # Which env key holds the model each unit was configured to load, in the order
-# the launcher falls back through them. `start-chat-backend-dense.sh` tries
-# three, so reading only the first would report a mismatch against a backend
-# that is loading exactly what it was told to.
-CONFIGURED_MODEL_KEYS = {
-    "chat-backend-dense": ("CHAT_PRIMARY_MODEL_PATH", "CHAT_DENSE_MODEL_PATH", "CHAT_MODEL_PATH"),
-    "chat-backend2":      ("CHAT2_MODEL_PATH",),
-    "embed":              ("EMBEDDING_MODEL_PATH",),
-    "rerank":             ("RERANKER_MODEL_PATH",),
-    "task":               ("TASK_MODEL_PATH",),
-    "ocr":                ("OCR_MODEL_PATH",),
-}
+# the launcher falls back through them. The primary chat slot tries three, so
+# reading only the first would report a mismatch against a backend that is
+# loading exactly what it was told to.
+CONFIGURED_MODEL_KEYS = {slot.name: slot.absolute(slot.model_keys)
+                         for slot in backends.SLOTS.values()}
 
 # llama.cpp's router reports a per-model state; these mean the weights are in
 # memory right now, which is what makes the VRAM on that process theirs.

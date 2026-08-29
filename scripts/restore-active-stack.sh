@@ -13,32 +13,9 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     source "${CONFIG_FILE}"
 fi
 
-ALL_SERVICES=(
-    think
-    nothink
-    chat-backend-dense
-    chat-proxy
-    chat-backend2
-    chat-proxy2
-    embed
-    rerank
-    task
-    ocr
-    llama-router
-    glmocr-sdk
-    transcript-backend
-    honcho-api
-    honcho-deriver
-    qwen-think
-    qwen-nothink
-    qwen-chat-backend
-    qwen-chat-backend-27b
-    qwen-chat-backend-35b
-    qwen-chat-proxy
-    qwen-embedding
-    qwen-reranker
-    qwen-task
-)
+# shellcheck source=scripts/stack-services.sh
+source "${STACK_DIR}/scripts/stack-services.sh"
+ALL_SERVICES=("${STACK_STOPPABLE_SERVICES[@]}")
 
 DEFAULT_CHAT_BACKEND="chat-backend-dense"
 DEFAULT_CONFIG_MARKER="${STACK_DIR}/config/default-saved-config"

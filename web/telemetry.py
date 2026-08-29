@@ -33,6 +33,8 @@ from datetime import datetime
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+import backends
+
 import platforms
 
 DEFAULT_WINDOW_SECONDS = 3600
@@ -42,31 +44,28 @@ MAX_WINDOW_SECONDS = 7 * 24 * 3600
 MAX_EVENTS_PER_UNIT = 20000
 PROBE_TIMEOUT_SECONDS = 3
 
-# Backends that speak the llama-server HTTP API, in UI order. `port_key` is the
-# env key holding the port; `host_key` falls back to loopback when unset.
+# Backends that speak the llama-server HTTP API, in UI order. Derived from the
+# slot registry: `port_key` is where the slot's own launcher reads its port, so
+# the panel cannot end up probing a name nothing writes.
+#
+# It did. `CHAT_BACKEND2_PORT` and `CHAT_BACKEND2_HOST` were written here and
+# nowhere else in the tree -- the field, the launcher and the proxy all say
+# `CHAT2_BACKEND_PORT` -- so telemetry probed the secondary backend on its
+# default port whatever the operator had set, and only worked because the two
+# defaults agreed.
+#
+# `units` stays a list. It survives the era of three mutually exclusive units
+# per slot, and `routes/public.py:known_units()` allow-lists journalctl
+# arguments from it, so its shape is a security boundary rather than a
+# convenience.
 BACKEND_TARGETS = [
-    {"name": "chat-primary",   "label": "Primary Backend",   "port_key": "CHAT_BACKEND_PORT",  "host_key": "CHAT_BACKEND_HOST",
-     "units": ["chat-backend-dense"]},
-    {"name": "chat-secondary", "label": "Secondary Backend", "port_key": "CHAT_BACKEND2_PORT", "host_key": "CHAT_BACKEND2_HOST",
-     "units": ["chat-backend2"]},
-    {"name": "embed",          "label": "Embedding",         "port_key": "EMBED_PORT",         "host_key": "EMBED_BACKEND_HOST",
-     "units": ["embed"]},
-    {"name": "rerank",         "label": "Reranker",          "port_key": "RERANK_PORT",        "host_key": "RERANK_BACKEND_HOST",
-     "units": ["rerank"]},
-    {"name": "task",           "label": "Task Model",        "port_key": "TASK_PORT",          "host_key": "TASK_BACKEND_HOST",
-     "units": ["task"]},
-    {"name": "ocr",            "label": "OCR Model",         "port_key": "OCR_PORT",           "host_key": "OCR_BACKEND_HOST",
-     "units": ["ocr"]},
+    {"name": slot.budget, "label": slot.label, "port_key": slot.port_key,
+     "host_key": slot.probe_host_key, "units": [slot.name]}
+    for slot in backends.SLOTS.values()
 ]
 
-DEFAULT_BACKEND_PORTS = {
-    "CHAT_BACKEND_PORT": "8010",
-    "CHAT_BACKEND2_PORT": "8020",
-    "EMBED_PORT": "8005",
-    "RERANK_PORT": "8006",
-    "TASK_PORT": "8007",
-    "OCR_PORT": "8009",
-}
+DEFAULT_BACKEND_PORTS = {slot.port_key: slot.port_default
+                         for slot in backends.SLOTS.values()}
 
 # Env prefix -> unit, for the models `llama-router` can own. When router mode is
 # on these units are deliberately not running: the router holds the models as
