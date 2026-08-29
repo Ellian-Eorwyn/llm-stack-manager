@@ -39,9 +39,9 @@ class DependencyGraphTests(unittest.TestCase):
         `setup_engine` reasons in components, this reasons in units. Every
         cross-component requirement the installer knows about has to be
         reachable here, or a service whose upstream is down renders green.
-        Reachable rather than declared: `honcho-deriver` needs the primary
-        backend through `honcho-api`, and stating that edge twice would only
-        give it two places to rot.
+        Reachable rather than declared: a component's requirement may be
+        satisfied through an intermediate unit, and stating that edge twice
+        would only give it two places to rot.
         """
         for component, dependencies in setup_engine.COMPONENT_DEPENDENCIES.items():
             own = set(setup_engine.COMPONENT_SERVICES.get(component, []))
@@ -62,8 +62,7 @@ class DependencyGraphTests(unittest.TestCase):
 
     def test_dependency_units_covers_every_upstream_a_service_declares(self):
         # There is one unit per slot now, so every upstream in the graph is a
-        # unit with a card. The any-of grouping stays because other services
-        # still use it -- honcho-api is satisfied by the router or by embed.
+        # unit with a card.
         units = health.dependency_units()
         for group in health.SERVICE_DEPENDENCIES.values():
             for choices in group:
@@ -82,7 +81,7 @@ class ProbeTargetTests(unittest.TestCase):
         self.assertEqual((host, port), ("127.0.0.1", "8004"))
 
     def test_services_without_a_probe_have_no_endpoint(self):
-        self.assertIsNone(health.endpoint_for("honcho-deriver", {}))
+        self.assertIsNone(health.endpoint_for("searxng", {}))
         self.assertNotIn("searxng", health.SERVICE_PROBES)
 
     def test_defaults_apply_when_the_env_does_not_set_a_port(self):
@@ -194,24 +193,34 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(entries["embed"]["state"], "active")
 
     def test_any_of_upstreams_are_satisfied_by_whichever_choice_is_up(self):
-        # honcho-api takes its embeddings from the router or from the embed
-        # unit; either one satisfies it. The primary backend used to be an
-        # any-of group too, over three units sharing a port -- that is gone.
-        entries = self.collect({"honcho-api": "active", "chat-proxy": "active",
-                                "chat-backend-dense": "active",
-                                "llama-router": "inactive", "embed": "active"})
-        self.assertEqual(entries["honcho-api"]["state"], "active")
+        """No shipped service declares a multi-choice group any more.
+
+        The primary backend was one, over three units sharing a port, and
+        `honcho-api` was the last, satisfied by the router or by the `embed`
+        unit. Both are gone -- but the grouping is what makes "either of these
+        upstreams will do" expressible, and a mechanism nothing exercises is a
+        mechanism that rots. So this declares its own.
+        """
+        with patch.dict(health.SERVICE_DEPENDENCIES,
+                        {"glmocr-sdk": [["llama-router", "ocr"]]}, clear=False):
+            up = self.collect({"glmocr-sdk": "active",
+                               "llama-router": "inactive", "ocr": "active"})
+            down = self.collect({"glmocr-sdk": "active",
+                                 "llama-router": "inactive", "ocr": "inactive"})
+        self.assertEqual(up["glmocr-sdk"]["state"], "active")
+        self.assertEqual(down["glmocr-sdk"]["state"], "degraded")
 
     def test_degradation_propagates_along_the_chain(self):
-        entries = self.collect({
-            "honcho-deriver": "active", "honcho-api": "active",
-            "chat-proxy": "active", "embed": "active",
-            "chat-backend-dense": "inactive",
-            "chat-backend": "inactive",
-        })
+        """A dead backend degrades the proxy in front of it, and the SDK two
+        hops further along."""
+        with patch.dict(health.SERVICE_DEPENDENCIES,
+                        {"glmocr-sdk": [["ocr"], ["chat-proxy"]]}, clear=False):
+            entries = self.collect({
+                "glmocr-sdk": "active", "ocr": "active",
+                "chat-proxy": "active", "chat-backend-dense": "inactive",
+            })
         self.assertEqual(entries["chat-proxy"]["state"], "degraded")
-        self.assertEqual(entries["honcho-api"]["state"], "degraded")
-        self.assertEqual(entries["honcho-deriver"]["state"], "degraded")
+        self.assertEqual(entries["glmocr-sdk"]["state"], "degraded")
 
     def test_a_stopped_service_nobody_asked_for_is_not_a_fault(self):
         entries = self.collect({"rerank": "inactive"})
@@ -303,9 +312,9 @@ class ProberTests(unittest.TestCase):
                                                                           "checked_at": 1.0,
                                                                           "detail": ""}) as probe:
             results = prober.sweep({}, {"embed": "active", "rerank": "inactive",
-                                        "honcho-deriver": "active"})
+                                        "searxng": "active"})
         self.assertEqual(set(results), {"embed"})
-        # honcho-deriver is running but has no probe, so it is not asked.
+        # searxng is running but has no probe, so it is not asked.
         self.assertEqual([call.args[0] for call in probe.call_args_list], ["embed"])
 
     def test_a_probe_that_raises_degrades_only_that_service(self):

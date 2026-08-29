@@ -27,7 +27,7 @@ The command installs the manager only and prints a URL such as `http://192.168.1
 4. Review generated GPU placement.
 5. Click **Install Selected Stack** and leave the page open until validation completes.
 
-The default checklist includes the primary chat/code backend, embedding backend, task backend, GLM-OCR model and SDK, SearXNG, and Playwright. Secondary backends, reranking, and Honcho remain optional.
+The default checklist includes the primary chat/code backend, embedding backend, task backend, GLM-OCR model and SDK, SearXNG, and Playwright. Secondary backends and reranking remain optional.
 
 Downloads are written through `.part` files, resume when supported by the server, and are accepted only after a valid GGUF header is found. Repository/model provenance, SHA-256 values, selected components, GPU assignments, job progress, and validation results are retained in `config/install-state.json`.
 
@@ -75,13 +75,12 @@ When UFW is active, setup opens only the selected service ports and only to the 
 - `llm-chat-proxy.py` exposing think, chat, and code ports from one backend.
 - Embedding, reranker, and task model launchers.
 - Generated systemd installer, dependency manifest, update script, and endpoint validator.
-- Optional local Honcho memory service for Hermes, routed through local model endpoints.
 - Local SearXNG install/update integration, managed through the web UI and exposed at `/searxng`.
 - Local Playwright browser automation WebSocket server, managed through the web UI and exposed on the configured WS endpoint.
 
 ## Not Included In V1
 
-Graphiti, TTS, transcript services, nested research apps, logs, virtualenvs, Docker data, generated Node dependencies, browser caches, and model binaries are intentionally not copied into this repo. Hermes may be vendored locally, Honcho is installed into `deps/honcho` when enabled, SearXNG is installed/updated in its standard `/usr/local/searxng` + `/etc/searxng` layout, and Playwright dependencies are installed under `playwright/` from the lockfile.
+Graphiti, TTS, transcript services, nested research apps, logs, virtualenvs, Docker data, generated Node dependencies, browser caches, and model binaries are intentionally not copied into this repo. Hermes may be vendored locally, SearXNG is installed/updated in its standard `/usr/local/searxng` + `/etc/searxng` layout, and Playwright dependencies are installed under `playwright/` from the lockfile.
 
 ## Layout
 
@@ -263,12 +262,6 @@ bash test.sh
 ```
 
 This creates an isolated test virtualenv, runs the Python and JavaScript suites, and checks shell syntax. GitHub CI runs the same checks on Ubuntu 24.04 with Node 22. A manually dispatched self-hosted NVIDIA workflow performs live service and endpoint checks using model paths supplied for that runner.
-
-## Local Honcho Memory
-
-Honcho is enabled by default in `config/llm-stack.env.example` as a local-only service. The installer creates `config/honcho.env`, installs/manages PostgreSQL, pgvector, and Redis, installs Honcho into `deps/honcho`, and writes `honcho-api.service` plus `honcho-deriver.service`. Honcho model calls use the stack's local OpenAI-compatible endpoints: chat through `chat-proxy` and embeddings through `embed`.
-
-To disable it before install, set `HONCHO_ENABLED=off` in `config/llm-stack.env`. To keep Honcho enabled but manage Postgres/Redis yourself, set `HONCHO_INSTALL_DATASTORES=off` and provide `config/honcho.env`.
 
 ## Local SearXNG
 

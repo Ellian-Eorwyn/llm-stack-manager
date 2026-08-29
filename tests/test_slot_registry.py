@@ -113,7 +113,6 @@ class DerivedTableTests(unittest.TestCase):
             "embedding": ["embed"], "reranker": ["rerank"],
             "task": ["task"], "ocr": ["ocr"],
             "glmocr-sdk": ["glmocr-sdk"], "playwright": ["playwright-server"],
-            "honcho": ["honcho-api", "honcho-deriver"],
             "transcribe": ["transcript-backend"],
         })
         self.assertEqual(setup_engine.MODEL_ENV_KEYS, {
@@ -187,7 +186,8 @@ class ShellAgreementTests(unittest.TestCase):
     def test_the_retired_units_are_named_as_retired_rather_than_as_current(self):
         retired = self._array("STACK_RETIRED_SERVICES")
         self.assertEqual(sorted(retired),
-                         ["chat-backend", "chat-backend-moe", "embed2", "nothink", "think"])
+                         ["chat-backend", "chat-backend-moe", "embed2",
+                          "honcho-api", "honcho-deriver", "nothink", "think"])
         self.assertEqual([u for u in self._array("STACK_CORE_SERVICES") if u in retired], [])
 
 

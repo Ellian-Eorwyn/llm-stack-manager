@@ -47,7 +47,7 @@ SLOT_BY_COMPONENT = {slot.component: slot for slot in backends.SLOTS.values()
                      if slot.component}
 
 CORE_DEFAULTS = ["primary", "embedding", "task", "ocr", "glmocr-sdk", "searxng", "playwright"]
-OPTIONAL_COMPONENTS = ["secondary", "reranker", "honcho", "transcribe"]
+OPTIONAL_COMPONENTS = ["secondary", "reranker", "transcribe"]
 ALL_COMPONENTS = CORE_DEFAULTS + OPTIONAL_COMPONENTS
 # Every component that names a model, which is every component that is a slot.
 MODEL_COMPONENTS = list(SLOT_BY_COMPONENT)
@@ -55,7 +55,6 @@ COMPONENT_DEPENDENCIES = {
     "glmocr-sdk": ["ocr"],
     "primary": ["chat-proxy"],
     "secondary": ["chat-proxy2"],
-    "honcho": ["primary", "embedding"],
 }
 # Component -> the units installing it brings up. The model half comes from the
 # registry; a proxy is not a slot, so it is named here.
@@ -65,7 +64,6 @@ COMPONENT_SERVICES = {
 } | {
     "glmocr-sdk": ["glmocr-sdk"],
     "playwright": ["playwright-server"],
-    "honcho": ["honcho-api", "honcho-deriver"],
     "transcribe": ["transcript-backend"],
 }
 
@@ -73,7 +71,7 @@ COMPONENT_PORTS = {
     "primary": [8003, 8004, 8008], "secondary": [8103, 8104, 8108],
     "embedding": [8005], "reranker": [8006],
     "task": [8007], "ocr": [8009], "glmocr-sdk": [5002],
-    "searxng": [80], "playwright": [80], "honcho": [8090],
+    "searxng": [80], "playwright": [80],
     "transcribe": [8014],
 }
 MODEL_ENV_KEYS = {
@@ -560,7 +558,6 @@ class SetupRunner:
                 "SEARXNG_ENABLED": "on" if "searxng" in components else "off",
                 "PLAYWRIGHT_ENABLED": "on" if "playwright" in components else "off",
                 "GLMOCR_SDK_ENABLED": "on" if "glmocr-sdk" in components else "off",
-                "HONCHO_ENABLED": "on" if "honcho" in components else "off",
                 "LLM_STACK_SELECTED_COMPONENTS": ",".join(components),
             })
             update_env(model_updates)
@@ -574,7 +571,7 @@ class SetupRunner:
                 if "searxng" in components or "playwright" in components:
                     self._command(job_id, ["bash", str(ROOT / "scripts" / "install-nginx-stack.sh")], timeout=120)
                 if any(component in components for component in MODEL_COMPONENTS):
-                    dependency_command = ["env", f"HONCHO_ENABLED={'on' if 'honcho' in components else 'off'}", str(ROOT / "scripts" / "install-dependencies.py"), "--update"]
+                    dependency_command = [str(ROOT / "scripts" / "install-dependencies.py"), "--update"]
                     self._command(job_id, self._owner_command(dependency_command), timeout=7200)
                 self._complete_stage("dependencies")
             else:

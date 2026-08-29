@@ -51,8 +51,6 @@ LLMS_EXPECTATIONS = {
     "llama-router": {"expected": "on"},
     "transcript-backend": {"expected": "on"},
     "glmocr-sdk": {"expected": "off"},
-    "honcho-api": {"expected": "off"},
-    "honcho-deriver": {"expected": "off"},
     "ocr": {"expected": "off"},
     "task": {"expected": "off"},
 }
@@ -61,7 +59,6 @@ LLMS_ENV = {
     "MODEL_ROUTER_ENABLED": "on",
     "MODEL_ROUTER_MEMBERS": "EMBED,OCR,RERANK,TASK",
     "TRANSCRIPT_ENABLED": "on",
-    "HONCHO_ENABLED": "off",
 }
 
 
@@ -99,13 +96,14 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("transcript-backend", units)
 
     def test_a_feature_switch_vetoes_a_recorded_on(self):
-        """A stale `on` must not outlive the switch that made it possible."""
-        expectations = {**LLMS_EXPECTATIONS,
-                        "honcho-api": {"expected": "on"},
-                        "honcho-deriver": {"expected": "on"}}
-        self.assertNotIn("honcho-api", self.units(expectations=expectations))
-        self.assertIn("honcho-api",
-                      self.units(expectations=expectations, HONCHO_ENABLED="on"))
+        """A stale `on` must not outlive the switch that made it possible.
+
+        The sidecar's start script exits 0 without launching anything when
+        `TRANSCRIPT_ENABLED=off`, so starting the unit would only produce a
+        service that cannot come up.
+        """
+        self.assertNotIn("transcript-backend", self.units(TRANSCRIPT_ENABLED="off"))
+        self.assertIn("transcript-backend", self.units(TRANSCRIPT_ENABLED="on"))
 
     def test_the_router_unit_answers_to_its_own_switch(self):
         """Starting it against `MODEL_ROUTER_ENABLED=off` gives the pooled

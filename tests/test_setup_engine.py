@@ -13,11 +13,19 @@ class ComponentSelectionTests(unittest.TestCase):
     def test_glmocr_selects_ocr_dependency(self):
         self.assertEqual(setup_engine.resolve_components(["glmocr-sdk"]), ["ocr", "glmocr-sdk"])
 
-    def test_honcho_selects_primary_and_embedding(self):
-        selected = setup_engine.resolve_components(["honcho"])
-        self.assertIn("primary", selected)
-        self.assertIn("embedding", selected)
-        self.assertIn("honcho", selected)
+    def test_a_dependency_that_is_not_a_component_is_inert(self):
+        """`primary` declares `chat-proxy`, which is not a component.
+
+        `resolve_components` filters against `ALL_COMPONENTS`, so that edge
+        resolves to nothing -- and it does not need to, because
+        `COMPONENT_SERVICES["primary"]` already installs both units. Worth
+        pinning rather than leaving as a line that reads like it does something:
+        `honcho` was the one entry here whose dependencies were real components,
+        and removing it left every remaining cross-component edge either inert
+        or, in `glmocr-sdk`'s case, covered above.
+        """
+        self.assertEqual(setup_engine.resolve_components(["primary"]), ["primary"])
+        self.assertIn("chat-proxy", setup_engine.COMPONENT_SERVICES["primary"])
 
     def test_selected_ports_are_unique_and_include_manager(self):
         self.assertEqual(setup_engine.selected_ports(["searxng", "playwright"]), [80, 8077])

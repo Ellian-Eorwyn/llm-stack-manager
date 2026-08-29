@@ -235,7 +235,7 @@ changed_backend_files() {
 }
 
 if [[ "${SKIP_DEPS}" != "1" ]]; then
-    env HONCHO_ENABLED="${HONCHO_ENABLED:-off}" "${STACK_DIR}/scripts/install-dependencies.py" --update
+    "${STACK_DIR}/scripts/install-dependencies.py" --update
 else
     echo "Skipping dependency update (no llama.cpp rebuild)."
 fi
@@ -270,7 +270,7 @@ if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
         # shellcheck source=scripts/stack-services.sh
         source "${STACK_DIR}/scripts/stack-services.sh"
         if is_linux; then
-            mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'transcript-backend.service' 'playwright-server.service' 'think.service' 'nothink.service' 'qwen-*' 'honcho-*.service' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
+            mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'transcript-backend.service' 'playwright-server.service' 'think.service' 'nothink.service' 'qwen-*' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
         else
             active=("${STACK_UPDATE_RESTART_SERVICES[@]}")
         fi

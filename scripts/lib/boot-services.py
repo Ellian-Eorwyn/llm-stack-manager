@@ -69,8 +69,6 @@ ROUTER_MEMBER_BY_UNIT = {
 FEATURE_SWITCH = {
     "llama-router": "MODEL_ROUTER_ENABLED",
     "transcript-backend": "TRANSCRIPT_ENABLED",
-    "honcho-api": "HONCHO_ENABLED",
-    "honcho-deriver": "HONCHO_ENABLED",
 }
 
 #: Start order. A backend comes up before the proxy in front of it so the
@@ -88,8 +86,6 @@ START_ORDER = (
     "ocr",
     "glmocr-sdk",
     "playwright-server",
-    "honcho-api",
-    "honcho-deriver",
     "transcript-backend",
 )
 
