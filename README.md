@@ -172,7 +172,7 @@ Other commands:
 ```bash
 llm-stack-manager status            # services, GPU/host memory, throughput, warnings
 llm-stack-manager logs llm-a
-sudo llm-stack-manager restart chat-proxy
+sudo llm-stack-manager restart llm-a-proxy
 llm-stack-manager --help
 ```
 

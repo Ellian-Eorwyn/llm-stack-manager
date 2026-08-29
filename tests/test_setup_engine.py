@@ -14,7 +14,7 @@ class ComponentSelectionTests(unittest.TestCase):
         self.assertEqual(setup_engine.resolve_components(["glmocr-sdk"]), ["ocr", "glmocr-sdk"])
 
     def test_a_dependency_that_is_not_a_component_is_inert(self):
-        """`llm-a` declares `chat-proxy`, which is not a component.
+        """`llm-a` declares `llm-a-proxy`, which is not a component.
 
         `resolve_components` filters against `ALL_COMPONENTS`, so that edge
         resolves to nothing -- and it does not need to, because
@@ -25,7 +25,7 @@ class ComponentSelectionTests(unittest.TestCase):
         or, in `glmocr-sdk`'s case, covered above.
         """
         self.assertEqual(setup_engine.resolve_components(["llm-a"]), ["llm-a"])
-        self.assertIn("chat-proxy", setup_engine.COMPONENT_SERVICES["llm-a"])
+        self.assertIn("llm-a-proxy", setup_engine.COMPONENT_SERVICES["llm-a"])
 
     def test_a_component_renamed_out_from_under_a_host_still_resolves(self):
         """Every `install-state.json` already on disk names the old components,

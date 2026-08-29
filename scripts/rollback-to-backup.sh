@@ -98,5 +98,5 @@ Restored backup: ${BACKUP_DIR}
 Old stack path: ${OLD_STACK_DIR:-unknown}
 
 Check status:
-  systemctl status llm-manager llm-a chat-proxy embed rerank task --no-pager
+  systemctl status llm-manager llm-a llm-a-proxy embed rerank task --no-pager
 EOF

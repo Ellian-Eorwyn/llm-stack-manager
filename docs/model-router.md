@@ -55,7 +55,7 @@ One unit, `llama-router`, running `llama-server` in router mode against a preset
 rendered from the config keys that already existed:
 
 ```
-chat-proxy         ──▶ :8005 ─┐
+llm-a-proxy         ──▶ :8005 ─┐
 rerank clients      ──▶ :8006 ─┼─ nginx ─▶ 127.0.0.1:8013  llama-router
 task clients        ──▶ :8007 ─┤                                │
 glmocr-sdk, Flask   ──▶ :8009 ─┘                    [embed] [ocr] [rank] [task]

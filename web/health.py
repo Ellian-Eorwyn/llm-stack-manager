@@ -110,11 +110,11 @@ def _llama_probes() -> dict[str, dict]:
 # its unit state and upstreams alone — `searxng` is a composite of uwsgi, nginx
 # and a socket file already reported through its own manager.
 SERVICE_PROBES = _llama_probes() | {
-    "chat-proxy": {
+    "llm-a-proxy": {
         "kind": "http", "path": "/v1/models",
         "host_key": "LISTEN_HOST", "port_key": "NOTHINK_PORT", "default_port": "8004",
     },
-    "chat-proxy2": {
+    "llm-b-proxy": {
         "kind": "http", "path": "/v1/models",
         "host_key": "LISTEN_HOST", "port_key": "NOTHINK2_PORT", "default_port": "8104",
     },
@@ -156,8 +156,8 @@ SERVICE_PROBES = _llama_probes() | {
 # generated config. `tests/test_health.py` asserts it stays consistent with the
 # component-level map so the two cannot drift apart.
 SERVICE_DEPENDENCIES = {
-    "chat-proxy": [["llm-a"]],
-    "chat-proxy2": [["llm-b"]],
+    "llm-a-proxy": [["llm-a"]],
+    "llm-b-proxy": [["llm-b"]],
     "glmocr-sdk": [["ocr"]],
 }
 
@@ -206,7 +206,7 @@ def dependency_units() -> set[str]:
 
     The services panel renders one card for the primary backend, but three
     mutually exclusive units can serve it. The two that have no card still have
-    to be asked about, or `chat-proxy` reads as degraded whenever the primary is
+    to be asked about, or `llm-a-proxy` reads as degraded whenever the primary is
     served by a unit the panel does not list.
     """
     return ({member for groups in SERVICE_DEPENDENCIES.values()

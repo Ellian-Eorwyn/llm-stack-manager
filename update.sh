@@ -18,7 +18,7 @@ MANAGER_ONLY=0
 # cache, which is far too expensive to do on every code update.
 # transcript-backend belongs here: it idle-unloads anyway, so a restart
 # discards nothing a request would not have discarded a few minutes later.
-CHEAP_RESTART_SERVICES=(llm-manager chat-proxy chat-proxy2 glmocr-sdk playwright-server transcript-backend)
+CHEAP_RESTART_SERVICES=(llm-manager llm-a-proxy llm-b-proxy glmocr-sdk playwright-server transcript-backend)
 # Changes under these paths mean a model backend really is running stale code.
 # web/deploy.py holds the same list so the manager's drift badge and this
 # post-update report agree about what costs a model reload; tests/test_deploy.py

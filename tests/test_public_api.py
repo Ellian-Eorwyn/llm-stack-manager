@@ -115,7 +115,7 @@ SERVICE_HEALTH = {
               "restarts": 0, "checked_at": 1.0},
     "llama-router": {"state": "active", "unit": "active", "expected": "on", "reason": "",
                      "probe": {"ok": True}, "upstreams": [], "restarts": 0, "checked_at": 1.0},
-    "chat-proxy": {"state": "failed", "unit": "failed", "expected": "on", "reason": "",
+    "llm-a-proxy": {"state": "failed", "unit": "failed", "expected": "on", "reason": "",
                    "probe": None, "upstreams": [], "restarts": 3, "checked_at": 1.0},
 }
 
@@ -143,7 +143,7 @@ def build_providers(**overrides) -> public_api.Providers:
             {"name": "llm-a", "label": "LLM A", "group": "chat", "desc": "Primary model backend"},
             {"name": "embed", "label": "Embedding", "group": "auxiliary", "desc": "Embedding model"},
             {"name": "llama-router", "label": "Model Router", "group": "auxiliary", "desc": "Loads on demand"},
-            {"name": "chat-proxy", "label": "Primary Proxy", "group": "chat", "desc": "Routes think/chat/code"},
+            {"name": "llm-a-proxy", "label": "Primary Proxy", "group": "chat", "desc": "Routes think/chat/code"},
         ],
     )
     defaults.update(overrides)
@@ -418,7 +418,7 @@ class AlertTests(unittest.TestCase):
     def test_a_flapping_service_outranks_its_failed_state(self):
         flapping = [a for a in self.payload["alerts"] if a["code"] == "service_flapping"]
         self.assertEqual(len(flapping), 1)
-        self.assertEqual(flapping[0]["subject"], "chat-proxy")
+        self.assertEqual(flapping[0]["subject"], "llm-a-proxy")
         self.assertNotIn("service_failed", {a["code"] for a in self.payload["alerts"]})
 
     def test_errors_sort_above_warnings(self):

@@ -613,7 +613,7 @@ class SavedConfigTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertIn("llm-b", started)
-            self.assertIn("chat-proxy2", started)
+            self.assertIn("llm-b-proxy", started)
             self.assertIn('LLM_B_LABEL="Local Secondary"', content)
 
     def test_patch_saved_config_updates_only_supplied_keys(self):
@@ -773,7 +773,7 @@ class UpdateCliTests(unittest.TestCase):
                         "llm-b", "embed", "rerank", "task", "ocr"):
             self.assertNotIn(backend, services)
         self.assertIn("llm-manager", services)
-        self.assertIn("chat-proxy", services)
+        self.assertIn("llm-a-proxy", services)
 
     def test_stale_backend_launchers_are_reported(self):
         self.assertIn("changed_backend_files", self.update)
@@ -1163,14 +1163,14 @@ class ServiceHealthTests(unittest.TestCase):
     def test_upstream_units_without_a_card_are_still_asked_about(self):
         with (
             patch.object(config_env, "read_env", return_value={}),
-            patch.object(manager, "patch_service_labels", return_value=[{"name": "chat-proxy"}]),
+            patch.object(manager, "patch_service_labels", return_value=[{"name": "llm-a-proxy"}]),
             patch.object(manager, "get_service_status", return_value="inactive"),
         ):
             statuses = manager.all_service_statuses()
-        # chat-proxy's upstream has no card of its own in this stubbed panel,
+        # llm-a-proxy's upstream has no card of its own in this stubbed panel,
         # and still has to be asked about.
         self.assertIn("llm-a", statuses)
-        self.assertIn("chat-proxy", statuses)
+        self.assertIn("llm-a-proxy", statuses)
 
 
 class SchedulingVerifyRouteTests(unittest.TestCase):

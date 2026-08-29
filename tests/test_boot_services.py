@@ -43,9 +43,9 @@ boot = _load("boot_services", "scripts/lib/boot-services.py")
 #: four auxiliary models, transcription on.
 LLMS_EXPECTATIONS = {
     "llm-a": {"expected": "on"},
-    "chat-proxy": {"expected": "on"},
+    "llm-a-proxy": {"expected": "on"},
     "llm-b": {"expected": "off"},
-    "chat-proxy2": {"expected": "off"},
+    "llm-b-proxy": {"expected": "off"},
     "embed": {"expected": "on"},
     "embed2": {"expected": "off"},
     "llama-router": {"expected": "on"},
@@ -78,7 +78,7 @@ class AuthorityTests(unittest.TestCase):
         """
         units = self.units()
         self.assertNotIn("llm-b", units)
-        self.assertNotIn("chat-proxy2", units)
+        self.assertNotIn("llm-b-proxy", units)
         self.assertIn("llm-a", units)
 
     def test_off_outranks_a_component_that_selects_the_unit(self):
@@ -122,8 +122,8 @@ class AuthorityTests(unittest.TestCase):
     def test_a_backend_starts_before_the_proxy_in_front_of_it(self):
         units = self.units(LLM_STACK_SELECTED_COMPONENTS="primary,secondary",
                            expectations={})
-        self.assertLess(units.index("llm-a"), units.index("chat-proxy"))
-        self.assertLess(units.index("llm-b"), units.index("chat-proxy2"))
+        self.assertLess(units.index("llm-a"), units.index("llm-a-proxy"))
+        self.assertLess(units.index("llm-b"), units.index("llm-b-proxy"))
 
     def test_a_saved_profile_can_name_a_different_primary_unit(self):
         units = boot.boot_units(LLMS_ENV, expectations=LLMS_EXPECTATIONS,
@@ -139,7 +139,7 @@ class FallbackTests(unittest.TestCase):
         units = boot.boot_units({**LLMS_ENV,
                                  "LLM_STACK_SELECTED_COMPONENTS": "primary,playwright"},
                                 expectations={})
-        self.assertEqual(units, ["llm-a", "chat-proxy",
+        self.assertEqual(units, ["llm-a", "llm-a-proxy",
                                  "llama-router", "playwright-server"])
 
     def test_the_fallback_matches_the_other_boot_path(self):

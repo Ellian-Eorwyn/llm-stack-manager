@@ -212,8 +212,8 @@ asserts no canonical key is itself a legacy key, and the existing
 before a fleet spans a version gap, not after** — an older hub writing
 `CHAT_PRIMARY_*` to a renamed host is then safe, while the reverse is not.
 
-**Step 11 — proxy registry and per-slot personas.** `start-chat-proxy2.sh` is a
-hand copy of `start-chat-proxy.sh` differing in exactly three ways: seven env
+**Step 11 — proxy registry and per-slot personas.** `start-llm-b-proxy.sh` is a
+hand copy of `start-llm-a-proxy.sh` differing in exactly three ways: seven env
 overrides, three alias overrides, and 19 memory-gateway exports replaced by a
 hardcoded `MEMORY_GATEWAY_ENABLED=off`. The other 33 persona keys are byte-for-
 byte duplicated, so both proxies share every `THINK_TEMP` and
@@ -223,7 +223,7 @@ which is the idiom `scripts/llm-chat-proxy.py:135-138` already uses.
 
 Fix in passing: `THINK_REASONING_EFFORT` and `CODE_REASONING_EFFORT` are read by
 the proxy but exported by neither script. Latent, because systemd's
-`EnvironmentFile` supplies them — but `start-chat-proxy.sh:15` sources bare, so
+`EnvironmentFile` supplies them — but `start-llm-a-proxy.sh:15` sources bare, so
 running it by hand drops both.
 
 **Step 12 — router per-member config.** Mostly surfacing.

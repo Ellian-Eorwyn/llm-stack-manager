@@ -108,8 +108,8 @@ class DerivedTableTests(unittest.TestCase):
     def test_the_setup_wizards_component_maps(self):
         import setup_engine
         self.assertEqual(setup_engine.COMPONENT_SERVICES, {
-            "llm-a": ["llm-a", "chat-proxy"],
-            "llm-b": ["llm-b", "chat-proxy2"],
+            "llm-a": ["llm-a", "llm-a-proxy"],
+            "llm-b": ["llm-b", "llm-b-proxy"],
             "embedding": ["embed"], "reranker": ["rerank"],
             "task": ["task"], "ocr": ["ocr"],
             "glmocr-sdk": ["glmocr-sdk"], "playwright": ["playwright-server"],

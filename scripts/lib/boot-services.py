@@ -76,9 +76,9 @@ FEATURE_SWITCH = {
 #: never here because the caller keeps it running throughout.
 START_ORDER = (
     "llm-a",
-    "chat-proxy",
+    "llm-a-proxy",
     "llm-b",
-    "chat-proxy2",
+    "llm-b-proxy",
     "llama-router",
     "embed",
     "rerank",

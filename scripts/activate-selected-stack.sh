@@ -20,8 +20,8 @@ router_owns() {
     [[ ",${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}," == *",$1,"* ]]
 }
 
-has_component llm-a && START_UNITS+=(llm-a chat-proxy)
-has_component llm-b && START_UNITS+=(llm-b chat-proxy2)
+has_component llm-a && START_UNITS+=(llm-a llm-a-proxy)
+has_component llm-b && START_UNITS+=(llm-b llm-b-proxy)
 [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] && START_UNITS+=(llama-router)
 has_component embedding && ! router_owns EMBED && START_UNITS+=(embed)
 has_component reranker && ! router_owns RERANK && START_UNITS+=(rerank)

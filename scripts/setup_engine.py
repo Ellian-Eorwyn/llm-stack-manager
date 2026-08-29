@@ -53,8 +53,8 @@ ALL_COMPONENTS = CORE_DEFAULTS + OPTIONAL_COMPONENTS
 MODEL_COMPONENTS = list(SLOT_BY_COMPONENT)
 COMPONENT_DEPENDENCIES = {
     "glmocr-sdk": ["ocr"],
-    "llm-a": ["chat-proxy"],
-    "llm-b": ["chat-proxy2"],
+    "llm-a": ["llm-a-proxy"],
+    "llm-b": ["llm-b-proxy"],
 }
 # Component -> the units installing it brings up. The model half comes from the
 # registry; a proxy is not a slot, so it is named here.

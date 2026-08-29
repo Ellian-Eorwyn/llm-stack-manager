@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Expose chat-proxy2's aggregate think/chat/code endpoint through nginx.
+# Expose llm-b-proxy's aggregate think/chat/code endpoint through nginx.
 set -euo pipefail
 
 export AGGREGATE_PUBLIC_PORT="${AGGREGATE_PUBLIC_PORT:-8020}"
