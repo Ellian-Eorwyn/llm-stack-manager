@@ -67,7 +67,7 @@ declare -A MEMBER_PORTS=(
     [ASR]="${ASR_PORT:-}"
 )
 
-MEMBERS="${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}"
+MEMBERS="$(STACK_DIR="${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}" python3 "${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/lib/router-members.py")"
 
 listen_line() {
     local port="$1"

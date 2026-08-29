@@ -17,7 +17,7 @@ declare -a START_UNITS=()
 # fight nginx for their ports.
 router_owns() {
     [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] || return 1
-    [[ ",${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}," == *",$1,"* ]]
+    [[ ",$(STACK_DIR="${STACK_DIR}" python3 "${STACK_DIR}/scripts/lib/router-members.py")," == *",$1,"* ]]
 }
 
 has_component llm-a && START_UNITS+=(llm-a llm-a-proxy)

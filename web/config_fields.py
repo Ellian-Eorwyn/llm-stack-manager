@@ -818,8 +818,9 @@ CONFIG_FIELDS = [
     {"section": "Model Router", "key": "MODEL_ROUTER_PORT",          "label": "Router Port",          "type": "number", "hint": "The router's own listener. Callers keep using the per-model ports, which nginx fronts onto this one."},
     {"section": "Model Router", "key": "MODEL_ROUTER_HOST",          "label": "Router Listen Host",   "type": "text",   "hint": "Loopback by default. nginx reaches it from this host, so exposing it on the LAN only adds a second unauthenticated way in."},
     {"section": "Model Router", "key": "MODEL_ROUTER_MAX",           "label": "Models Resident",      "type": "number", "hint": "How many models may be loaded at once. A count, not a memory budget — the router evicts least-recently-used, but does not know how large the survivors are. Use 1 for strict one-at-a-time."},
-    {"section": "Model Router", "key": "MODEL_ROUTER_MEMBERS",       "label": "Pooled Models",        "type": "text",   "hint": "Comma-separated env prefixes to pool, e.g. EMBED,OCR,RERANK,TASK"},
+    {"section": "Model Router", "key": "MODEL_ROUTER_MEMBERS",       "label": "Pooled Models",        "type": "text",   "hint": "Derived from the per-model \u201cPooled By Router\u201d switches when any is set; otherwise read directly. Comma-separated env prefixes, e.g. EMBED,OCR,RERANK,TASK"},
     {"section": "Model Router", "key": "MODEL_ROUTER_SLEEP_IDLE_SECONDS", "label": "Idle Unload (s)", "type": "number", "hint": "Unload a resident model's weights and KV after this much idleness; the next request reloads it. -1 disables."},
+    {"section": "Model Router", "key": "LLM_ABSOLUTE_GPU_INDICES", "label": "Absolute GPU Indices", "type": "select", "options": ["off", "on"], "hint": "off: each slot\u2019s Main GPU indexes into its own Visible GPUs list, so the same number means a different card under the router than as a dedicated unit. on: every index is the machine\u2019s. Switching moves models unless the stored values move too \u2014 run scripts/lib/gpu-indices.py first, which reports what would move and prints the values that keep it put."},
     {"section": "Model Router", "key": "MODEL_ROUTER_GPU_VISIBLE_DEVICES", "label": "GPUs The Router May Use", "type": "text",   "hint": "The superset of devices the router and every model it pools may touch \u2014 not a per-model choice. CUDA_VISIBLE_DEVICES is process-level and the router spawns its own children, so it cannot be set per member; place individual models with their own Main GPU / Device / Tensor Split, which use real indices within this set."},
     # The pooled audio model, served on the router's own /v1/audio/transcriptions
     # and reached by the transcription sidecar's `router` engine. Configured
@@ -950,6 +951,36 @@ MEMBER_PLACEMENT_SECTIONS = {
 }
 
 
+def _member_pooling_fields() -> list[dict]:
+    """`<MEMBER>_POOLED`, the question an operator actually has.
+
+    "Should embed hold VRAM permanently or load on demand" beats editing a
+    comma-separated list and remembering that ASR is in the member table but not
+    in the default string. `MODEL_ROUTER_MEMBERS` remains readable forever and
+    is what the string-shaped consumers still see.
+    """
+    from backends import router  # noqa: PLC0415
+    sections = {"EMBED": "Embedding", "RERANK": "Reranker", "TASK": "Task Model",
+                "OCR": "OCR", "ASR": "Model Router"}
+    labels = {"EMBED": "Embedding", "RERANK": "Reranker", "TASK": "Task",
+              "OCR": "OCR", "ASR": "Audio"}
+    fields = []
+    for prefix in router.MEMBER_PREFIXES:
+        fields.append({
+            "section": sections[prefix], "key": router.pooled_key(prefix),
+            "label": f"{labels[prefix]} Pooled By Router", "type": "select",
+            "options": ["inherit", "on", "off"],
+            "hint": ("inherit: follow MODEL_ROUTER_MEMBERS, which is what every "
+                     "host did before these existed. "
+                     "on: the router owns this model and loads it on demand, "
+                     "sharing one VRAM budget with the other pooled models. "
+                     "off: it runs as its own unit and holds VRAM from the "
+                     "moment it starts. Setting any of these switches makes "
+                     "them the source for MODEL_ROUTER_MEMBERS."),
+        })
+    return fields
+
+
 def _member_placement_fields() -> list[dict]:
     """The `_MAIN_GPU` and `_DEVICE` controls members were missing.
 
@@ -1021,6 +1052,7 @@ def _transcription_engine_fields() -> list[dict]:
     return fields
 
 
+CONFIG_FIELDS.extend(_member_pooling_fields())
 CONFIG_FIELDS.extend(_member_placement_fields())
 CONFIG_FIELDS.extend(_transcription_engine_fields())
 

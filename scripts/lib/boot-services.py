@@ -47,6 +47,7 @@ sys.path.insert(0, str(ROOT / "web"))
 import config_env  # noqa: E402
 import health  # noqa: E402
 import setup_engine  # noqa: E402
+from backends import router  # noqa: E402
 
 #: What `activate-selected-stack.sh:6` falls back to. Kept identical on purpose:
 #: two boot paths that disagree about the default are how a host comes back from
@@ -121,8 +122,7 @@ def router_owns(env: dict, unit: str) -> bool:
     member = ROUTER_MEMBER_BY_UNIT.get(unit)
     if member is None:
         return False
-    members = _text(env, "MODEL_ROUTER_MEMBERS", "EMBED,OCR,RERANK,TASK")
-    return member in {part.strip().upper() for part in members.split(",")}
+    return member in set(router.pooled_members(env))
 
 
 def boot_units(env: dict, expectations: dict | None = None,

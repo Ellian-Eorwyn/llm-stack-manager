@@ -38,6 +38,7 @@ from __future__ import annotations
 import re
 
 import core
+from backends import router
 from config_fields import (
     CODE_TO_CHAT_MIRRORS,
     CONFIG_FIELDS,
@@ -331,7 +332,7 @@ def normalize_env_keys(env: dict) -> dict:
     # the router itself would only add an unauthenticated way in.
     normalized.setdefault("MODEL_ROUTER_HOST", "127.0.0.1")
     normalized.setdefault("MODEL_ROUTER_MAX", "2")
-    normalized.setdefault("MODEL_ROUTER_MEMBERS", "EMBED,OCR,RERANK,TASK")
+    normalized.setdefault("MODEL_ROUTER_MEMBERS", router.DEFAULT_MEMBERS)
     normalized.setdefault("MODEL_ROUTER_SLEEP_IDLE_SECONDS", "600")
     # Off for every member: a model nobody has thought about should cost
     # nothing until it is used. The operator turns this on for the one that is
@@ -344,6 +345,12 @@ def normalize_env_keys(env: dict) -> dict:
     for _member in ("EMBED", "RERANK", "ASR"):
         normalized.setdefault(f"{_member}_MAIN_GPU", "0")
         normalized.setdefault(f"{_member}_DEVICE", "")
+    # `inherit`, not a pooled/dedicated guess: defaulting these to their table
+    # value would make the switches authoritative on every host, overriding a
+    # `MODEL_ROUTER_MEMBERS` an operator set deliberately.
+    for _member in router.MEMBER_PREFIXES:
+        normalized.setdefault(router.pooled_key(_member), "inherit")
+    normalized.setdefault("LLM_ABSOLUTE_GPU_INDICES", "off")
     normalized.setdefault("MODEL_ROUTER_GPU_VISIBLE_DEVICES", "0,1")
     normalized.setdefault("SEARXNG_ENABLED", "on")
     normalized.setdefault("SEARXNG_URL_PATH", "/searxng")

@@ -331,6 +331,11 @@ def probe(name: str, env: dict, timeout: float = PROBE_TIMEOUT_SECONDS) -> dict 
 LEGACY_UNIT_NAMES = {
     "chat-backend-dense": "llm-a",
     "chat-backend2": "llm-b",
+    # The proxies renamed one step after the backends did, and were missed the
+    # first time. A host whose operator had stopped `chat-proxy2` on purpose
+    # would have had that decision quietly forgotten.
+    "chat-proxy": "llm-a-proxy",
+    "chat-proxy2": "llm-b-proxy",
 }
 
 
