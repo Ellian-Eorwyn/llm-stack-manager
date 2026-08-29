@@ -38,6 +38,25 @@ Revisions are pinned rather than tracked: an embedding model that silently
 changes revision changes every vector it has ever produced, and nothing
 downstream would notice.
 
+## Where the stack directory may live
+
+Not under `~/Documents`, `~/Desktop` or `~/Downloads`. Those are TCC-protected,
+and a LaunchAgent has no permission for them: every service fails at exec with
+
+```
+bash: .../scripts/launchd-wrapper-embed.sh: Operation not permitted
+shell-init: error retrieving current directory: getcwd: cannot access parent
+directories: Operation not permitted
+```
+
+The files are executable and the same script runs fine from a terminal, because
+an interactive shell has been granted access and launchd has not. Nothing about
+the permissions, the ownership or the plist is wrong, which is what makes it
+cost an afternoon.
+
+`~/Applications/LLMs/llm-stack-manager` is the tested location. Anywhere outside
+the protected directories works.
+
 ## Readiness
 
 These servers are not llama-server and must not be probed as though they were.

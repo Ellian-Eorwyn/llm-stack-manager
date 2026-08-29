@@ -741,7 +741,11 @@ echo "Useful Commands:"
 echo "  - Update (fast, no llama.cpp rebuild): sudo llm-stack-manager update"
 echo "  - Stack overview: llm-stack-manager status"
 if is_mac; then
-    echo "  - Restart manager: sudo launchctl kickstart -k system/com.llmstack.llm-manager"
+    if is_mac && [[ "${LLM_LAUNCHD_DOMAIN:-user}" != "system" ]]; then
+        echo "  - Restart manager: launchctl kickstart -k gui/\$(id -u)/com.llmstack.llm-manager"
+    else
+        echo "  - Restart manager: sudo launchctl kickstart -k system/com.llmstack.llm-manager"
+    fi
 else
     echo "  - Restart manager: sudo systemctl restart llm-manager"
 fi
@@ -750,11 +754,15 @@ echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 if is_mac; then
     echo ""
     echo "macOS notes:"
-    echo "  - macOS support is INCOMPLETE and under active development."
-    echo "    GPU, memory and swap reporting are not yet implemented on this"
-    echo "    platform and will read as zero. Do not rely on the health model here."
     echo "  - Services are managed via launchd in the ${LLM_LAUNCHD_DOMAIN:-user} domain"
     echo "    (plists in $(svc_plist_dir))"
+    echo "  - Keep the stack outside ~/Documents, ~/Desktop and ~/Downloads."
+    echo "    Those are TCC-protected: a LaunchAgent cannot execute anything"
+    echo "    there and every service fails with 'Operation not permitted',"
+    echo "    however the file permissions read."
+    echo "  - GPU memory is reported against host memory, because it is the same"
+    echo "    pool. Temperature and power read as unknown rather than zero: they"
+    echo "    need root, and a fabricated zero looks like a cold idle card."
     echo "  - View logs: tail -f ${STACK_DIR}/logs/<service>.stdout.log"
-    echo "  - Start/stop: sudo bash ${STACK_DIR}/scripts/restore-active-stack.sh"
+    echo "  - Start/stop: bash ${STACK_DIR}/scripts/restore-active-stack.sh"
 fi
