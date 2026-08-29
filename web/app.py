@@ -135,9 +135,9 @@ def _slot_service(name: str) -> dict:
 # slots. A proxy is not a servable position; it is a thing in front of one.
 SERVICES = [
     _slot_service("llm-a"),
-    {"group": "chat",      "name": "chat-proxy",       "label": "Primary Proxy",   "desc": "Routes primary think/chat/code", "ports": "8003 / 8004 / 8008 / 8012"},
+    {"group": "chat",      "name": "llm-a-proxy",       "label": "Primary Proxy",   "desc": "Routes primary think/chat/code", "ports": "8003 / 8004 / 8008 / 8012"},
     _slot_service("llm-b"),
-    {"group": "chat",      "name": "chat-proxy2",      "label": "Secondary Proxy", "desc": "Routes secondary think/chat/code", "ports": "8103 / 8104 / 8108 / 8112"},
+    {"group": "chat",      "name": "llm-b-proxy",      "label": "Secondary Proxy", "desc": "Routes secondary think/chat/code", "ports": "8103 / 8104 / 8108 / 8112"},
     _slot_service("embed"),
     _slot_service("rerank"),
     _slot_service("task"),
@@ -150,7 +150,7 @@ SERVICES = [
 ]
 
 LLAMACPP_MODEL_SERVICES = list(backends.SLOTS)
-LLAMACPP_PROXY_SERVICE = "chat-proxy"
+LLAMACPP_PROXY_SERVICE = "llm-a-proxy"
 
 
 def router_pooled_units(env: dict) -> set:
@@ -424,12 +424,12 @@ def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str
     """
     active = active or {}
     if not active.get("service"):
-        core.ServiceManager.start('chat-proxy')
+        core.ServiceManager.start('llm-a-proxy')
         return True, "No saved chat backend was active; left chat backend unchanged.", []
 
     returncode, output = core.ServiceManager.restart('llm-a')
-    core.ServiceManager.start('chat-proxy')
-    return returncode == 0, output, ["llm-a", "chat-proxy"]
+    core.ServiceManager.start('llm-a-proxy')
+    return returncode == 0, output, ["llm-a", "llm-a-proxy"]
 
 
 def process_cmdline(pid: int) -> str:
@@ -2252,7 +2252,7 @@ def api_switch(variant):
     config_env.update_env_values(updates)
 
     returncode, output = core.ServiceManager.restart('llm-a')
-    core.ServiceManager.start('chat-proxy')
+    core.ServiceManager.start('llm-a-proxy')
     return jsonify(ok=(returncode == 0), output=output)
 
 
@@ -2426,7 +2426,7 @@ def api_saved_configs_save():
     for svc in SERVICES:
         name = svc.get('name')
         if not name or name in ('llm-a', 
-                                'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
+                                'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'llm-a-proxy'):
             continue
         if get_service_status(name) == 'active':
             active_services.append(name)
@@ -2489,7 +2489,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
                 'preflight': preflight,
             }
         restart_needed.difference_update(SHARED_CHAT_BACKEND_RESTART)
-        restart_needed.discard('chat-proxy')
+        restart_needed.discard('llm-a-proxy')
 
         active_services = config.get('_active_services')
         if active_services is not None:
@@ -2501,7 +2501,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
             for svc in SERVICES:
                 name = svc.get('name')
                 if not name or name in ('llm-a',
-                                        'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
+                                        'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'llm-a-proxy'):
                     continue
                 if name in pooled:
                     continue
@@ -2522,9 +2522,9 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
                 if get_service_status("llm-b") != "active":
                     core.ServiceManager.start("llm-b")
                     launched.append("llm-b")
-                if get_service_status("chat-proxy2") != "active":
-                    core.ServiceManager.start("chat-proxy2")
-                    launched.append("chat-proxy2")
+                if get_service_status("llm-b-proxy") != "active":
+                    core.ServiceManager.start("llm-b-proxy")
+                    launched.append("llm-b-proxy")
 
     return {
         'ok': True,

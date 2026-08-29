@@ -114,7 +114,7 @@ class ProbeTargetTests(unittest.TestCase):
         self.assertEqual(health.SERVICE_PROBES["embed"]["port_key"], "EMBED_PORT")
 
     def test_bind_address_is_rewritten_to_a_reachable_one(self):
-        host, port = health.endpoint_for("chat-proxy", {"LISTEN_HOST": "0.0.0.0", "NOTHINK_PORT": "8004"})
+        host, port = health.endpoint_for("llm-a-proxy", {"LISTEN_HOST": "0.0.0.0", "NOTHINK_PORT": "8004"})
         self.assertEqual((host, port), ("127.0.0.1", "8004"))
 
     def test_services_without_a_probe_have_no_endpoint(self):
@@ -251,12 +251,12 @@ class CollectTests(unittest.TestCase):
         """A dead backend degrades the proxy in front of it, and the SDK two
         hops further along."""
         with patch.dict(health.SERVICE_DEPENDENCIES,
-                        {"glmocr-sdk": [["ocr"], ["chat-proxy"]]}, clear=False):
+                        {"glmocr-sdk": [["ocr"], ["llm-a-proxy"]]}, clear=False):
             entries = self.collect({
                 "glmocr-sdk": "active", "ocr": "active",
-                "chat-proxy": "active", "llm-a": "inactive",
+                "llm-a-proxy": "active", "llm-a": "inactive",
             })
-        self.assertEqual(entries["chat-proxy"]["state"], "degraded")
+        self.assertEqual(entries["llm-a-proxy"]["state"], "degraded")
         self.assertEqual(entries["glmocr-sdk"]["state"], "degraded")
 
     def test_a_stopped_service_nobody_asked_for_is_not_a_fault(self):

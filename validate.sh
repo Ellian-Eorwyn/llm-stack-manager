@@ -89,7 +89,7 @@ fi
 
 echo ""
 echo "--- /v1/models endpoints ---"
-if should_check chat-proxy; then
+if should_check llm-a-proxy; then
     for port in "${THINK_PORT}" "${NOTHINK_PORT}" "${CODE_PORT}"; do
         r=$(curl -sf "${BASE}:${port}/v1/models" 2>&1 || true)
         check "GET :${port}/v1/models returns JSON" "${r}" '"object"'
@@ -111,7 +111,7 @@ done
 
 echo ""
 echo "--- Chat endpoint (port ${NOTHINK_PORT}) ---"
-if should_check chat-proxy; then
+if should_check llm-a-proxy; then
     CHAT_RESP=$(curl -sf "${BASE}:${NOTHINK_PORT}/v1/chat/completions"     -H "Content-Type: application/json"     -d '{"model":"chat","messages":[{"role":"user","content":"Reply with exactly: CHAT_OK"}],"max_tokens":50,"temperature":0}' 2>&1 || true)
     check "Chat returns a message" "${CHAT_RESP}" '"content"'
 

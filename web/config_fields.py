@@ -52,7 +52,10 @@ LLAMA_SPLIT_MODE_OPTIONS = ["none", "layer", "tensor"]
 LLAMA_SPLIT_MODE_HINT = (
     "none=whole model on one GPU; layer=split by layers, the dependable "
     "multi-GPU choice; tensor=experimental tensor+KV parallelism, not "
-    "available for hybrid-attention models such as Qwen3.5/3.8"
+    "available for hybrid-attention models such as Qwen3.5/3.8. "
+    "tensor spreads every tensor across the visible devices and therefore "
+    "discards Main GPU and Device \u2014 those controls are inert while it is "
+    "selected, which is silent unless something says so."
 )
 LLAMA_MAIN_GPU_HINT = (
     "GPU index (within visible devices) for split-mode=none. Not used by "
@@ -817,7 +820,7 @@ CONFIG_FIELDS = [
     {"section": "Model Router", "key": "MODEL_ROUTER_MAX",           "label": "Models Resident",      "type": "number", "hint": "How many models may be loaded at once. A count, not a memory budget — the router evicts least-recently-used, but does not know how large the survivors are. Use 1 for strict one-at-a-time."},
     {"section": "Model Router", "key": "MODEL_ROUTER_MEMBERS",       "label": "Pooled Models",        "type": "text",   "hint": "Comma-separated env prefixes to pool, e.g. EMBED,OCR,RERANK,TASK"},
     {"section": "Model Router", "key": "MODEL_ROUTER_SLEEP_IDLE_SECONDS", "label": "Idle Unload (s)", "type": "number", "hint": "Unload a resident model's weights and KV after this much idleness; the next request reloads it. -1 disables."},
-    {"section": "Model Router", "key": "MODEL_ROUTER_GPU_VISIBLE_DEVICES", "label": "GPU Devices",    "type": "text",   "hint": "CUDA_VISIBLE_DEVICES for the router. Every pooled model inherits it, so per-model placement uses real device indices in Main GPU / Tensor Split."},
+    {"section": "Model Router", "key": "MODEL_ROUTER_GPU_VISIBLE_DEVICES", "label": "GPUs The Router May Use", "type": "text",   "hint": "The superset of devices the router and every model it pools may touch \u2014 not a per-model choice. CUDA_VISIBLE_DEVICES is process-level and the router spawns its own children, so it cannot be set per member; place individual models with their own Main GPU / Device / Tensor Split, which use real indices within this set."},
     # The pooled audio model, served on the router's own /v1/audio/transcriptions
     # and reached by the transcription sidecar's `router` engine. Configured
     # here rather than under Transcription because it is a router child: it is
@@ -931,6 +934,51 @@ CONFIG_FIELDS = [
 ]
 
 
+#: The placement controls every llama.cpp member takes, and the section each one
+#: is filed under. A table rather than a per-member copy, and rather than
+#: `_clone_chat_backend_field`, whose `secondary` branch is dead code that would
+#: emit `CHAT_SECONDARY_*` where the rest of the tree says `LLM_B_*`.
+#:
+#: `render-models-ini.py` already maps MAIN_GPU and DEVICE per member. The
+#: config surface did not: EMBED and RERANK had neither field, and ASR had
+#: MAIN_GPU without DEVICE -- so the router could place those models and nobody
+#: could say where. Three gaps in one table, which is how a table earns its keep.
+MEMBER_PLACEMENT_SECTIONS = {
+    "EMBED": ("Embedding", "Embedding"),
+    "RERANK": ("Reranker", "Reranker"),
+    "ASR": ("Model Router", "Audio"),
+}
+
+
+def _member_placement_fields() -> list[dict]:
+    """The `_MAIN_GPU` and `_DEVICE` controls members were missing.
+
+    Only the two suffixes that were absent. TENSOR_SPLIT and SPLIT_MODE are
+    already declared per member with their own hints, and moving them here would
+    reorder the config page for no gain.
+    """
+    fields = []
+    for prefix, (section, label) in MEMBER_PLACEMENT_SECTIONS.items():
+        existing = {f.get("key") for f in CONFIG_FIELDS}
+        for suffix, kind, hint in (
+            ("MAIN_GPU", "number",
+             "Which GPU index holds this model. Ignored when Split Mode is "
+             "`tensor`, which spreads every tensor across the devices instead."),
+            ("DEVICE", "text",
+             "Explicit llama.cpp device list, e.g. CUDA0,CUDA1. Overrides Main "
+             "GPU; leave empty to let Main GPU and Tensor Split decide."),
+        ):
+            key = f"{prefix}_{suffix}"
+            if key in existing:
+                continue
+            fields.append({
+                "section": section, "key": key,
+                "label": f"{label} {'Main GPU' if suffix == 'MAIN_GPU' else 'Device'}",
+                "type": kind, "hint": hint,
+            })
+    return fields
+
+
 def _transcription_engine_fields() -> list[dict]:
     """One identical block of config per engine, keyed on its env prefix.
 
@@ -973,6 +1021,7 @@ def _transcription_engine_fields() -> list[dict]:
     return fields
 
 
+CONFIG_FIELDS.extend(_member_placement_fields())
 CONFIG_FIELDS.extend(_transcription_engine_fields())
 
 CHAT_BACKEND_IDENTITY_KEYS = {
@@ -1161,68 +1210,68 @@ RESTART_HINTS = {
     "CHAT_SWA_FULL":             ["llm-a"],
     "CHAT_CUSTOM_ARGS_JSON":     ["llm-a"],
     "CHAT_TEMPLATE_ID":           ["llm-a"],
-    "CHAT_BACKEND_HOST":         ["chat-proxy"],
-    "CHAT_BACKEND_PORT":         ["chat-proxy"],
-    "PROXY_STREAM_PASSTHROUGH":  ["chat-proxy"],
-    "UPSTREAM_400_CAPTURE_ENABLED": ["chat-proxy"],
+    "CHAT_BACKEND_HOST":         ["llm-a-proxy"],
+    "CHAT_BACKEND_PORT":         ["llm-a-proxy"],
+    "PROXY_STREAM_PASSTHROUGH":  ["llm-a-proxy"],
+    "UPSTREAM_400_CAPTURE_ENABLED": ["llm-a-proxy"],
     "LLM_B_CACHE_RAM":           ["llm-b"],
     "LLM_B_CTX_CHECKPOINTS":     ["llm-b"],
     "LLM_B_SWA_FULL":            ["llm-b"],
     "LLM_B_CUSTOM_ARGS_JSON":    ["llm-b"],
-    "CODE_THINKING":             ["chat-proxy"],
-    "CODE_PRESERVE_THINKING":    ["chat-proxy"],
-    "CODE_REASONING_EFFORT":     ["chat-proxy"],
-    "CODE_REASONING_STREAM_MODE": ["chat-proxy"],
-    "CODE_JINJA":                ["chat-proxy"],
-    "CODE_CTX_SIZE":             ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_N_PARALLEL":           ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_THREADS":              ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_THREADS_BATCH":        ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_N_GPU_LAYERS":         ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_TENSOR_SPLIT":         ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_SPLIT_MODE":           ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_FLASH_ATTN":           ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_CACHE_TYPE_K":         ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_CACHE_TYPE_V":         ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_BATCH_SIZE":           ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_UBATCH_SIZE":          ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_NO_MMAP":              ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_MLOCK":                ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_GPU_VISIBLE_DEVICES":  ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_TEMP":                 ["chat-proxy"],
-    "CODE_MAX_TOKENS":           ["chat-proxy"],
-    "CODE_TOP_P":                ["chat-proxy"],
-    "CODE_TOP_K":                ["chat-proxy"],
-    "CODE_MIN_P":                ["chat-proxy"],
-    "CODE_PRESENCE_PENALTY":     ["chat-proxy"],
-    "CODE_REPEAT_PENALTY":       ["chat-proxy"],
-    "CODE_REASONING_FORMAT":     ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "CODE_FIT":                  ["chat-proxy"] + SHARED_CHAT_BACKEND_RESTART,
-    "THINK_MODEL_NAME":          ["chat-proxy"],
-    "THINK_PRESERVE_THINKING":   ["chat-proxy"],
-    "THINK_REASONING_EFFORT":    ["chat-proxy"],
-    "THINK_REASONING_STREAM_MODE": ["chat-proxy"],
-    "THINK_JINJA":               ["chat-proxy"],
-    "THINK_TEMP":                ["chat-proxy"],
-    "THINK_MAX_TOKENS":          ["chat-proxy"],
-    "THINK_TOP_P":               ["chat-proxy"],
-    "THINK_TOP_K":               ["chat-proxy"],
-    "THINK_MIN_P":               ["chat-proxy"],
-    "THINK_PRESENCE_PENALTY":    ["chat-proxy"],
-    "THINK_REPEAT_PENALTY":      ["chat-proxy"],
-    "THINK_REASONING_FORMAT":    ["chat-proxy"],
-    "NOTHINK_MODEL_NAME":        ["chat-proxy"],
-    "NOTHINK_PRESERVE_THINKING": ["chat-proxy"],
-    "NOTHINK_REASONING_STREAM_MODE": ["chat-proxy"],
-    "NOTHINK_JINJA":             ["chat-proxy"],
-    "NOTHINK_TEMP":              ["chat-proxy"],
-    "NOTHINK_TOP_P":             ["chat-proxy"],
-    "NOTHINK_TOP_K":             ["chat-proxy"],
-    "NOTHINK_MIN_P":             ["chat-proxy"],
-    "NOTHINK_PRESENCE_PENALTY":  ["chat-proxy"],
-    "NOTHINK_REPEAT_PENALTY":    ["chat-proxy"],
-    "NOTHINK_REASONING_FORMAT":  ["chat-proxy"],
-    "CODE_MODEL_NAME":           ["chat-proxy"],
+    "CODE_THINKING":             ["llm-a-proxy"],
+    "CODE_PRESERVE_THINKING":    ["llm-a-proxy"],
+    "CODE_REASONING_EFFORT":     ["llm-a-proxy"],
+    "CODE_REASONING_STREAM_MODE": ["llm-a-proxy"],
+    "CODE_JINJA":                ["llm-a-proxy"],
+    "CODE_CTX_SIZE":             ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_N_PARALLEL":           ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_THREADS":              ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_THREADS_BATCH":        ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_N_GPU_LAYERS":         ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_TENSOR_SPLIT":         ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_SPLIT_MODE":           ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_FLASH_ATTN":           ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_CACHE_TYPE_K":         ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_CACHE_TYPE_V":         ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_BATCH_SIZE":           ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_UBATCH_SIZE":          ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_NO_MMAP":              ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_MLOCK":                ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_GPU_VISIBLE_DEVICES":  ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_TEMP":                 ["llm-a-proxy"],
+    "CODE_MAX_TOKENS":           ["llm-a-proxy"],
+    "CODE_TOP_P":                ["llm-a-proxy"],
+    "CODE_TOP_K":                ["llm-a-proxy"],
+    "CODE_MIN_P":                ["llm-a-proxy"],
+    "CODE_PRESENCE_PENALTY":     ["llm-a-proxy"],
+    "CODE_REPEAT_PENALTY":       ["llm-a-proxy"],
+    "CODE_REASONING_FORMAT":     ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "CODE_FIT":                  ["llm-a-proxy"] + SHARED_CHAT_BACKEND_RESTART,
+    "THINK_MODEL_NAME":          ["llm-a-proxy"],
+    "THINK_PRESERVE_THINKING":   ["llm-a-proxy"],
+    "THINK_REASONING_EFFORT":    ["llm-a-proxy"],
+    "THINK_REASONING_STREAM_MODE": ["llm-a-proxy"],
+    "THINK_JINJA":               ["llm-a-proxy"],
+    "THINK_TEMP":                ["llm-a-proxy"],
+    "THINK_MAX_TOKENS":          ["llm-a-proxy"],
+    "THINK_TOP_P":               ["llm-a-proxy"],
+    "THINK_TOP_K":               ["llm-a-proxy"],
+    "THINK_MIN_P":               ["llm-a-proxy"],
+    "THINK_PRESENCE_PENALTY":    ["llm-a-proxy"],
+    "THINK_REPEAT_PENALTY":      ["llm-a-proxy"],
+    "THINK_REASONING_FORMAT":    ["llm-a-proxy"],
+    "NOTHINK_MODEL_NAME":        ["llm-a-proxy"],
+    "NOTHINK_PRESERVE_THINKING": ["llm-a-proxy"],
+    "NOTHINK_REASONING_STREAM_MODE": ["llm-a-proxy"],
+    "NOTHINK_JINJA":             ["llm-a-proxy"],
+    "NOTHINK_TEMP":              ["llm-a-proxy"],
+    "NOTHINK_TOP_P":             ["llm-a-proxy"],
+    "NOTHINK_TOP_K":             ["llm-a-proxy"],
+    "NOTHINK_MIN_P":             ["llm-a-proxy"],
+    "NOTHINK_PRESENCE_PENALTY":  ["llm-a-proxy"],
+    "NOTHINK_REPEAT_PENALTY":    ["llm-a-proxy"],
+    "NOTHINK_REASONING_FORMAT":  ["llm-a-proxy"],
+    "CODE_MODEL_NAME":           ["llm-a-proxy"],
     "TASK_MODEL_NAME":           ["task"],
     "TASK_MODEL_PATH":           ["task"],
     "TASK_MMPROJ_PATH":          ["task"],
@@ -1284,6 +1333,8 @@ RESTART_HINTS = {
     "EMBED_THREADS":             ["embed"],
     "EMBED_THREADS_BATCH":       ["embed"],
     "EMBED_N_GPU_LAYERS":        ["embed"],
+    "EMBED_MAIN_GPU":            ["embed"],
+    "EMBED_DEVICE":              ["embed"],
     "EMBED_TENSOR_SPLIT":        ["embed"],
     "EMBED_SPLIT_MODE":          ["embed"],
     "EMBED_FLASH_ATTN":          ["embed"],
@@ -1310,6 +1361,8 @@ RESTART_HINTS = {
     "RERANK_THREADS":            ["rerank"],
     "RERANK_THREADS_BATCH":      ["rerank"],
     "RERANK_N_GPU_LAYERS":       ["rerank"],
+    "RERANK_MAIN_GPU":           ["rerank"],
+    "RERANK_DEVICE":             ["rerank"],
     "RERANK_TENSOR_SPLIT":       ["rerank"],
     "RERANK_SPLIT_MODE":         ["rerank"],
     "RERANK_FLASH_ATTN":         ["rerank"],
@@ -1347,23 +1400,23 @@ RESTART_HINTS = {
     "GRAPHITI_NEO4J_DATABASE":   ["graphiti"],
     "GRAPHITI_NEO4J_BOLT_PORT":  ["graphiti"],
     "GRAPHITI_NEO4J_HTTP_PORT":  ["graphiti"],
-    "THINK_PORT":                ["chat-proxy"],
-    "NOTHINK_PORT":              ["chat-proxy"],
-    "CODE_PORT":                 ["chat-proxy"],
-    "AGGREGATE_ENABLED":         ["chat-proxy"],
-    "AGGREGATE_PORT":            ["chat-proxy"],
-    "THINK2_PORT":               ["chat-proxy2"],
-    "NOTHINK2_PORT":             ["chat-proxy2"],
-    "CODE2_PORT":                ["chat-proxy2"],
-    "AGGREGATE2_ENABLED":        ["chat-proxy2"],
-    "AGGREGATE2_PORT":           ["chat-proxy2"],
-    "THINK2_MODEL_NAME":         ["chat-proxy2"],
-    "NOTHINK2_MODEL_NAME":       ["chat-proxy2"],
-    "CODE2_MODEL_NAME":          ["chat-proxy2"],
+    "THINK_PORT":                ["llm-a-proxy"],
+    "NOTHINK_PORT":              ["llm-a-proxy"],
+    "CODE_PORT":                 ["llm-a-proxy"],
+    "AGGREGATE_ENABLED":         ["llm-a-proxy"],
+    "AGGREGATE_PORT":            ["llm-a-proxy"],
+    "THINK2_PORT":               ["llm-b-proxy"],
+    "NOTHINK2_PORT":             ["llm-b-proxy"],
+    "CODE2_PORT":                ["llm-b-proxy"],
+    "AGGREGATE2_ENABLED":        ["llm-b-proxy"],
+    "AGGREGATE2_PORT":           ["llm-b-proxy"],
+    "THINK2_MODEL_NAME":         ["llm-b-proxy"],
+    "NOTHINK2_MODEL_NAME":       ["llm-b-proxy"],
+    "CODE2_MODEL_NAME":          ["llm-b-proxy"],
     "EMBED_PORT":                ["embed"],
     "RERANK_PORT":               ["rerank"],
     "TASK_PORT":                 ["task"],
-    "LISTEN_HOST":               ["chat-proxy", "embed", "rerank", "task"],
+    "LISTEN_HOST":               ["llm-a-proxy", "embed", "rerank", "task"],
     "CHAT_MODEL_PATH":           ["llm-a"],
     "CHAT_MMPROJ_PATH":          ["llm-a"],
     "CHAT_CTX_SIZE":             ["llm-a"],

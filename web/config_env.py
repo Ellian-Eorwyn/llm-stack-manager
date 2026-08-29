@@ -338,6 +338,12 @@ def normalize_env_keys(env: dict) -> dict:
     # queried constantly, which is the case the router's laziness handles worst.
     for _member in ("EMBED", "RERANK", "TASK", "OCR"):
         normalized.setdefault(f"{_member}_LOAD_ON_STARTUP", "off")
+    # Placement, empty by default. An empty `_DEVICE` means "decide from
+    # main-gpu and tensor-split", which is what every member did before it had
+    # the field at all -- so a host that never sets one is unchanged.
+    for _member in ("EMBED", "RERANK", "ASR"):
+        normalized.setdefault(f"{_member}_MAIN_GPU", "0")
+        normalized.setdefault(f"{_member}_DEVICE", "")
     normalized.setdefault("MODEL_ROUTER_GPU_VISIBLE_DEVICES", "0,1")
     normalized.setdefault("SEARXNG_ENABLED", "on")
     normalized.setdefault("SEARXNG_URL_PATH", "/searxng")

@@ -13,7 +13,7 @@ with `{"status":"ok"}` from its own process. Every document it is handed goes to
 `127.0.0.1:8009`, which is written into `config/glmocr-sdk.json` by
 `scripts/start-glmocr-sdk.sh` and which nothing is listening on when `ocr` is
 stopped. The card was green. The same shape was live during this work on the
-secondary proxy: `chat-proxy2` running and answering `/v1/models`, with
+secondary proxy: `llm-b-proxy` running and answering `/v1/models`, with
 `llm-b` stopped.
 
 **A crashed unit looked like a stopped one.** `is-active` returns non-`active`
@@ -90,7 +90,7 @@ Three plausible sources were checked live and all three were wrong:
 
 | Candidate | Why not |
 | --- | --- |
-| `systemctl is-enabled` | reads `disabled` for `llm-a` and `chat-proxy` while they are running |
+| `systemctl is-enabled` | reads `disabled` for `llm-a` and `llm-a-proxy` while they are running |
 | `*_ENABLED` env flags | read `on` for `glmocr-sdk` and `searxng` while those are stopped — they mean "configured", not "should be up" |
 | `setup_engine` component selection | `config/install-state.json` does not exist, so it falls back to `CORE_DEFAULTS` |
 

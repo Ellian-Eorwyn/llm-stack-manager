@@ -5,7 +5,7 @@
 #
 # In router mode one llama-server serves embed, ocr, rank and task on a single
 # port, but every caller in and around this stack addresses them by their own
-# port. Rather than repoint chat-proxy, the GLM-OCR SDK, the Flask OCR
+# port. Rather than repoint llm-a-proxy, the GLM-OCR SDK, the Flask OCR
 # routes and whatever else on the LAN has the old address written down, nginx
 # fronts each of those ports onto the router. The router picks the model from
 # the request body, so nothing has to be rewritten on the way through.

@@ -25,8 +25,8 @@ STACK_MODEL_BACKENDS=(
 
 # In front of a slot, not one of them.
 STACK_PROXY_SERVICES=(
-  chat-proxy
-  chat-proxy2
+  llm-a-proxy
+  llm-b-proxy
 )
 
 STACK_SUPPORT_SERVICES=(
