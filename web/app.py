@@ -1070,13 +1070,28 @@ def index():
     groups = defaultdict(list)
     for svc in patch_service_labels(env):
         groups[svc['group']].append(svc)
+    # A control this platform cannot act on is worse than a missing one: it
+    # saves, it restarts the backend, and the setting is not in the command
+    # line. What was left out is reported per section rather than silently
+    # dropped, so a Mac operator can see that the GPU placement panel is absent
+    # for a reason.
+    fields, omitted = config_fields.applicable_fields()
     sections = defaultdict(list)
+    omitted_sections = defaultdict(list)
     for f in CONFIG_FIELDS:
-        if f.get('section') in CORE_CONFIG_SECTIONS:
+        if f.get('section') not in CORE_CONFIG_SECTIONS:
+            continue
+        if f['key'] in omitted:
+            omitted_sections[f['section']].append(omitted[f['key']])
+        else:
             sections[f['section']].append(f)
+    omitted_notes = {section: {"count": len(reasons), "reasons": sorted(set(reasons))}
+                     for section, reasons in omitted_sections.items()}
     return render_template('index.html',
                            service_groups=dict(groups),
                            config_sections=dict(sections),
+                           omitted_config=omitted_notes,
+                           omitted_config_count=len(omitted),
                            custom_models=models.load_custom_models(),
                            transcription_engines=config_fields.TRANSCRIPTION_ENGINES,
                            models_dir=str(core.MODELS_DIR),

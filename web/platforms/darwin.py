@@ -590,6 +590,20 @@ class DarwinPlatform(base.Platform):
 
     unified_memory = True
 
+    # Everything about multi-GPU placement. `resolve_split_opts` collapses every
+    # split mode to `none` here and drops the tensor split and the main-GPU
+    # index with it, so these are not settings that behave differently on a Mac
+    # -- they are settings that do nothing at all.
+    inert_config_capabilities = {
+        "gpu_visible_devices":
+            "CUDA_VISIBLE_DEVICES is not read by a Metal build.",
+        "gpu_indices":
+            "One Metal device, so there is no index to choose and nothing to "
+            "split across.",
+        "split_modes":
+            "One device, so every split mode resolves to none.",
+    }
+
     #: Metal has no separate runtime context to stand up: the backend allocates
     #: command buffers and a residency set out of the same pool the weights go
     #: in. Materially smaller than CUDA's, and an estimate either way.

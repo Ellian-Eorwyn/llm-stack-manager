@@ -238,6 +238,18 @@ class Platform(ABC):
     #: host starts swapping. Loud versus slow, and a different fix each time.
     unified_memory: bool = False
 
+    #: Configuration capabilities this host does not have, and why.
+    #:
+    #: A control that reports success and changes nothing is worse than a
+    #: missing one: the operator sets it, the UI says saved, the backend starts,
+    #: and the setting is not in the command line. Naming the capability here
+    #: lets `config_fields.applicable_fields` leave those controls out and say
+    #: what is missing, instead of rendering a GPU-placement panel on a machine
+    #: with one GPU that cannot be placed.
+    #:
+    #: Empty means the whole configuration surface applies.
+    inert_config_capabilities: dict[str, str] = {}
+
     @property
     @abstractmethod
     def device_context_mib(self) -> int:
