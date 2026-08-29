@@ -116,11 +116,24 @@ service_user = sys.argv[4]
 # canonical names looked, to this script, like a config missing the legacy ones.
 # They are no longer in the example, but a config written by an older install
 # still is, so honour the map rather than relying on the example alone.
+#
+# Both directions, and the second one is the dangerous one. When the *example*
+# holds the canonical name and the config still holds the legacy one -- which is
+# every host on the far side of a rename -- appending the example's default does
+# not fill a gap, it *shadows a live value*: `normalize_env_keys` backfills the
+# canonical key from its legacy twin only when the canonical is absent, so
+# writing a placeholder there silently replaces the operator's setting.
+#
+# That happened on the llm-a/llm-b rename: 65 keys were appended with example
+# defaults over a working config, and the primary backend came back pointed at a
+# model file that does not exist on the host.
 sys.path.insert(0, str(Path(stack_dir) / "web"))
 try:
-    from config_fields import LEGACY_ENV_KEY_MAP
+    from config_fields import LEGACY_ENV_KEY_MAP, legacy_names_for
 except Exception:
     LEGACY_ENV_KEY_MAP = {}
+    def legacy_names_for(_key):
+        return ()
 
 content = config.read_text(encoding="utf-8")
 existing = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)=", content, re.MULTILINE))
@@ -132,6 +145,8 @@ for line in example.read_text(encoding="utf-8").splitlines():
     if key in existing:
         continue
     if LEGACY_ENV_KEY_MAP.get(key) in existing:
+        continue
+    if any(alias in existing for alias in legacy_names_for(key)):
         continue
     rendered = line.replace("@STACK_DIR@", stack_dir).replace("@SERVICE_USER@", service_user)
     missing.append(rendered)
