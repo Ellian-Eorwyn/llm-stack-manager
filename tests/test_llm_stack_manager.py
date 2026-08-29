@@ -1473,6 +1473,19 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/deploy/check", ("POST",), "api_deploy_check"),
         ("/api/deploy/status", ("GET",), "api_deploy_status"),
         ("/api/gguf-files", ("GET",), "api_gguf_files"),
+        # The hub half of the fleet. Every proxied path is a fixed rule with a
+        # fixed destination: a generic `/api/fleet/<id>/<path:rest>` on this
+        # unauthenticated port would let anything that can reach 8077 issue
+        # authenticated requests to every machine in the fleet.
+        ("/api/fleet", ("GET",), "api_fleet"),
+        ("/api/fleet/<host_id>/logs", ("GET",), "api_fleet_logs"),
+        ("/api/fleet/<host_id>/snapshot", ("GET",), "api_fleet_snapshot"),
+        ("/api/fleet/<host_id>/status", ("GET",), "api_fleet_status"),
+        ("/api/fleet/hosts", ("GET",), "api_fleet_hosts_list"),
+        ("/api/fleet/hosts", ("POST",), "api_fleet_hosts_add"),
+        ("/api/fleet/hosts/<host_id>", ("DELETE",), "api_fleet_hosts_delete"),
+        ("/api/fleet/hosts/<host_id>", ("PUT",), "api_fleet_hosts_update"),
+        ("/api/fleet/hosts/<host_id>/test", ("POST",), "api_fleet_host_test"),
         ("/api/graphiti/detail/entity/<entity_uuid>", ("GET",), "api_graphiti_entity_detail"),
         ("/api/graphiti/detail/episode/<episode_uuid>", ("GET",), "api_graphiti_episode_detail"),
         ("/api/graphiti/detail/relationship/<relationship_uuid>", ("GET",), "api_graphiti_relationship_detail"),

@@ -49,6 +49,7 @@ import config_fields
 import control_api
 import core
 import deploy
+import fleet
 import health
 import models
 import platforms
@@ -57,6 +58,7 @@ import scheduling
 import telemetry
 
 from routes import control as control_routes
+from routes import fleet as fleet_routes
 from routes import graphiti as graphiti_routes
 from routes import models as model_routes
 from routes import public as public_routes
@@ -88,6 +90,10 @@ app = Flask(__name__)
 app.register_blueprint(graphiti_routes.bp)
 app.register_blueprint(model_routes.bp)
 app.register_blueprint(setup_routes.bp)
+# The hub half of the fleet, and only here: the peer list holds a credential
+# for every machine in it, so editing it must not exist on a port another
+# machine can reach.
+app.register_blueprint(fleet_routes.bp)
 # Also served here so `/api/v1/*` works on the manager's own port for local use
 # and testing. The listener that exists for other machines is built in
 # `create_state_api_app()`, and is the one that enforces the token.
@@ -97,6 +103,12 @@ app.register_blueprint(public_routes.bp)
 # edits: systemd starts the manager from the installed checkout, and that only
 # advances when update.sh is run.
 DEPLOY_WATCHER = deploy.DriftWatcher(core.STACK_DIR)
+
+# One poller for every peer, whatever is watching. It starts on the first
+# request that needs it and only when there are peers, so an install with no
+# fleet has no extra thread.
+FLEET_CACHE = fleet.FleetCache(lambda: config_env.read_env())
+fleet_routes.configure(FLEET_CACHE)
 
 
 TTS_BACKEND_SERVICES = []
