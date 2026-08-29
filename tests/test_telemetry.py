@@ -17,25 +17,25 @@ def _load_telemetry_module():
 
 telemetry = _load_telemetry_module()
 
-# Captured verbatim from `journalctl -u chat-backend-dense.service
+# Captured verbatim from `journalctl -u llm-a.service
 # --output=short-iso-precise` on a live two-slot Qwen3.6-27B backend. The odd
 # column spacing is llama.cpp's, and the parsers have to tolerate it.
 LINES = {
-    "select_by_id": "2026-07-28T15:46:53.867535-07:00 LLMs chat-backend-dense[1172175]: 5992.22.867.535 I slot get_availabl: id  1 | task -1 | selected slot by id (1)",
-    "select_by_lru": "2026-07-28T15:14:24.815155-07:00 LLMs chat-backend-dense[1172175]: 5959.53.815.155 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 1820710861478",
-    "select_by_lcp": "2026-07-28T15:14:43.880109-07:00 LLMs chat-backend-dense[1172175]: 5960.12.880.109 I slot get_availabl: id  1 | task -1 | selected slot by LCP similarity, sim_best = 1.000 (> 0.100 thold), f_keep = 0.434",
-    "launch": "2026-07-28T15:46:56.251035-07:00 LLMs chat-backend-dense[1172175]: 5992.25.103.578 I slot launch_slot_: id  1 | task 424044 | processing task, is_child = 0",
-    "release": "2026-07-26T20:52:21.693226-07:00 LLMs chat-backend-dense[1172175]: 3417.50.672.413 I slot      release: id  1 | task 200710 | stop processing: n_tokens = 9994, truncated = 0",
-    "generation": "2026-07-28T15:14:47.122557-07:00 LLMs chat-backend-dense[1172175]: 5960.16.122.557 I slot print_timing: id  1 | task 423414 | n_decoded =    192, tg =  64.00 t/s, tg_3s =  64.00 t/s",
-    "prompt_eval": "2026-07-26T20:52:21.692391-07:00 LLMs chat-backend-dense[1172175]: 3417.50.671.543 I slot print_timing: id  1 | task 200710 | prompt eval time =     264.39 ms /    30 tokens (    8.81 ms per token,   113.47 tokens per second)",
-    "eval": "2026-07-26T20:52:21.692391-07:00 LLMs chat-backend-dense[1172175]: 3417.50.671.548 I slot print_timing: id  1 | task 200710 |        eval time =    2286.89 ms /   137 tokens (   16.69 ms per token,    59.91 tokens per second)",
-    "total_time": "2026-07-26T20:52:21.692391-07:00 LLMs chat-backend-dense[1172175]: 3417.50.671.549 I slot print_timing: id  1 | task 200710 |       total time =    2551.29 ms /   167 tokens",
-    "eval_sentinel": "2026-07-26T08:18:28.000000-07:00 LLMs chat-backend-dense[1172175]: 2663.57.182.462 I slot print_timing: id  1 | task 194198 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)",
-    "draft": "2026-07-26T20:52:21.692391-07:00 LLMs chat-backend-dense[1172175]: 3417.50.671.553 I slot print_timing: id  1 | task 200710 | draft acceptance = 0.93137 (   95 accepted /   102 generated), mean len =  4.17",
-    "evict": "2026-07-28T15:14:26.285353-07:00 LLMs chat-backend-dense[1172175]: 5959.55.285.353 W srv         alloc:  - making room for prompt cache entry, removing oldest entry (size = 4452.387 MiB)",
-    "checkpoint": "2026-07-24T14:19:15.208296-07:00 LLMs chat-backend-dense[1172175]: 144.44.208.296 W slot create_check: id  0 | task 37491 | erasing old context checkpoint (pos_min = 183, pos_max = 183, n_tokens = 184, size = 150.012 MiB)",
-    "overflow": "2026-07-28T15:14:28.028048-07:00 LLMs chat-backend-dense[1172175]: 5959.57.028.048 E srv    send_error: task id = 423411, error: request (155751 tokens) exceeds the available context size (131072 tokens), try increasing it",
-    "ignored": "2026-07-28T15:14:48.293570-07:00 LLMs chat-backend-dense[1172175]: 5960.17.293.570 I slot print_timing: id  1 | task 423414 |    graphs reused =     154995",
+    "select_by_id": "2026-07-28T15:46:53.867535-07:00 LLMs llm-a[1172175]: 5992.22.867.535 I slot get_availabl: id  1 | task -1 | selected slot by id (1)",
+    "select_by_lru": "2026-07-28T15:14:24.815155-07:00 LLMs llm-a[1172175]: 5959.53.815.155 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 1820710861478",
+    "select_by_lcp": "2026-07-28T15:14:43.880109-07:00 LLMs llm-a[1172175]: 5960.12.880.109 I slot get_availabl: id  1 | task -1 | selected slot by LCP similarity, sim_best = 1.000 (> 0.100 thold), f_keep = 0.434",
+    "launch": "2026-07-28T15:46:56.251035-07:00 LLMs llm-a[1172175]: 5992.25.103.578 I slot launch_slot_: id  1 | task 424044 | processing task, is_child = 0",
+    "release": "2026-07-26T20:52:21.693226-07:00 LLMs llm-a[1172175]: 3417.50.672.413 I slot      release: id  1 | task 200710 | stop processing: n_tokens = 9994, truncated = 0",
+    "generation": "2026-07-28T15:14:47.122557-07:00 LLMs llm-a[1172175]: 5960.16.122.557 I slot print_timing: id  1 | task 423414 | n_decoded =    192, tg =  64.00 t/s, tg_3s =  64.00 t/s",
+    "prompt_eval": "2026-07-26T20:52:21.692391-07:00 LLMs llm-a[1172175]: 3417.50.671.543 I slot print_timing: id  1 | task 200710 | prompt eval time =     264.39 ms /    30 tokens (    8.81 ms per token,   113.47 tokens per second)",
+    "eval": "2026-07-26T20:52:21.692391-07:00 LLMs llm-a[1172175]: 3417.50.671.548 I slot print_timing: id  1 | task 200710 |        eval time =    2286.89 ms /   137 tokens (   16.69 ms per token,    59.91 tokens per second)",
+    "total_time": "2026-07-26T20:52:21.692391-07:00 LLMs llm-a[1172175]: 3417.50.671.549 I slot print_timing: id  1 | task 200710 |       total time =    2551.29 ms /   167 tokens",
+    "eval_sentinel": "2026-07-26T08:18:28.000000-07:00 LLMs llm-a[1172175]: 2663.57.182.462 I slot print_timing: id  1 | task 194198 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token, 1000000.00 tokens per second)",
+    "draft": "2026-07-26T20:52:21.692391-07:00 LLMs llm-a[1172175]: 3417.50.671.553 I slot print_timing: id  1 | task 200710 | draft acceptance = 0.93137 (   95 accepted /   102 generated), mean len =  4.17",
+    "evict": "2026-07-28T15:14:26.285353-07:00 LLMs llm-a[1172175]: 5959.55.285.353 W srv         alloc:  - making room for prompt cache entry, removing oldest entry (size = 4452.387 MiB)",
+    "checkpoint": "2026-07-24T14:19:15.208296-07:00 LLMs llm-a[1172175]: 144.44.208.296 W slot create_check: id  0 | task 37491 | erasing old context checkpoint (pos_min = 183, pos_max = 183, n_tokens = 184, size = 150.012 MiB)",
+    "overflow": "2026-07-28T15:14:28.028048-07:00 LLMs llm-a[1172175]: 5959.57.028.048 E srv    send_error: task id = 423411, error: request (155751 tokens) exceeds the available context size (131072 tokens), try increasing it",
+    "ignored": "2026-07-28T15:14:48.293570-07:00 LLMs llm-a[1172175]: 5960.17.293.570 I slot print_timing: id  1 | task 423414 |    graphs reused =     154995",
     "not_journal": "some unrelated text without a journal prefix",
 }
 
@@ -43,7 +43,7 @@ LINES = {
 class JournalLineParsingTests(unittest.TestCase):
     def test_splits_journal_prefix_and_llama_log_prefix(self):
         ts, unit, body = telemetry.split_journal_line(LINES["evict"])
-        self.assertEqual(unit, "chat-backend-dense")
+        self.assertEqual(unit, "llm-a")
         self.assertIsNotNone(ts)
         # Both the journal prefix and llama.cpp's "5959.55.285.353 W " stamp go.
         self.assertTrue(body.startswith("srv"), body)
@@ -254,10 +254,10 @@ class TargetResolutionTests(unittest.TestCase):
     def test_active_unit_selected_from_candidates(self):
         env = {"CHAT_BACKEND_PORT": "8010", "CHAT_BACKEND_HOST": "127.0.0.1"}
         targets = telemetry.resolve_targets(
-            env, lambda unit: "active" if unit == "chat-backend-dense" else "inactive")
-        primary = next(t for t in targets if t["name"] == "chat-primary")
+            env, lambda unit: "active" if unit == "llm-a" else "inactive")
+        primary = next(t for t in targets if t["name"] == "llm-a")
         self.assertTrue(primary["active"])
-        self.assertEqual(primary["unit"], "chat-backend-dense")
+        self.assertEqual(primary["unit"], "llm-a")
         self.assertEqual(primary["base_url"], "http://127.0.0.1:8010")
 
     def test_inactive_backend_has_no_unit(self):
@@ -365,7 +365,7 @@ class WarningTests(unittest.TestCase):
     @staticmethod
     def _backend(**stats):
         return {
-            "name": "chat-primary", "label": "Primary Backend", "active": True,
+            "name": "llm-a", "label": "LLM A", "active": True,
             "metrics_available": True, "stats": stats or None,
         }
 

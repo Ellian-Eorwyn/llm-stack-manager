@@ -2,8 +2,8 @@
 
 The same slot -> prefix -> unit relationship was written out independently in
 six Python modules and six shell scripts, each in its own vocabulary: the unit
-is `chat-backend-dense`, the budget model prices `chat-primary`, the setup
-wizard installs `primary`, and the settings live under `CHAT_PRIMARY_`. Any
+is `llm-a`, the budget model prices `llm-a`, the setup
+wizard installs `primary`, and the settings live under `LLM_A_`. Any
 rename touched all twelve, which is the real reason renaming a slot was
 painful.
 
@@ -42,10 +42,10 @@ class DerivedTableTests(unittest.TestCase):
 
     def test_the_telemetry_targets(self):
         self.assertEqual(telemetry.BACKEND_TARGETS, [
-            {"name": "chat-primary",   "label": "Primary Backend", "port_key": "CHAT_BACKEND_PORT",
-             "host_key": "CHAT_BACKEND_HOST",   "units": ["chat-backend-dense"]},
-            {"name": "chat-secondary", "label": "Secondary Backend", "port_key": "CHAT2_BACKEND_PORT",
-             "host_key": "CHAT2_BACKEND_HOST",  "units": ["chat-backend2"]},
+            {"name": "llm-a",   "label": "LLM A", "port_key": "CHAT_BACKEND_PORT",
+             "host_key": "CHAT_BACKEND_HOST",   "units": ["llm-a"]},
+            {"name": "llm-b", "label": "LLM B", "port_key": "CHAT2_BACKEND_PORT",
+             "host_key": "CHAT2_BACKEND_HOST",  "units": ["llm-b"]},
             {"name": "embed",          "label": "Embedding",       "port_key": "EMBED_PORT",
              "host_key": "EMBED_BACKEND_HOST",  "units": ["embed"]},
             {"name": "rerank",         "label": "Reranker",        "port_key": "RERANK_PORT",
@@ -66,9 +66,9 @@ class DerivedTableTests(unittest.TestCase):
         from the slot is what fixed it, and this is the assertion that keeps it
         fixed.
         """
-        target = next(t for t in telemetry.BACKEND_TARGETS if t["name"] == "chat-secondary")
+        target = next(t for t in telemetry.BACKEND_TARGETS if t["name"] == "llm-b")
         self.assertEqual(target["port_key"], "CHAT2_BACKEND_PORT")
-        self.assertEqual(target["port_key"], backends.SLOTS["chat-backend2"].port_key)
+        self.assertEqual(target["port_key"], backends.SLOTS["llm-b"].port_key)
         for key in ("CHAT_BACKEND2_PORT", "CHAT_BACKEND2_HOST"):
             with self.subTest(key):
                 self.assertNotIn(key, telemetry.DEFAULT_BACKEND_PORTS)
@@ -83,7 +83,7 @@ class DerivedTableTests(unittest.TestCase):
 
     def test_the_budget_prefixes(self):
         self.assertEqual(budget.BACKEND_PREFIXES, {
-            "chat-primary": "CHAT_PRIMARY", "chat-secondary": "CHAT2",
+            "llm-a": "LLM_A", "llm-b": "LLM_B",
             "embed": "EMBED", "rerank": "RERANK", "task": "TASK", "ocr": "OCR",
             # No slot: the audio model is only ever a router child, and it is
             # priced anyway so the pre-flight VRAM total is not silently short.
@@ -92,9 +92,9 @@ class DerivedTableTests(unittest.TestCase):
 
     def test_the_configured_model_keys(self):
         self.assertEqual(public_api.CONFIGURED_MODEL_KEYS, {
-            "chat-backend-dense": ("CHAT_PRIMARY_MODEL_PATH", "CHAT_DENSE_MODEL_PATH",
-                                   "CHAT_MODEL_PATH"),
-            "chat-backend2": ("CHAT2_MODEL_PATH",),
+            "llm-a": ("LLM_A_MODEL_PATH", "CHAT_PRIMARY_MODEL_PATH",
+                      "CHAT_DENSE_MODEL_PATH", "CHAT_MODEL_PATH"),
+            "llm-b": ("LLM_B_MODEL_PATH", "CHAT2_MODEL_PATH"),
             "embed": ("EMBEDDING_MODEL_PATH",),
             "rerank": ("RERANKER_MODEL_PATH",),
             "task": ("TASK_MODEL_PATH",),
@@ -103,21 +103,21 @@ class DerivedTableTests(unittest.TestCase):
 
     def test_the_shared_chat_restart_list(self):
         self.assertEqual(config_fields.SHARED_CHAT_BACKEND_RESTART,
-                         ["chat-backend-dense", "chat-backend2"])
+                         ["llm-a", "llm-b"])
 
     def test_the_setup_wizards_component_maps(self):
         import setup_engine
         self.assertEqual(setup_engine.COMPONENT_SERVICES, {
-            "primary": ["chat-backend-dense", "chat-proxy"],
-            "secondary": ["chat-backend2", "chat-proxy2"],
+            "llm-a": ["llm-a", "chat-proxy"],
+            "llm-b": ["llm-b", "chat-proxy2"],
             "embedding": ["embed"], "reranker": ["rerank"],
             "task": ["task"], "ocr": ["ocr"],
             "glmocr-sdk": ["glmocr-sdk"], "playwright": ["playwright-server"],
             "transcribe": ["transcript-backend"],
         })
         self.assertEqual(setup_engine.MODEL_ENV_KEYS, {
-            "primary": ("CHAT_PRIMARY_MODEL_PATH", "CHAT_PRIMARY_MMPROJ_PATH"),
-            "secondary": ("CHAT2_MODEL_PATH", "CHAT2_MMPROJ_PATH"),
+            "llm-a": ("LLM_A_MODEL_PATH", "LLM_A_MMPROJ_PATH"),
+            "llm-b": ("LLM_B_MODEL_PATH", "LLM_B_MMPROJ_PATH"),
             "embedding": ("EMBEDDING_MODEL_PATH", ""),
             "reranker": ("RERANKER_MODEL_PATH", ""),
             "task": ("TASK_MODEL_PATH", "TASK_MMPROJ_PATH"),
@@ -189,6 +189,59 @@ class ShellAgreementTests(unittest.TestCase):
                          ["chat-backend", "chat-backend-moe", "embed2",
                           "honcho-api", "honcho-deriver", "nothink", "think"])
         self.assertEqual([u for u in self._array("STACK_CORE_SERVICES") if u in retired], [])
+
+
+class SlotRenameTests(unittest.TestCase):
+    """`CHAT_PRIMARY_*` / `CHAT2_*` became `LLM_A_*` / `LLM_B_*`.
+
+    The rename is only safe because a config written before it still reads. The
+    hub can write to a peer now, so a fleet can span the gap in both directions:
+    an older hub sending `CHAT_PRIMARY_CTX_SIZE` to a renamed host has to land,
+    which is why the old names go in before the fleet needs them and not after.
+    """
+
+    def setUp(self):
+        import config_fields
+        self.fields = config_fields
+
+    def test_every_renamed_field_answers_to_its_old_name(self):
+        renamed = [f["key"] for f in self.fields.CONFIG_FIELDS
+                   if f.get("key", "").startswith(("LLM_A_", "LLM_B_"))]
+        self.assertTrue(renamed, "no renamed fields found — the map would be vacuous")
+        for key in renamed:
+            with self.subTest(key):
+                aliases = self.fields.NEW_ENV_KEY_LEGACY_ALIASES[key]
+                self.assertTrue(
+                    any(a.startswith(("CHAT_PRIMARY_", "CHAT2_")) for a in aliases),
+                    f"{key} has no pre-rename spelling: {aliases}")
+
+    def test_the_map_is_flat_and_not_a_chain(self):
+        """`tests/test_llm_stack_manager.py` asserts the invariant; this says
+        why it matters here. `CHAT_DENSE_MODEL_PATH` points straight at
+        `LLM_A_MODEL_PATH`, not at `CHAT_PRIMARY_MODEL_PATH`, which is itself
+        legacy now -- a chain would make each rename one lookup deeper."""
+        self.assertEqual(
+            self.fields.LEGACY_ENV_KEY_MAP["CHAT_DENSE_MODEL_PATH"], "LLM_A_MODEL_PATH")
+        self.assertEqual(
+            self.fields.LEGACY_ENV_KEY_MAP["CHAT_MOE_CTX_SIZE"], "LLM_B_CTX_SIZE")
+        self.assertFalse(set(self.fields.LEGACY_ENV_KEY_MAP.values())
+                         & set(self.fields.LEGACY_ENV_KEY_MAP))
+
+    def test_the_port_and_host_keys_kept_their_names(self):
+        """Section 2.1 freezes the ports, and these keys are the port contract:
+        the proxies, telemetry and health all dial them by name."""
+        for key in ("CHAT2_BACKEND_PORT", "CHAT2_BACKEND_HOST"):
+            with self.subTest(key):
+                self.assertNotIn(key, self.fields.LEGACY_ENV_KEY_MAP)
+
+    def test_the_launcher_still_reads_a_config_written_before_the_rename(self):
+        """The end-to-end promise: nothing but old keys, and the slot still
+        resolves its model and context."""
+        env = {"CHAT_PRIMARY_MODEL_PATH": "/models/old.gguf",
+               "CHAT_PRIMARY_CTX_SIZE": "131072"}
+        slot = backends.SLOTS["llm-a"]
+        self.assertEqual(slot.absolute(slot.model_keys)[1], "CHAT_PRIMARY_MODEL_PATH")
+        self.assertIn("CHAT_PRIMARY_CTX_SIZE", slot.key_chains["CTX_SIZE"][1])
 
 
 class OneSourceTests(unittest.TestCase):

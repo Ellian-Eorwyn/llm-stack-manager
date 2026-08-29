@@ -378,7 +378,7 @@ async function loadConfig() {
 // `/api/config` reports both, with their independent on-disk values, and
 // nothing distinguished the live one from the dead one. On this host the dead
 // `CHAT_DENSE_MODEL_PATH` names a different model file than the running
-// `CHAT_PRIMARY_MODEL_PATH`, and `CHAT_DENSE_CTX_SIZE=32768` sits beside a live
+// `LLM_A_MODEL_PATH`, and `CHAT_DENSE_CTX_SIZE=32768` sits beside a live
 // 262144 — a reader of the config page had no way to tell.
 async function refreshShadowedAliasHints() {
   document.querySelectorAll('[data-shadowed-key]').forEach(hint => {
@@ -465,7 +465,7 @@ function cacheAwareValues(prefix) {
 // the selected model's geometry rather than from a constant, so it has to be
 // fetched; until it arrives the panel reports compatibility only.
 const cacheAwareRecommendations = {};
-const CACHE_AWARE_BACKENDS = { CHAT_PRIMARY: 'chat-primary', CHAT2: 'chat-secondary' };
+const CACHE_AWARE_BACKENDS = { LLM_A: 'llm-a', LLM_B: 'llm-b' };
 
 async function loadCacheAwareRecommendation(prefix) {
   const backend = CACHE_AWARE_BACKENDS[prefix];
@@ -516,8 +516,8 @@ function refreshCacheAwareScheduling(prefix) {
 }
 
 function refreshAllCacheAwareScheduling() {
-  refreshCacheAwareScheduling('CHAT_PRIMARY');
-  refreshCacheAwareScheduling('CHAT2');
+  refreshCacheAwareScheduling('LLM_A');
+  refreshCacheAwareScheduling('LLM_B');
   // Measuring the host means reading GGUF metadata off disk, so it trails the
   // form rather than blocking it.
   for (const prefix of Object.keys(CACHE_AWARE_BACKENDS)) {
@@ -528,7 +528,7 @@ function refreshAllCacheAwareScheduling() {
 }
 
 function initCacheAwareScheduling() {
-  for (const prefix of ['CHAT_PRIMARY', 'CHAT2']) {
+  for (const prefix of ['LLM_A', 'LLM_B']) {
     for (const suffix of CACHE_AWARE_SUFFIXES) {
       const input = document.getElementById(`cfg-${prefix}_${suffix}`);
       if (!input || input.dataset.cacheAwareListener === '1') continue;

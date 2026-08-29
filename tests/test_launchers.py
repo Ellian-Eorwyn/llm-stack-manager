@@ -29,8 +29,8 @@ GOLDEN = pathlib.Path(__file__).resolve().parent / "launcher-argv.golden.json"
 LOADED = pathlib.Path(__file__).resolve().parent / "launcher-loaded-model.golden.json"
 
 LAUNCHERS = {
-    "chat-backend-dense": "start-chat-backend-dense.sh",
-    "chat-backend2":      "start-chat-backend2.sh",
+    "llm-a": "start-llm-a.sh",
+    "llm-b":      "start-llm-b.sh",
     "embed":              "start-embed.sh",
     "rerank":             "start-rerank.sh",
     "task":               "start-task.sh",
@@ -149,7 +149,7 @@ class LoadedModelTests(unittest.TestCase):
 
         `start-backend.sh` passes five settings where the chat and task
         launchers pass fourteen, and reports the slot's own name where the
-        budget model expects `chat-primary`. Consolidating one into the other
+        budget model expects `llm-a`. Consolidating one into the other
         without noticing loses both, and nothing else would fail.
         """
         for slot in LAUNCHERS:
@@ -204,31 +204,31 @@ class ClearedMeansClearedTests(unittest.TestCase):
             box.write_env({key: (value.replace("@STACK@", str(box.root))
                                  if isinstance(value, str) else value)
                            for key, value in env.items()})
-            argv, said, rc = box.run("start-chat-backend-dense.sh")
+            argv, said, rc = box.run("start-llm-a.sh")
             self.assertEqual(rc, 0, said[-300:])
             return box.normalise(argv)
         finally:
             box.cleanup()
 
     def test_an_emptied_fit_ctx_is_not_inherited_from_the_legacy_key(self):
-        argv = self._argv(CHAT_FIT="on", CHAT_PRIMARY_FIT_CTX="", CHAT_FIT_CTX="8192")
+        argv = self._argv(CHAT_FIT="on", LLM_A_FIT_CTX="", CHAT_FIT_CTX="8192")
         self.assertNotIn("--fit-ctx", argv)
 
     def test_an_absent_fit_ctx_still_falls_back_to_the_legacy_key(self):
         # The control for the case above: without it, "no --fit-ctx" would also
         # pass if the flag had simply stopped being emitted at all.
-        argv = self._argv(CHAT_FIT="on", CHAT_PRIMARY_FIT_CTX=None, CHAT_FIT_CTX="8192")
+        argv = self._argv(CHAT_FIT="on", LLM_A_FIT_CTX=None, CHAT_FIT_CTX="8192")
         self.assertEqual(argv[argv.index("--fit-ctx") + 1], "8192")
 
     def test_an_emptied_mmproj_is_not_inherited_from_the_legacy_key(self):
         # The file has to exist, or the launcher would drop `--mmproj` for the
         # wrong reason and this would pass however the chain resolved.
-        argv = self._argv(touch=[self.MMPROJ], CHAT_PRIMARY_MMPROJ_PATH="",
+        argv = self._argv(touch=[self.MMPROJ], LLM_A_MMPROJ_PATH="",
                           CHAT_MMPROJ_PATH="@STACK@/" + self.MMPROJ)
         self.assertNotIn("--mmproj", argv)
 
     def test_an_absent_mmproj_still_falls_back_to_the_legacy_key(self):
-        argv = self._argv(touch=[self.MMPROJ], CHAT_PRIMARY_MMPROJ_PATH=None,
+        argv = self._argv(touch=[self.MMPROJ], LLM_A_MMPROJ_PATH=None,
                           CHAT_MMPROJ_PATH="@STACK@/" + self.MMPROJ)
         self.assertEqual(argv[argv.index("--mmproj") + 1], "@STACK@/" + self.MMPROJ)
 
@@ -236,7 +236,7 @@ class ClearedMeansClearedTests(unittest.TestCase):
         # The other half of the rule. A context size is not optional, so an
         # empty one is a mistake to absorb, not an instruction to obey --
         # `--ctx-size ""` would be refused by llama-server.
-        argv = self._argv(CHAT_PRIMARY_CTX_SIZE="", CHAT_CTX_SIZE="16384")
+        argv = self._argv(LLM_A_CTX_SIZE="", CHAT_CTX_SIZE="16384")
         self.assertEqual(argv[argv.index("--ctx-size") + 1], "16384")
 
 

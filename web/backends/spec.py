@@ -29,7 +29,7 @@ def lookup(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...],
 
     A key starting with "!" is absolute. Anything else is a *suffix*, tried
     under each of the slot's prefixes in order -- which is how the primary chat
-    slot reads `CHAT_PRIMARY_TEMP` and then `CHAT_TEMP` from one entry.
+    slot reads `LLM_A_TEMP` and then `CHAT_TEMP` from one entry.
 
     `empty_is_set` is the difference between `${X:-d}` and `${X-d}`, and it is
     not a nicety. The launchers use the first for required settings, so an
@@ -113,7 +113,7 @@ class Slot:
     alias_default: str
     port_default: str = ""
     #: Prefixes this slot still answers to, tried after `prefix`. The primary
-    #: chat slot is `CHAT_PRIMARY` and reads `CHAT_*` behind it, which is what
+    #: chat slot is `LLM_A` and reads `CHAT_*` behind it, which is what
     #: makes a config written before the rename keep working.
     legacy_prefixes: tuple[str, ...] = ()
     host_keys: tuple[str, ...] = ("!LISTEN_HOST",)
@@ -147,7 +147,7 @@ class Slot:
     #: offers none.
     custom_args_keys: tuple[str, ...] = ()
     #: What `budget.py` calls this slot. Not always the slot's own name: the
-    #: budget model knows `chat-primary` where the unit is `chat-backend-dense`.
+    #: budget model knows `llm-a` where the unit is `llm-a`.
     budget_name: str = ""
     #: The settings the memory-fit report carries, in order. A pair is
     #: (label, key suffix); an empty suffix marks one the launcher supplies,
@@ -158,9 +158,9 @@ class Slot:
     # -- how the rest of the stack refers to this slot -----------------------
     #
     # Four vocabularies name the same thing, and no single one of them will do:
-    # the unit is `chat-backend-dense`, the budget model calls it
-    # `chat-primary`, the setup wizard calls it `primary`, and its settings
-    # live under `CHAT_PRIMARY_`. Each of those was written out independently
+    # the unit is `llm-a`, the budget model calls it
+    # `llm-a`, the setup wizard calls it `primary`, and its settings
+    # live under `LLM_A_`. Each of those was written out independently
     # in a different module, which is why renaming a slot used to mean editing
     # twelve files.
 

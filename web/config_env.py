@@ -76,23 +76,23 @@ def normalize_env_keys(env: dict) -> dict:
             # what the slot is. Rewritten on read so an old env file renders
             # the slot's name rather than a preset's.
             if legacy_key == "CHAT_DENSE_LABEL" and value.strip() == "Backend Dense":
-                value = "Primary Backend"
+                value = "LLM A"
             elif legacy_key == "CHAT_MOE_LABEL" and value.strip() == "Backend MoE":
-                value = "Secondary Backend"
+                value = "LLM B"
             normalized[new_key] = value
     backend_defaults = {
-        "CHAT_PRIMARY_LABEL": "Primary Backend",
-        "CHAT_PRIMARY_MODEL_NAME": "chat-dense",
-        "CHAT_PRIMARY_MODEL_PATH": normalized.get("CHAT_MODEL_PATH", ""),
-        "CHAT_PRIMARY_MMPROJ_PATH": normalized.get("CHAT_MMPROJ_PATH", ""),
-        "CHAT_PRIMARY_CTX_SIZE": normalized.get("CHAT_CTX_SIZE", "32768"),
+        "LLM_A_LABEL": "LLM A",
+        "LLM_A_MODEL_NAME": "chat-dense",
+        "LLM_A_MODEL_PATH": normalized.get("CHAT_MODEL_PATH", ""),
+        "LLM_A_MMPROJ_PATH": normalized.get("CHAT_MMPROJ_PATH", ""),
+        "LLM_A_CTX_SIZE": normalized.get("CHAT_CTX_SIZE", "32768"),
     }
     for key, value in backend_defaults.items():
         normalized.setdefault(key, value)
     for field in CONFIG_FIELDS:
         key = field.get("key", "")
-        if key.startswith("CHAT_PRIMARY_") and key not in normalized:
-            legacy_key = "CHAT_" + key[len("CHAT_PRIMARY_"):]
+        if key.startswith("LLM_A_") and key not in normalized:
+            legacy_key = "CHAT_" + key[len("LLM_A_"):]
             if legacy_key in normalized:
                 normalized[key] = normalized[legacy_key]
     normalized.setdefault("CHAT_MODEL_NAME", "chat-custom")
@@ -109,15 +109,15 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CHAT_SWA_FULL", "off")
     normalized.setdefault("CHAT_FIT_TARGET", "")
     normalized.setdefault("CHAT_FIT_CTX", "4096")
-    normalized.setdefault("CHAT2_CACHE_RAM", "8192")
-    normalized.setdefault("CHAT2_CTX_CHECKPOINTS", "8")
-    normalized.setdefault("CHAT2_CACHE_IDLE_SLOTS", "on")
-    normalized.setdefault("CHAT2_CACHE_REUSE", "256")
-    normalized.setdefault("CHAT2_SWA_FULL", "off")
-    normalized.setdefault("CHAT2_LABEL", "Secondary Backend")
-    normalized.setdefault("CHAT2_FIT_TARGET", "")
-    normalized.setdefault("CHAT2_FIT_CTX", "4096")
-    normalized.setdefault("CHAT2_CUSTOM_ARGS_JSON", "[]")
+    normalized.setdefault("LLM_B_CACHE_RAM", "8192")
+    normalized.setdefault("LLM_B_CTX_CHECKPOINTS", "8")
+    normalized.setdefault("LLM_B_CACHE_IDLE_SLOTS", "on")
+    normalized.setdefault("LLM_B_CACHE_REUSE", "256")
+    normalized.setdefault("LLM_B_SWA_FULL", "off")
+    normalized.setdefault("LLM_B_LABEL", "LLM B")
+    normalized.setdefault("LLM_B_FIT_TARGET", "")
+    normalized.setdefault("LLM_B_FIT_CTX", "4096")
+    normalized.setdefault("LLM_B_CUSTOM_ARGS_JSON", "[]")
     normalized.setdefault("CHAT_SPEC_METHOD", "off")
     normalized.setdefault("CHAT_SPEC_NGRAM_MOD", "off")
     normalized.setdefault("CHAT_SPEC_DRAFT_MODEL_PATH", "")
@@ -135,23 +135,23 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CHAT_SPEC_NGRAM_SIZE_N", "12")
     normalized.setdefault("CHAT_SPEC_NGRAM_SIZE_M", "48")
     normalized.setdefault("CHAT_SPEC_NGRAM_MIN_HITS", "1")
-    normalized.setdefault("CHAT2_SPEC_METHOD", "off")
-    normalized.setdefault("CHAT2_SPEC_NGRAM_MOD", "off")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_MODEL_PATH", "")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_N_GPU_LAYERS", "auto")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_DEVICES", "")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_TYPE_K", "f16")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_TYPE_V", "f16")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_N_MAX", "6")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_N_MIN", "0")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_P_MIN", "0.75")
-    normalized.setdefault("CHAT2_SPEC_DRAFT_P_SPLIT", "0.10")
-    normalized.setdefault("CHAT2_SPEC_NGRAM_MOD_N_MATCH", "24")
-    normalized.setdefault("CHAT2_SPEC_NGRAM_MOD_N_MIN", "48")
-    normalized.setdefault("CHAT2_SPEC_NGRAM_MOD_N_MAX", "64")
-    normalized.setdefault("CHAT2_SPEC_NGRAM_SIZE_N", "12")
-    normalized.setdefault("CHAT2_SPEC_NGRAM_SIZE_M", "48")
-    normalized.setdefault("CHAT2_SPEC_NGRAM_MIN_HITS", "1")
+    normalized.setdefault("LLM_B_SPEC_METHOD", "off")
+    normalized.setdefault("LLM_B_SPEC_NGRAM_MOD", "off")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_MODEL_PATH", "")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_N_GPU_LAYERS", "auto")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_DEVICES", "")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_TYPE_K", "f16")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_TYPE_V", "f16")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_N_MAX", "6")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_N_MIN", "0")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_P_MIN", "0.75")
+    normalized.setdefault("LLM_B_SPEC_DRAFT_P_SPLIT", "0.10")
+    normalized.setdefault("LLM_B_SPEC_NGRAM_MOD_N_MATCH", "24")
+    normalized.setdefault("LLM_B_SPEC_NGRAM_MOD_N_MIN", "48")
+    normalized.setdefault("LLM_B_SPEC_NGRAM_MOD_N_MAX", "64")
+    normalized.setdefault("LLM_B_SPEC_NGRAM_SIZE_N", "12")
+    normalized.setdefault("LLM_B_SPEC_NGRAM_SIZE_M", "48")
+    normalized.setdefault("LLM_B_SPEC_NGRAM_MIN_HITS", "1")
     normalized.setdefault("THINK_MODEL_NAME", "think")
     normalized.setdefault("NOTHINK_MODEL_NAME", "chat")
     normalized.setdefault("CODE_MODEL_NAME", "code")

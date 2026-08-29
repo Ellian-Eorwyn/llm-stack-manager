@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
 from backends import speculative  # noqa: E402
 from config_fields import LLAMA_SPEC_METHOD_OPTIONS  # noqa: E402
 
-PREFIXES = ("CHAT_PRIMARY", "CHAT")
+PREFIXES = ("LLM_A", "CHAT")
 DRAFT = "models/draft.gguf"
 
 
@@ -72,11 +72,11 @@ class ShellEquivalenceTests(unittest.TestCase):
         try:
             (box.root / DRAFT).touch()
             box.write_env({
-                "CHAT_PRIMARY_SPEC_METHOD": method,
-                "CHAT_PRIMARY_SPEC_DRAFT_MODEL_PATH": str(box.root / DRAFT),
+                "LLM_A_SPEC_METHOD": method,
+                "LLM_A_SPEC_DRAFT_MODEL_PATH": str(box.root / DRAFT),
                 **extra,
             })
-            argv, said, rc = box.run("start-chat-backend-dense.sh")
+            argv, said, rc = box.run("start-llm-a.sh")
             self.assertEqual(rc, 0, f"{method}: launcher exited {rc}: {said[-400:]}")
             from_shell = box.normalise(spec_tail(argv))
             args, _said = speculative.build(env_of(box.env_file), PREFIXES)
@@ -99,24 +99,24 @@ class ShellEquivalenceTests(unittest.TestCase):
         # Every group at a non-default value at once, so a flag reading the
         # wrong key cannot hide behind a default that happens to match.
         self._compare("ngram-mod",
-                      CHAT_PRIMARY_SPEC_DRAFT_N_MAX="9",
-                      CHAT_PRIMARY_SPEC_DRAFT_N_MIN="2",
-                      CHAT_PRIMARY_SPEC_DRAFT_P_MIN="0.5",
-                      CHAT_PRIMARY_SPEC_DRAFT_P_SPLIT="0.25",
-                      CHAT_PRIMARY_SPEC_DRAFT_TYPE_K="q8_0",
-                      CHAT_PRIMARY_SPEC_DRAFT_TYPE_V="q8_0",
-                      CHAT_PRIMARY_SPEC_NGRAM_MOD_N_MATCH="7",
-                      CHAT_PRIMARY_SPEC_NGRAM_MOD_N_MIN="8",
-                      CHAT_PRIMARY_SPEC_NGRAM_MOD_N_MAX="9")
+                      LLM_A_SPEC_DRAFT_N_MAX="9",
+                      LLM_A_SPEC_DRAFT_N_MIN="2",
+                      LLM_A_SPEC_DRAFT_P_MIN="0.5",
+                      LLM_A_SPEC_DRAFT_P_SPLIT="0.25",
+                      LLM_A_SPEC_DRAFT_TYPE_K="q8_0",
+                      LLM_A_SPEC_DRAFT_TYPE_V="q8_0",
+                      LLM_A_SPEC_NGRAM_MOD_N_MATCH="7",
+                      LLM_A_SPEC_NGRAM_MOD_N_MIN="8",
+                      LLM_A_SPEC_NGRAM_MOD_N_MAX="9")
 
     def test_the_legacy_prefix_is_read_behind_the_slots_own(self):
-        # The launcher resolves ${CHAT_PRIMARY_X:-${CHAT_X:-default}}; the
+        # The launcher resolves ${LLM_A_X:-${CHAT_X:-default}}; the
         # module walks the same two prefixes.
-        self._compare("ngram-simple", CHAT_PRIMARY_SPEC_NGRAM_SIZE_N=None,
+        self._compare("ngram-simple", LLM_A_SPEC_NGRAM_SIZE_N=None,
                       CHAT_SPEC_NGRAM_SIZE_N="31")
 
     def test_a_draft_device_is_appended_only_when_set(self):
-        self._compare("draft-model", CHAT_PRIMARY_SPEC_DRAFT_DEVICES="CUDA1")
+        self._compare("draft-model", LLM_A_SPEC_DRAFT_DEVICES="CUDA1")
         self._compare("draft-model")
 
 
@@ -132,14 +132,14 @@ class DraftModelRefusalTests(unittest.TestCase):
         box = LauncherSandbox()
         try:
             box.write_env(env)
-            _argv, said, rc = box.run("start-chat-backend-dense.sh")
+            _argv, said, rc = box.run("start-llm-a.sh")
             return rc, said, env_of(box.env_file)
         finally:
             box.cleanup()
 
     def test_an_empty_draft_path_is_refused_by_both(self):
-        rc, said, env = self._shell(CHAT_PRIMARY_SPEC_METHOD="draft-model",
-                                    CHAT_PRIMARY_SPEC_DRAFT_MODEL_PATH="")
+        rc, said, env = self._shell(LLM_A_SPEC_METHOD="draft-model",
+                                    LLM_A_SPEC_DRAFT_MODEL_PATH="")
         self.assertEqual(rc, 1)
         self.assertIn("is empty", said)
         with self.assertRaises(SystemExit) as raised:
@@ -147,8 +147,8 @@ class DraftModelRefusalTests(unittest.TestCase):
         self.assertIn("is empty", str(raised.exception))
 
     def test_a_missing_draft_file_is_refused_by_both(self):
-        rc, said, env = self._shell(CHAT_PRIMARY_SPEC_METHOD="draft-model",
-                                    CHAT_PRIMARY_SPEC_DRAFT_MODEL_PATH="/nope/draft.gguf")
+        rc, said, env = self._shell(LLM_A_SPEC_METHOD="draft-model",
+                                    LLM_A_SPEC_DRAFT_MODEL_PATH="/nope/draft.gguf")
         self.assertEqual(rc, 1)
         self.assertIn("not found", said)
         with self.assertRaises(SystemExit) as raised:
@@ -158,8 +158,8 @@ class DraftModelRefusalTests(unittest.TestCase):
     def test_draft_mtp_needs_no_draft_model(self):
         # A GGUF carrying its own blk.N.nextn.* head runs MTP with no sidecar;
         # requiring a path would refuse exactly that configuration.
-        rc, _said, env = self._shell(CHAT_PRIMARY_SPEC_METHOD="draft-mtp",
-                                     CHAT_PRIMARY_SPEC_DRAFT_MODEL_PATH="")
+        rc, _said, env = self._shell(LLM_A_SPEC_METHOD="draft-mtp",
+                                     LLM_A_SPEC_DRAFT_MODEL_PATH="")
         self.assertEqual(rc, 0)
         args, _ = speculative.build(env, PREFIXES)
         self.assertIn("--spec-type", args)
@@ -168,8 +168,8 @@ class DraftModelRefusalTests(unittest.TestCase):
     def test_the_three_that_do_need_one_say_so(self):
         for method in speculative.NEEDS_DRAFT_MODEL:
             with self.subTest(method):
-                rc, said, env = self._shell(CHAT_PRIMARY_SPEC_METHOD=method,
-                                            CHAT_PRIMARY_SPEC_DRAFT_MODEL_PATH="")
+                rc, said, env = self._shell(LLM_A_SPEC_METHOD=method,
+                                            LLM_A_SPEC_DRAFT_MODEL_PATH="")
                 self.assertEqual(rc, 1, said[-300:])
                 with self.assertRaises(SystemExit):
                     speculative.build(env, PREFIXES)

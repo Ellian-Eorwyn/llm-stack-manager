@@ -68,7 +68,7 @@ LEASE_STALE_MS = 15_000
 # writer is gone is safe to remove.
 LEASE_ORPHAN_SECONDS = 600
 
-DEFAULT_PREFIX = "CHAT_PRIMARY"
+DEFAULT_PREFIX = "LLM_A"
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ def contract_check(env: dict, prefix: str = DEFAULT_PREFIX) -> dict:
 # ---------------------------------------------------------------------------
 
 # Long and short spellings of the flags the contract cares about, as llama.cpp
-# accepts them and as scripts/start-chat-backend-dense.sh emits them.
+# accepts them and as scripts/start-llm-a.sh emits them.
 _VALUE_FLAGS = {
     "--ctx-size": "CTX_SIZE", "-c": "CTX_SIZE",
     "--parallel": "N_PARALLEL", "-np": "N_PARALLEL",

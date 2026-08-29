@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Speculative decoding arguments, for any slot that offers them.
 
-Three launchers carried this: `start-chat-backend-dense.sh`,
-`start-chat-backend2.sh` and `start-task.sh`, ninety-three lines each and the
+Three launchers carried this: `start-llm-a.sh`,
+`start-llm-b.sh` and `start-task.sh`, ninety-three lines each and the
 same ninety-three lines with the prefix swapped. Five pre-built arrays, a
 branch on the method, and four membership tests -- copied twice, so a fix to
 one was a fix to a third of the deployments.

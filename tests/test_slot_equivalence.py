@@ -30,20 +30,20 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
 import backends  # noqa: E402
 
 LAUNCHERS = {
-    "chat-backend-dense": "start-chat-backend-dense.sh",
-    "chat-backend2":      "start-chat-backend2.sh",
+    "llm-a": "start-llm-a.sh",
+    "llm-b":      "start-llm-b.sh",
     "task":               "start-task.sh",
     "embed":              "start-embed.sh",
     "rerank":             "start-rerank.sh",
     "ocr":                "start-ocr.sh",
 }
 
-LARGE = ("chat-backend-dense", "chat-backend2", "task")
+LARGE = ("llm-a", "llm-b", "task")
 
 #: Which prefix each large slot's operator-facing keys live under. The cases
 #: below are written once and applied to each, which is the point: these three
 #: launchers were the same script three times.
-PREFIX = {"chat-backend-dense": "CHAT_PRIMARY", "chat-backend2": "CHAT2", "task": "TASK"}
+PREFIX = {"llm-a": "LLM_A", "llm-b": "LLM_B", "task": "TASK"}
 
 TEMPLATE = "config/chat-templates/demo.jinja"
 
@@ -147,37 +147,37 @@ class SlotEquivalenceTests(unittest.TestCase):
         self._compare("task", env={"TASK_THINKING": "on", "TASK_REASONING_EFFORT": "xhigh"})
 
     def test_preserve_thinking_off_on_the_chat_slots(self):
-        for slot in ("chat-backend-dense", "chat-backend2"):
+        for slot in ("llm-a", "llm-b"):
             with self.subTest(slot):
                 self._compare(slot, env={f"{PREFIX[slot]}_PRESERVE_THINKING": "off"})
 
     def test_a_chat_template_id_that_resolves(self):
-        self._compare("chat-backend-dense", env={"CHAT_PRIMARY_TEMPLATE_ID": "demo"},
+        self._compare("llm-a", env={"LLM_A_TEMPLATE_ID": "demo"},
                       touch=[TEMPLATE])
-        self._compare("chat-backend2", env={"CHAT2_TEMPLATE_ID": "demo"}, touch=[TEMPLATE])
+        self._compare("llm-b", env={"LLM_B_TEMPLATE_ID": "demo"}, touch=[TEMPLATE])
         self._compare("task", env={"TASK_CHAT_TEMPLATE_ID": "demo"}, touch=[TEMPLATE])
 
     def test_a_chat_template_id_that_names_no_file_is_refused_by_both(self):
-        self._compare("chat-backend-dense", env={"CHAT_PRIMARY_TEMPLATE_ID": "missing"},
+        self._compare("llm-a", env={"LLM_A_TEMPLATE_ID": "missing"},
                       expect_rc=1)
 
     def test_a_chat_template_id_that_could_escape_the_directory_is_refused(self):
-        self._compare("chat-backend-dense", env={"CHAT_PRIMARY_TEMPLATE_ID": "../../etc/passwd"},
+        self._compare("llm-a", env={"LLM_A_TEMPLATE_ID": "../../etc/passwd"},
                       expect_rc=1)
 
     # -- the operator's own arguments --------------------------------------
 
     def test_the_launcher_steps_aside_for_a_custom_jinja(self):
-        self._compare("chat-backend2", env={"CHAT2_JINJA": "on",
-                                            "CHAT2_CUSTOM_ARGS_JSON": QUOTED('["--jinja"]')})
+        self._compare("llm-b", env={"LLM_B_JINJA": "on",
+                                            "LLM_B_CUSTOM_ARGS_JSON": QUOTED('["--jinja"]')})
 
     def test_the_launcher_steps_aside_for_custom_template_kwargs(self):
-        self._compare("chat-backend2", env={
-            "CHAT2_CUSTOM_ARGS_JSON": QUOTED('["--chat-template-kwargs {\\"a\\": 1}"]')})
+        self._compare("llm-b", env={
+            "LLM_B_CUSTOM_ARGS_JSON": QUOTED('["--chat-template-kwargs {\\"a\\": 1}"]')})
 
     def test_the_launcher_steps_aside_for_a_custom_chat_template(self):
-        self._compare("chat-backend2", env={"CHAT2_TEMPLATE_ID": "demo",
-                                            "CHAT2_CUSTOM_ARGS_JSON": QUOTED('["--chat-template-file /x"]')})
+        self._compare("llm-b", env={"LLM_B_TEMPLATE_ID": "demo",
+                                            "LLM_B_CUSTOM_ARGS_JSON": QUOTED('["--chat-template-file /x"]')})
 
     def test_custom_arguments_come_last(self):
         self._compare("task", env={"TASK_CUSTOM_ARGS_JSON": QUOTED('["--verbose", "--seed 7"]')})
@@ -186,7 +186,7 @@ class SlotEquivalenceTests(unittest.TestCase):
         """Worth pinning, because it only works by a side effect.
 
         The launcher resolves
-        `${CHAT_PRIMARY_CUSTOM_ARGS_JSON:-${CHAT_CUSTOM_ARGS_JSON:-[]}}` into a
+        `${LLM_A_CUSTOM_ARGS_JSON:-${CHAT_CUSTOM_ARGS_JSON:-[]}}` into a
         shell variable and then reads `os.environ["CHAT_CUSTOM_ARGS_JSON"]`
         from a Python heredoc -- the unresolved name. It gets the resolved
         value anyway, because `EnvironmentFile=` put that name in the
@@ -197,11 +197,11 @@ class SlotEquivalenceTests(unittest.TestCase):
         The registry resolves the chain directly, so it does not depend on
         that.
         """
-        self._compare("chat-backend-dense",
-                      env={"CHAT_PRIMARY_CUSTOM_ARGS_JSON": QUOTED('["--verbose"]')})
+        self._compare("llm-a",
+                      env={"LLM_A_CUSTOM_ARGS_JSON": QUOTED('["--verbose"]')})
 
     def test_the_shared_custom_arguments_still_reach_the_primary_slot(self):
-        self._compare("chat-backend-dense", env={"CHAT_PRIMARY_CUSTOM_ARGS_JSON": None,
+        self._compare("llm-a", env={"LLM_A_CUSTOM_ARGS_JSON": None,
                                                  "CHAT_CUSTOM_ARGS_JSON": QUOTED('["--verbose"]')})
 
     # -- identity ----------------------------------------------------------
@@ -209,14 +209,14 @@ class SlotEquivalenceTests(unittest.TestCase):
     def test_the_legacy_prefix_is_read_behind_the_primary_one(self):
         # A config written before the rename sets the bare CHAT_* names, and
         # the primary slot has to keep starting from it.
-        self._compare("chat-backend-dense", env={
-            "CHAT_PRIMARY_CTX_SIZE": None, "CHAT_PRIMARY_TEMP": None,
+        self._compare("llm-a", env={
+            "LLM_A_CTX_SIZE": None, "LLM_A_TEMP": None,
             "CHAT_CTX_SIZE": "16384", "CHAT_TEMP": "0.3"})
 
     def test_the_dense_spelling_is_read_behind_both(self):
         # Only these five keys were ever spelled CHAT_DENSE_*.
-        self._compare("chat-backend-dense", env={
-            "CHAT_PRIMARY_CTX_SIZE": None, "CHAT_PRIMARY_MODEL_NAME": None,
+        self._compare("llm-a", env={
+            "LLM_A_CTX_SIZE": None, "LLM_A_MODEL_NAME": None,
             "CHAT_DENSE_CTX_SIZE": "24576", "CHAT_DENSE_MODEL_NAME": "old-name"})
 
     def test_an_mmproj_that_exists(self):
@@ -224,15 +224,15 @@ class SlotEquivalenceTests(unittest.TestCase):
                              touch=["models/mm.gguf"])
 
     def test_a_cleared_mmproj_is_not_inherited(self):
-        self._compare("chat-backend-dense",
-                      env={"CHAT_PRIMARY_MMPROJ_PATH": "",
+        self._compare("llm-a",
+                      env={"LLM_A_MMPROJ_PATH": "",
                            "CHAT_MMPROJ_PATH": "@STACK@/models/mm.gguf"},
                       touch=["models/mm.gguf"])
 
     def test_a_port_and_host_that_are_not_the_defaults(self):
-        self._compare("chat-backend-dense", env={"CHAT_BACKEND_PORT": "9010",
+        self._compare("llm-a", env={"CHAT_BACKEND_PORT": "9010",
                                                  "CHAT_BACKEND_HOST": "10.0.0.1"})
-        self._compare("chat-backend2", env={"CHAT2_BACKEND_PORT": "9020"})
+        self._compare("llm-b", env={"CHAT2_BACKEND_PORT": "9020"})
 
 
 if __name__ == "__main__":

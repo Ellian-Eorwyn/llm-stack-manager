@@ -375,8 +375,8 @@ UNIT
         done
     }
     if [[ -n "${LLM_STACK_SETUP_COMPONENTS:-}" ]]; then
-        remove_unselected_units primary chat-backend-dense chat-proxy
-        remove_unselected_units secondary chat-backend2 chat-proxy2
+        remove_unselected_units llm-a llm-a chat-proxy
+        remove_unselected_units llm-b llm-b chat-proxy2
         remove_unselected_units embedding embed
         remove_unselected_units reranker rerank
         remove_unselected_units task task
@@ -395,18 +395,24 @@ UNIT
     # units ran a local memory service this stack no longer ships -- and they
     # were `enabled`, so systemd would start them at boot against launchers that
     # are now deleted.
+    #
+    # chat-backend-dense and chat-backend2 are the two chat slots under their old
+    # names. Their launchers were renamed with them, so the old unit files point
+    # at scripts that no longer exist -- which is why they must be removed on the
+    # same run that installs llm-a and llm-b, not left for a later one.
     for unit in think nothink embed2 chat-backend chat-backend-moe \
-             honcho-api honcho-deriver; do
+             honcho-api honcho-deriver \
+             chat-backend-dense chat-backend2; do
         systemctl disable --now "${unit}" 2>/dev/null || true
         [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
     done
 
-    if setup_has_component primary; then
-        install_unit "chat-backend-dense" "LLM Chat Primary Shared Backend - llama-server" "start-chat-backend-dense.sh" 300
+    if setup_has_component llm-a; then
+        install_unit "llm-a" "LLM A - llama-server"                   "start-llm-a.sh" 300
         install_unit "chat-proxy" "LLM Chat Proxy - think/chat/code ports" "start-chat-proxy.sh" 30
     fi
-    if setup_has_component secondary; then
-        install_unit "chat-backend2" "LLM Chat Secondary Shared Backend - llama-server" "start-chat-backend2.sh" 300
+    if setup_has_component llm-b; then
+        install_unit "llm-b" "LLM B - llama-server"                   "start-llm-b.sh" 300
         install_unit "chat-proxy2" "LLM Chat Proxy 2 - think/chat/code ports" "start-chat-proxy2.sh" 30
     fi
     setup_has_component embedding && install_unit "embed" "LLM Embedding Model - ${EMBED_ENGINE}" "${EMBED_SCRIPT}" 120
@@ -456,8 +462,8 @@ UNIT
         echo "  installed: playwright-server.service"
     fi
 
-    [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend-dense.service|" /etc/systemd/system/chat-proxy.service
-    [[ -f /etc/systemd/system/chat-proxy2.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
+    [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target llm-a.service|" /etc/systemd/system/chat-proxy.service
+    [[ -f /etc/systemd/system/chat-proxy2.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target llm-b.service|" /etc/systemd/system/chat-proxy2.service
     # In router mode the OCR model is not a unit any more, so the SDK's upstream
     # is the router. Keeping Wants=ocr.service here is what pulled the OCR model
     # onto a full GPU and bounced it 32 times — see docs/service-health.md.
@@ -494,7 +500,7 @@ UNIT
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(playwright-server)
     fi
-    NON_DEFAULT_SERVICES=(chat-backend-dense chat-backend2 chat-proxy chat-proxy2 embed rerank task ocr glmocr-sdk)
+    NON_DEFAULT_SERVICES=(llm-a llm-b chat-proxy chat-proxy2 embed rerank task ocr glmocr-sdk)
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
         # The router has to be up at boot: it is what the per-model ports point
         # at, and it is the only thing that can bring those models back.
@@ -563,12 +569,12 @@ elif is_mac; then
     echo "Installing launchd services..."
 
     install_mac_service "llm-manager"        "LLM Stack Manager - web UI"                          "start-llm-manager.sh"
-    install_mac_service "chat-backend-dense" "LLM Primary Backend - llama-server"                  "start-chat-backend-dense.sh"
+    install_mac_service "llm-a" "LLM A - llama-server"                      "start-llm-a.sh"
     install_mac_service "chat-proxy"         "LLM Chat Proxy - think/chat/code ports"              "start-chat-proxy.sh" \
-        "chat-backend-dense"
-    install_mac_service "chat-backend2"      "LLM Chat Custom Shared Backend 2 - llama-server"     "start-chat-backend2.sh"
+        "llm-a"
+    install_mac_service "llm-b"      "LLM B - llama-server"                               "start-llm-b.sh"
     install_mac_service "chat-proxy2"        "LLM Chat Proxy 2 - think/chat/code ports"            "start-chat-proxy2.sh" \
-        "chat-backend2"
+        "llm-b"
     install_mac_service "embed"              "LLM Embedding Model - ${EMBED_ENGINE}"               "${EMBED_SCRIPT}"
     install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
     install_mac_service "task"               "LLM Task Model - llama-server"                       "start-task.sh"
@@ -608,7 +614,7 @@ elif is_mac; then
     chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${STACK_DIR}/scripts/launchd-wrapper-"*.sh 2>/dev/null || true
 
     # Enable default services, disable non-default
-    DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
+    DEFAULT_BOOT_SERVICES=(llm-manager llm-a chat-proxy embed rerank task)
     NON_DEFAULT_SERVICES=(ocr glmocr-sdk)
     for svc in "${NON_DEFAULT_SERVICES[@]}"; do
         svc_disable "${svc}" 2>/dev/null || true

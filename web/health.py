@@ -156,8 +156,8 @@ SERVICE_PROBES = _llama_probes() | {
 # generated config. `tests/test_health.py` asserts it stays consistent with the
 # component-level map so the two cannot drift apart.
 SERVICE_DEPENDENCIES = {
-    "chat-proxy": [["chat-backend-dense"]],
-    "chat-proxy2": [["chat-backend2"]],
+    "chat-proxy": [["llm-a"]],
+    "chat-proxy2": [["llm-b"]],
     "glmocr-sdk": [["ocr"]],
 }
 
@@ -320,13 +320,38 @@ def probe(name: str, env: dict, timeout: float = PROBE_TIMEOUT_SECONDS) -> dict 
 # expected state
 # ---------------------------------------------------------------------------
 
+#: Units renamed when the two chat slots became peers. Read generously, written
+#: strictly: an expectation recorded under the old name still applies, and
+#: `record_expectation` only ever writes the new one, so the old spellings drain
+#: out as services are started and stopped.
+#:
+#: This file is keyed by unit name, and the entry that matters most on the
+#: production host is `chat-backend2: off` -- a second 27B that does not fit
+#: beside the first. Losing that to a rename would let the boot path start it.
+LEGACY_UNIT_NAMES = {
+    "chat-backend-dense": "llm-a",
+    "chat-backend2": "llm-b",
+}
+
+
 def read_expectations(path: Path | None = None) -> dict:
     path = path or EXPECTATIONS_FILE
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for name, entry in data.items():
+        canonical = LEGACY_UNIT_NAMES.get(name, name)
+        # A recorded new name wins over a legacy one for the same unit: it is
+        # the more recent statement, and both can be present while the file
+        # still carries residue.
+        if canonical in out and name != canonical:
+            continue
+        out[canonical] = entry
+    return out
 
 
 def record_expectation(name: str, expected: str, source: str = "operator",

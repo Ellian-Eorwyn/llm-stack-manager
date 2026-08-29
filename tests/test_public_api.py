@@ -45,7 +45,7 @@ GPUS = [
         # The router runs one child per resident model, all under its own unit,
         # each naming its own --model. Two of these are that.
         "processes": [
-            {"pid": 1001, "name": "chat-backend-dense", "process_name": "llama-server",
+            {"pid": 1001, "name": "llm-a", "process_name": "llama-server",
              "used_memory": 26000, "model": "/models/glm-4.6-Q4_K_M.gguf", "alias": "chat-dense"},
             {"pid": 1002, "name": "llama-router", "process_name": "llama-server",
              "used_memory": 2500, "model": "/models/nomic-embed.gguf", "alias": "embed"},
@@ -86,9 +86,9 @@ SLOTS = [
 
 ENV = {
     "CHAT_BACKEND_PORT": "8010", "CHAT_BACKEND_HOST": "127.0.0.1",
-    "CHAT_PRIMARY_MODEL_PATH": "/models/glm-4.6-Q4_K_M.gguf",
-    "CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2",
-    "CHAT_PRIMARY_FLASH_ATTN": "on", "CHAT_PRIMARY_CACHE_TYPE_K": "q8_0",
+    "LLM_A_MODEL_PATH": "/models/glm-4.6-Q4_K_M.gguf",
+    "LLM_A_CTX_SIZE": "262144", "LLM_A_N_PARALLEL": "2",
+    "LLM_A_FLASH_ATTN": "on", "LLM_A_CACHE_TYPE_K": "q8_0",
     "MODEL_ROUTER_ENABLED": "on", "MODEL_ROUTER_MAX": "1",
     "LLM_API_HOST": "127.0.0.1", "LLM_API_PORT": "8078", "LLM_API_TOKEN": "",
     "LLM_API_ENABLED": "on", "LLM_API_STREAM_INTERVAL": "2",
@@ -107,7 +107,7 @@ HOST_MEM = {
 }
 
 SERVICE_HEALTH = {
-    "chat-backend-dense": {"state": "active", "unit": "active", "expected": "on", "reason": "",
+    "llm-a": {"state": "active", "unit": "active", "expected": "on", "reason": "",
                            "probe": {"ok": True, "checked_at": 1.0}, "upstreams": [], "restarts": 0,
                            "checked_at": 1.0},
     "embed": {"state": "degraded", "unit": "active", "expected": "on",
@@ -132,15 +132,15 @@ def build_providers(**overrides) -> public_api.Providers:
     """A Providers bundle that needs no systemd, no GPU and no backend."""
     defaults = dict(
         read_env=lambda: dict(ENV),
-        service_status=lambda name: "active" if name in {"chat-backend-dense", "llama-router"} else "inactive",
+        service_status=lambda name: "active" if name in {"llm-a", "llama-router"} else "inactive",
         service_health=lambda env: ({}, dict(SERVICE_HEALTH)),
         gpu_info=lambda: [dict(g) for g in GPUS],
         context_summary=lambda env: {
-            "chat-backend-dense": {"total_context": 262144, "slots": 2, "per_slot_context": 131072}},
+            "llm-a": {"total_context": 262144, "slots": 2, "per_slot_context": 131072}},
         deployment=lambda: {"summary": "up to date", "behind": 0, "dirty": False},
         router_overview=lambda env: dict(ROUTER),
         services_table=lambda env: [
-            {"name": "chat-backend-dense", "label": "Primary Backend", "group": "chat", "desc": "Primary model backend"},
+            {"name": "llm-a", "label": "LLM A", "group": "chat", "desc": "Primary model backend"},
             {"name": "embed", "label": "Embedding", "group": "auxiliary", "desc": "Embedding model"},
             {"name": "llama-router", "label": "Model Router", "group": "auxiliary", "desc": "Loads on demand"},
             {"name": "chat-proxy", "label": "Primary Proxy", "group": "chat", "desc": "Routes think/chat/code"},
@@ -216,9 +216,9 @@ class ContextRollupTests(unittest.TestCase):
 
 class VramAttributionTests(unittest.TestCase):
     def test_a_backend_model_is_attributed_to_the_unit_serving_it(self):
-        backends = [{"name": "chat-primary", "unit": "chat-backend-dense", "props": dict(PROPS)}]
+        backends = [{"name": "llm-a", "unit": "llm-a", "props": dict(PROPS)}]
         blocks = public_api.gpu_model_blocks(GPUS[0], backends, ROUTER)
-        block = next(b for b in blocks if b["unit"] == "chat-backend-dense")
+        block = next(b for b in blocks if b["unit"] == "llm-a")
         self.assertEqual(block["vram_mib"], 26000)
         self.assertEqual(block["model"], "/models/glm-4.6-Q4_K_M.gguf")
         self.assertEqual(block["attribution"], "exclusive")
@@ -293,8 +293,8 @@ class GpuProcessLabellingTests(unittest.TestCase):
 
     def test_a_known_unit_wins_over_any_guess(self):
         with patch.object(manager, "process_unit", return_value=""):
-            self.assertEqual(manager.label_gpu_process(7, "llama-server", {7: "chat-backend-dense"}),
-                             "chat-backend-dense")
+            self.assertEqual(manager.label_gpu_process(7, "llama-server", {7: "llm-a"}),
+                             "llm-a")
 
     def test_a_router_child_is_attributed_by_its_cgroup_not_its_parent_pid(self):
         # The router forks a llama-server per resident model. None of them is the
@@ -343,7 +343,7 @@ class ProcessModelArgsTests(unittest.TestCase):
 
 class ConfigDriftTests(unittest.TestCase):
     def test_a_context_change_that_has_not_been_restarted_into_is_reported(self):
-        backend = {"unit": "chat-backend-dense", "props": dict(PROPS)}
+        backend = {"unit": "llm-a", "props": dict(PROPS)}
         drift = public_api.backend_drift(
             backend, dict(ENV), {"per_slot_context": 65536, "total_context": 131072})
         self.assertEqual(len(drift), 1)
@@ -352,23 +352,23 @@ class ConfigDriftTests(unittest.TestCase):
         self.assertEqual(drift[0]["configured"], 65536)
 
     def test_a_swapped_model_is_reported(self):
-        env = dict(ENV, CHAT_PRIMARY_MODEL_PATH="/models/qwen3-next-Q5.gguf")
+        env = dict(ENV, LLM_A_MODEL_PATH="/models/qwen3-next-Q5.gguf")
         drift = public_api.backend_drift(
-            {"unit": "chat-backend-dense", "props": dict(PROPS)}, env,
+            {"unit": "llm-a", "props": dict(PROPS)}, env,
             {"per_slot_context": 131072})
         self.assertEqual([d["field"] for d in drift], ["model_path"])
 
     def test_matching_config_reports_nothing(self):
         drift = public_api.backend_drift(
-            {"unit": "chat-backend-dense", "props": dict(PROPS)}, dict(ENV),
+            {"unit": "llm-a", "props": dict(PROPS)}, dict(ENV),
             {"per_slot_context": 131072})
         self.assertEqual(drift, [])
 
     def test_the_launcher_fallback_chain_is_honoured(self):
-        # start-chat-backend-dense.sh falls back through three keys; reading only
+        # start-llm-a.sh falls back through three keys; reading only
         # the first would report drift against a backend doing as it was told.
         env = {"CHAT_MODEL_PATH": "/models/glm-4.6-Q4_K_M.gguf"}
-        self.assertEqual(public_api.configured_model_path(env, "chat-backend-dense"),
+        self.assertEqual(public_api.configured_model_path(env, "llm-a"),
                          "/models/glm-4.6-Q4_K_M.gguf")
 
 
@@ -383,8 +383,8 @@ class RedactionTests(unittest.TestCase):
 
     def test_the_launch_settings_that_explain_behaviour_do_survive(self):
         config = public_api.redacted_config(dict(ENV))
-        self.assertEqual(config["Primary Backend"]["CHAT_PRIMARY_CTX_SIZE"], "262144")
-        self.assertEqual(config["Primary Backend"]["CHAT_PRIMARY_FLASH_ATTN"], "on")
+        self.assertEqual(config["LLM A"]["LLM_A_CTX_SIZE"], "262144")
+        self.assertEqual(config["LLM A"]["LLM_A_FLASH_ATTN"], "on")
 
     def test_a_secret_added_to_an_allowed_section_is_still_dropped(self):
         # The allow-list is the intended control; this is the one that has to
@@ -437,9 +437,9 @@ class AlertTests(unittest.TestCase):
 
     def test_a_healthy_stack_raises_nothing(self):
         providers = build_providers(
-            service_health=lambda env: ({}, {"chat-backend-dense": dict(SERVICE_HEALTH["chat-backend-dense"])}),
+            service_health=lambda env: ({}, {"llm-a": dict(SERVICE_HEALTH["llm-a"])}),
             gpu_info=lambda: [dict(GPUS[1])],
-            services_table=lambda env: [{"name": "chat-backend-dense", "label": "Primary Backend",
+            services_table=lambda env: [{"name": "llm-a", "label": "LLM A",
                                          "group": "chat", "desc": ""}],
         )
         quiet_slots = [dict(SLOTS[1], id=0), dict(SLOTS[1], id=1)]
@@ -531,14 +531,14 @@ class PrometheusTests(unittest.TestCase):
 
     def test_gpu_and_model_vram_are_exposed(self):
         self.assertIn('llmstack_gpu_utilization_percent{gpu="0",name="RTX 5090",uuid="GPU-aaa"}', self.text)
-        self.assertIn('llmstack_model_vram_bytes{gpu="0",unit="chat-backend-dense",'
+        self.assertIn('llmstack_model_vram_bytes{gpu="0",unit="llm-a",'
                       'model="glm-4.6-Q4_K_M.gguf",attribution="exclusive"}', self.text)
 
     def test_context_and_service_state_are_exposed(self):
         self.assertIn("llmstack_backend_context_used_tokens", self.text)
         self.assertIn("llmstack_slot_context_used_tokens", self.text)
         self.assertIn('llmstack_service_up{name="embed",state="degraded"} 0', self.text)
-        self.assertIn('llmstack_service_up{name="chat-backend-dense",state="active"} 1', self.text)
+        self.assertIn('llmstack_service_up{name="llm-a",state="active"} 1', self.text)
 
     def test_values_are_bytes_not_mebibytes(self):
         self.assertEqual(self.parsed['llmstack_gpu_memory_used_bytes{gpu="0",name="RTX 5090",uuid="GPU-aaa"}'],
@@ -856,9 +856,9 @@ class TtlCacheTests(unittest.TestCase):
 
 class LogEventTests(unittest.TestCase):
     EVENTS = [
-        {"ts": 100.0, "unit": "chat-backend-dense", "kind": "generation", "tg_tps": 40.0},
-        {"ts": 200.0, "unit": "chat-backend-dense", "kind": "context_overflow", "requested": 155751},
-        {"ts": 300.0, "unit": "chat-backend-dense", "kind": "generation", "tg_tps": 42.0},
+        {"ts": 100.0, "unit": "llm-a", "kind": "generation", "tg_tps": 40.0},
+        {"ts": 200.0, "unit": "llm-a", "kind": "context_overflow", "requested": 155751},
+        {"ts": 300.0, "unit": "llm-a", "kind": "generation", "tg_tps": 42.0},
     ]
 
     def _registry(self):
@@ -882,21 +882,21 @@ class LogEventTests(unittest.TestCase):
         with patch.object(telemetry, "REGISTRY") as registry:
             registry.collector.return_value = type(
                 "C", (), {"snapshot": staticmethod(lambda: list(self.EVENTS)), "error": None})()
-            events = public_api.log_events(["chat-backend-dense"], 3600)
+            events = public_api.log_events(["llm-a"], 3600)
         self.assertEqual(len(events), 3)
 
     def test_kind_filters(self):
-        events = public_api.log_events(["chat-backend-dense"], 3600, kinds={"context_overflow"},
+        events = public_api.log_events(["llm-a"], 3600, kinds={"context_overflow"},
                                        registry=self._registry())
         self.assertEqual([e["kind"] for e in events], ["context_overflow"])
 
     def test_since_returns_only_what_is_newer(self):
-        events = public_api.log_events(["chat-backend-dense"], 3600, since=150.0,
+        events = public_api.log_events(["llm-a"], 3600, since=150.0,
                                        registry=self._registry())
         self.assertEqual([e["ts"] for e in events], [200.0, 300.0])
 
     def test_limit_keeps_the_most_recent(self):
-        events = public_api.log_events(["chat-backend-dense"], 3600, limit=2,
+        events = public_api.log_events(["llm-a"], 3600, limit=2,
                                        registry=self._registry())
         self.assertEqual([e["ts"] for e in events], [200.0, 300.0])
 
@@ -987,7 +987,7 @@ class ControlApiAppTests(unittest.TestCase):
 
         An empty `LLM_API_TOKEN` means "an open read-only API", which is a real
         configuration. There is no reading of an open port that can stop
-        `chat-backend-dense`.
+        `llm-a`.
         """
         with self.control_app.test_client() as client, self._client(LLM_CONTROL_TOKEN=""):
             response = client.get("/api/control/v1/schema")
@@ -1102,8 +1102,8 @@ class ControlApiBehaviourTests(unittest.TestCase):
              platform_harness.as_darwin():
             body = client.get("/api/control/v1/config/fields", headers=self.auth).get_json()
         self.assertEqual(body["platform"], "darwin")
-        self.assertIn("CHAT_PRIMARY_GPU_VISIBLE_DEVICES", body["omitted"])
-        self.assertNotIn("CHAT_PRIMARY_GPU_VISIBLE_DEVICES",
+        self.assertIn("LLM_A_GPU_VISIBLE_DEVICES", body["omitted"])
+        self.assertNotIn("LLM_A_GPU_VISIBLE_DEVICES",
                          [f["key"] for f in body["fields"]])
 
     def test_a_key_this_host_does_not_know_is_reported_not_swallowed(self):
@@ -1112,7 +1112,7 @@ class ControlApiBehaviourTests(unittest.TestCase):
         `allowed_config_keys` unions in whatever the *target's* env file holds,
         so what is writable is a fact about the target. A hub that has been
         updated and sends `LLM_A_CTX_SIZE` to a host that still says
-        `CHAT_PRIMARY_CTX_SIZE` would otherwise get a 200 with nothing changed
+        `LLM_A_CTX_SIZE` would otherwise get a 200 with nothing changed
         -- the worst possible answer, because it looks like a save.
         """
         with self.control_app.test_client() as client, \

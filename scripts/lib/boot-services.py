@@ -18,7 +18,7 @@ Authority, most specific first:
 The boot path had none of this. An unset ``LLM_STACK_SELECTED_COMPONENTS`` meant
 "start everything", and ``llm-stack-restore.service`` sets no variable, so every
 boot took that branch. On a host whose GPU 0 already holds a 27B primary that
-meant starting ``chat-backend2`` -- a second 27B -- onto it every time;
+meant starting ``llm-b`` -- a second 27B -- onto it every time;
 ``service-expectations.json`` had recorded ``off`` for that unit since June and
 nothing on the boot path read the file. It was survivable only because someone
 stopped it again by hand after each reboot.
@@ -51,7 +51,7 @@ import setup_engine  # noqa: E402
 #: What `activate-selected-stack.sh:6` falls back to. Kept identical on purpose:
 #: two boot paths that disagree about the default are how a host comes back from
 #: a reboot in a state nobody chose.
-FALLBACK_COMPONENTS = "primary,embedding,task,ocr,glmocr-sdk,searxng,playwright"
+FALLBACK_COMPONENTS = "llm-a,embedding,task,ocr,glmocr-sdk,searxng,playwright"
 
 #: Unit -> the `MODEL_ROUTER_MEMBERS` name that would make it a router child.
 #: Only these four can be pooled; everything else is always its own unit.
@@ -75,9 +75,9 @@ FEATURE_SWITCH = {
 #: proxy's first upstream probe has something to reach, and `llm-manager` is
 #: never here because the caller keeps it running throughout.
 START_ORDER = (
-    "chat-backend-dense",
+    "llm-a",
     "chat-proxy",
-    "chat-backend2",
+    "llm-b",
     "chat-proxy2",
     "llama-router",
     "embed",
@@ -126,7 +126,7 @@ def router_owns(env: dict, unit: str) -> bool:
 
 
 def boot_units(env: dict, expectations: dict | None = None,
-               chat_backend: str = "chat-backend-dense") -> list[str]:
+               chat_backend: str = "llm-a") -> list[str]:
     """The units to start, in start order.
 
     `chat_backend` is resolved by the caller because a saved profile may name a
@@ -154,7 +154,7 @@ def boot_units(env: dict, expectations: dict | None = None,
 
     units = []
     for unit in START_ORDER:
-        candidate = chat_backend if unit == "chat-backend-dense" else unit
+        candidate = chat_backend if unit == "llm-a" else unit
         if candidate not in wanted and unit not in wanted:
             continue
         if expected(candidate) == "off":
@@ -190,7 +190,7 @@ def caller_env() -> dict:
 
 
 def main(argv: list[str]) -> int:
-    chat_backend = argv[1] if len(argv) > 1 and argv[1] else "chat-backend-dense"
+    chat_backend = argv[1] if len(argv) > 1 and argv[1] else "llm-a"
     for unit in boot_units(caller_env(), chat_backend=chat_backend):
         print(unit)
     return 0

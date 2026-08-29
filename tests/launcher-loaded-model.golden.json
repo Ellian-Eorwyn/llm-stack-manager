@@ -1,5 +1,5 @@
 {
-  "chat-backend-dense": {
+  "llm-a": {
     "argv": [
       "--model",
       "@STACK@/models/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf",
@@ -85,7 +85,7 @@
       "--env",
       "@STACK@/config/llm-stack.env",
       "--backend",
-      "chat-primary",
+      "llm-a",
       "--model",
       "@STACK@/models/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf",
       "--set",
@@ -116,7 +116,7 @@
       "spec_method=draft-mtp"
     ]
   },
-  "chat-backend2": {
+  "llm-b": {
     "argv": [
       "--model",
       "@STACK@/models/Qwen3.5-27B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
@@ -202,7 +202,7 @@
       "--env",
       "@STACK@/config/llm-stack.env",
       "--backend",
-      "chat-secondary",
+      "llm-b",
       "--model",
       "@STACK@/models/Qwen3.5-27B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
       "--set",

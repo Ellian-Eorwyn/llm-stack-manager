@@ -7,7 +7,7 @@
 #   NOTHINK2_PORT (default 8104) — thinking disabled (injects kwarg per request)
 #   CODE2_PORT    (default 8108) — coding overrides
 #
-# Requires chat-backend2.service to already be running.
+# Requires llm-b.service to already be running.
 # =============================================================================
 set -euo pipefail
 

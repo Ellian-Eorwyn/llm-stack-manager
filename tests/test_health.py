@@ -70,10 +70,47 @@ class DependencyGraphTests(unittest.TestCase):
                     self.assertIn(unit, units, unit)
 
 
+class ExpectationMigrationTests(unittest.TestCase):
+    """An operator's decision has to survive a unit rename.
+
+    This file is keyed by unit name, and the entry that matters most on the
+    production host is `chat-backend2: off` -- a second 27B that will not fit
+    beside the first. The boot path derives what to start from these, so losing
+    that to a rename would let it start.
+    """
+
+    def _file(self, data):
+        import tempfile, json as _json
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = pathlib.Path(tmp.name) / "service-expectations.json"
+        path.write_text(_json.dumps(data))
+        return path
+
+    def test_an_expectation_recorded_under_the_old_name_still_applies(self):
+        path = self._file({"chat-backend-dense": {"expected": "on"},
+                           "chat-backend2": {"expected": "off"}})
+        entries = health.read_expectations(path)
+        self.assertEqual(entries["llm-a"]["expected"], "on")
+        self.assertEqual(entries["llm-b"]["expected"], "off")
+        self.assertNotIn("chat-backend-dense", entries)
+
+    def test_a_new_name_wins_over_the_residue_of_the_old_one(self):
+        """Both can sit in the file while the old spelling drains out."""
+        path = self._file({"llm-b": {"expected": "on"},
+                           "chat-backend2": {"expected": "off"}})
+        self.assertEqual(health.read_expectations(path)["llm-b"]["expected"], "on")
+
+    def test_writing_only_ever_uses_the_new_name(self):
+        path = self._file({})
+        health.record_expectation("llm-a", "off", path=path)
+        self.assertEqual(list(health.read_expectations(path)), ["llm-a"])
+
+
 class ProbeTargetTests(unittest.TestCase):
     def test_backend_probes_come_from_the_telemetry_port_map(self):
-        self.assertEqual(health.SERVICE_PROBES["chat-backend-dense"]["path"], "/props")
-        self.assertEqual(health.SERVICE_PROBES["chat-backend-dense"]["port_key"], "CHAT_BACKEND_PORT")
+        self.assertEqual(health.SERVICE_PROBES["llm-a"]["path"], "/props")
+        self.assertEqual(health.SERVICE_PROBES["llm-a"]["port_key"], "CHAT_BACKEND_PORT")
         self.assertEqual(health.SERVICE_PROBES["embed"]["port_key"], "EMBED_PORT")
 
     def test_bind_address_is_rewritten_to_a_reachable_one(self):
@@ -217,7 +254,7 @@ class CollectTests(unittest.TestCase):
                         {"glmocr-sdk": [["ocr"], ["chat-proxy"]]}, clear=False):
             entries = self.collect({
                 "glmocr-sdk": "active", "ocr": "active",
-                "chat-proxy": "active", "chat-backend-dense": "inactive",
+                "chat-proxy": "active", "llm-a": "inactive",
             })
         self.assertEqual(entries["chat-proxy"]["state"], "degraded")
         self.assertEqual(entries["glmocr-sdk"]["state"], "degraded")

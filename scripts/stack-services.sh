@@ -15,8 +15,8 @@
 # One unit per servable position. The same six, in the same order, as
 # `backends.SLOTS`.
 STACK_MODEL_BACKENDS=(
-  chat-backend-dense
-  chat-backend2
+  llm-a
+  llm-b
   embed
   rerank
   task

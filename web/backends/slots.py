@@ -119,30 +119,32 @@ def _large_model_tail(kwargs: options.TemplateKwargs, template: options.Template
 SLOTS = {
     # In the order the services panel renders them, which is also the order
     # `telemetry.BACKEND_TARGETS` and `app.SERVICES` used to state separately.
-    "chat-backend-dense": Slot(
-        name="chat-backend-dense",
-        component="primary",
+    "llm-a": Slot(
+        name="llm-a",
+        component="llm-a",
         group="chat",
-        label="Primary Backend",
+        label="LLM A",
         desc="Primary model backend",
-        config_section="Primary Backend",
+        config_section="LLM A",
         ports_display="8010 internal / llms:8010",
         probe_host_keys=("!CHAT_BACKEND_HOST",),
-        prefix="CHAT_PRIMARY",
-        # The slot was `CHAT_DENSE_*` before it was `CHAT_PRIMARY_*`, and the
-        # bare `CHAT_*` names are the shared originals. Only the five keys
-        # LEGACY_ENV_KEY_MAP declares were ever spelled CHAT_DENSE_*, so the
-        # rest read two levels and those five read three.
-        legacy_prefixes=("CHAT",),
-        model_keys=("!CHAT_PRIMARY_MODEL_PATH", "!CHAT_DENSE_MODEL_PATH",
-                    "!CHAT_MODEL_PATH"),
-        alias_keys=("!CHAT_PRIMARY_MODEL_NAME", "!CHAT_DENSE_MODEL_NAME"),
+        prefix="LLM_A",
+        # Three renames deep now. The slot was the bare `CHAT_*` names, then
+        # `CHAT_DENSE_*`, then `CHAT_PRIMARY_*`, and is `LLM_A_*`. Each is read
+        # behind the one before it, so a config written at any point still
+        # starts this backend -- which is the whole reason the rename is safe to
+        # do while the fleet spans versions.
+        legacy_prefixes=("CHAT_PRIMARY", "CHAT"),
+        model_keys=("!LLM_A_MODEL_PATH", "!CHAT_PRIMARY_MODEL_PATH",
+                    "!CHAT_DENSE_MODEL_PATH", "!CHAT_MODEL_PATH"),
+        alias_keys=("!LLM_A_MODEL_NAME", "!CHAT_PRIMARY_MODEL_NAME",
+                    "!CHAT_DENSE_MODEL_NAME"),
         alias_default="chat-dense",
-        mmproj_keys=("!CHAT_PRIMARY_MMPROJ_PATH", "!CHAT_DENSE_MMPROJ_PATH",
-                     "!CHAT_MMPROJ_PATH"),
-        key_chains={"CTX_SIZE": ("!CHAT_PRIMARY_CTX_SIZE", "!CHAT_DENSE_CTX_SIZE",
-                                 "!CHAT_CTX_SIZE")},
-        # Not CHAT_PRIMARY_PORT: both chat slots bind the shared backend port,
+        mmproj_keys=("!LLM_A_MMPROJ_PATH", "!CHAT_PRIMARY_MMPROJ_PATH",
+                     "!CHAT_DENSE_MMPROJ_PATH", "!CHAT_MMPROJ_PATH"),
+        key_chains={"CTX_SIZE": ("!LLM_A_CTX_SIZE", "!CHAT_PRIMARY_CTX_SIZE",
+                                 "!CHAT_DENSE_CTX_SIZE", "!CHAT_CTX_SIZE")},
+        # Not LLM_A_PORT: both chat slots bind the shared backend port,
         # and every consumer in the stack -- the proxies, telemetry, health --
         # talks to that name.
         port_keys=("!CHAT_BACKEND_PORT",),
@@ -155,22 +157,26 @@ SLOTS = {
                                options.TemplateFile(keys=("TEMPLATE_ID",))),
         custom_args_keys=("CUSTOM_ARGS_JSON",),
         # `budget.py` knows the slot by what it holds, not by its unit name.
-        budget_name="chat-primary",
+        budget_name="llm-a",
         preflight_fields=_LARGE_PREFLIGHT,
     ),
-    "chat-backend2": Slot(
-        name="chat-backend2",
-        component="secondary",
+    "llm-b": Slot(
+        name="llm-b",
+        component="llm-b",
         group="chat",
-        label="Secondary Backend",
+        label="LLM B",
         desc="Secondary model backend",
-        config_section="Secondary Backend",
+        config_section="LLM B",
         ports_display="8020 internal / llms:8020",
         probe_host_keys=("!CHAT2_BACKEND_HOST",),
-        prefix="CHAT2",
-        model_keys=("!CHAT2_MODEL_PATH",),
+        prefix="LLM_B",
+        # `CHAT2_*` was the canonical spelling until this rename. The port and
+        # host keys keep their old names on purpose: they are the proxy's half
+        # of the wiring and section 2.1 freezes the ports.
+        legacy_prefixes=("CHAT2",),
+        model_keys=("!LLM_B_MODEL_PATH", "!CHAT2_MODEL_PATH"),
         alias_default="chat-moe",
-        mmproj_keys=("!CHAT2_MMPROJ_PATH",),
+        mmproj_keys=("!LLM_B_MMPROJ_PATH", "!CHAT2_MMPROJ_PATH"),
         port_keys=("!CHAT2_BACKEND_PORT",),
         port_default="8020",
         host_keys=("!CHAT2_BACKEND_HOST",),
@@ -180,7 +186,7 @@ SLOTS = {
         tail=_large_model_tail(options.TemplateKwargs(style="preserve"),
                                options.TemplateFile(keys=("TEMPLATE_ID",))),
         custom_args_keys=("CUSTOM_ARGS_JSON",),
-        budget_name="chat-secondary",
+        budget_name="llm-b",
         preflight_fields=_LARGE_PREFLIGHT,
     ),
     "embed": Slot(

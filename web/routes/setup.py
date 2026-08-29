@@ -45,7 +45,7 @@ def api_setup_selection():
     if request.method == 'GET':
         env = config_env.read_env()
         configured_models = [
-            env.get('CHAT_PRIMARY_MODEL_PATH') or env.get('CHAT_DENSE_MODEL_PATH'),
+            env.get('LLM_A_MODEL_PATH') or env.get('CHAT_DENSE_MODEL_PATH'),
             env.get('EMBEDDING_MODEL_PATH'), env.get('TASK_MODEL_PATH'), env.get('OCR_MODEL_PATH'),
         ]
         setup_required = not setup_engine.STATE_FILE.exists() and not any(Path(path).is_file() for path in configured_models if path)

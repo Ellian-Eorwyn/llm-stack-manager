@@ -25,12 +25,12 @@ scheduling = _load("llm_stack_manager_scheduling", "web/scheduling.py")
 
 def env_for(**overrides) -> dict:
     values = {
-        "CHAT_PRIMARY_N_PARALLEL": "2",
-        "CHAT_PRIMARY_CTX_SIZE": "262144",
-        "CHAT_PRIMARY_CACHE_RAM": "8192",
-        "CHAT_PRIMARY_CTX_CHECKPOINTS": "8",
-        "CHAT_PRIMARY_CACHE_IDLE_SLOTS": "on",
-        "CHAT_PRIMARY_FIT": "off",
+        "LLM_A_N_PARALLEL": "2",
+        "LLM_A_CTX_SIZE": "262144",
+        "LLM_A_CACHE_RAM": "8192",
+        "LLM_A_CTX_CHECKPOINTS": "8",
+        "LLM_A_CACHE_IDLE_SLOTS": "on",
+        "LLM_A_FIT": "off",
     }
     values.update(overrides)
     return values
@@ -68,7 +68,7 @@ class ContractCheckTests(unittest.TestCase):
         self.assertEqual(result["per_slot_context"], 131072)
 
     def test_one_slot_cannot_pin_interactive_and_background_apart(self):
-        result = scheduling.contract_check(env_for(CHAT_PRIMARY_N_PARALLEL="1"))
+        result = scheduling.contract_check(env_for(LLM_A_N_PARALLEL="1"))
         self.assertFalse(result["compatible"])
         self.assertTrue(any("2 parallel slots" in issue for issue in result["issues"]))
 
@@ -76,18 +76,18 @@ class ContractCheckTests(unittest.TestCase):
         # 65536 across two slots is 32768 each, exactly the floor; one token
         # less of total context is not.
         self.assertTrue(scheduling.contract_check(
-            env_for(CHAT_PRIMARY_CTX_SIZE="65536"))["compatible"])
+            env_for(LLM_A_CTX_SIZE="65536"))["compatible"])
         self.assertFalse(scheduling.contract_check(
-            env_for(CHAT_PRIMARY_CTX_SIZE="65534"))["compatible"])
+            env_for(LLM_A_CTX_SIZE="65534"))["compatible"])
 
     def test_idle_slot_caching_and_auto_fit_are_required(self):
         self.assertIn("idle-slot caching", " ".join(scheduling.contract_check(
-            env_for(CHAT_PRIMARY_CACHE_IDLE_SLOTS="off"))["issues"]))
+            env_for(LLM_A_CACHE_IDLE_SLOTS="off"))["issues"]))
         self.assertIn("auto-fit", " ".join(scheduling.contract_check(
-            env_for(CHAT_PRIMARY_FIT="on"))["issues"]))
+            env_for(LLM_A_FIT="on"))["issues"]))
 
     def test_an_unset_slot_count_divides_by_one_rather_than_zero(self):
-        result = scheduling.contract_check({"CHAT_PRIMARY_CTX_SIZE": "131072"})
+        result = scheduling.contract_check({"LLM_A_CTX_SIZE": "131072"})
         self.assertEqual(result["per_slot_context"], 131072)
         self.assertTrue(any("2 parallel slots" in issue for issue in result["issues"]))
 
@@ -131,7 +131,7 @@ class LaunchedSettingsTests(unittest.TestCase):
 
 class DriftTests(unittest.TestCase):
     def test_a_saved_change_that_was_never_restarted_is_reported(self):
-        configured = scheduling.contract_check(env_for(CHAT_PRIMARY_CTX_SIZE="131072"))
+        configured = scheduling.contract_check(env_for(LLM_A_CTX_SIZE="131072"))
         launched = scheduling.launched_check(
             "llama-server --ctx-size 262144 --parallel 2 --fit off --cache-idle-slots")
         drift = scheduling.drift_between(configured, launched)
@@ -258,7 +258,7 @@ class LeaseDirectoryTests(unittest.TestCase):
 class VerifyTests(unittest.TestCase):
     def verify(self, **kwargs):
         defaults = dict(
-            unit="chat-backend-dense", unit_active=True,
+            unit="llm-a", unit_active=True,
             cmdline="llama-server --ctx-size 262144 --parallel 2 --cache-ram 8192 "
                     "--ctx-checkpoints 8 --fit off --cache-idle-slots",
             props={"total_slots": 2, "n_ctx_per_slot": 131072, "n_ctx_total": 262144},

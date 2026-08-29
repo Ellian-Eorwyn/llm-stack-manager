@@ -17,7 +17,7 @@ the three policy differences follow from that:
 - An unset token is a refusal, not an open door. On 8078 an empty
   `LLM_API_TOKEN` means "an open read-only API", which is a real and defensible
   configuration on a trusted tailnet. An open listener that can stop
-  `chat-backend-dense` is not.
+  `llm-a` is not.
 - Secrets are write-only. `GET /config` reports that a key is set and never
   what it is set to, and `POST /config` refuses to write one unless
   `LLM_CONTROL_ALLOW_SECRETS` says otherwise.

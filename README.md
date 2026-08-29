@@ -69,7 +69,7 @@ When UFW is active, setup opens only the selected service ports and only to the 
   and predicts VRAM and prompt-cache RAM before the backend is launched, so a configuration that
   cannot fit says so instead of thrashing. `/api/backend/budget/recommend` derives a context,
   checkpoint count and cache size from detected VRAM and host RAM. Run it directly with
-  `python3 web/budget.py --backend chat-primary [--validate]`; the launchers log the same report
+  `python3 web/budget.py --backend llm-a [--validate]`; the launchers log the same report
   on startup and refuse to pass flags the model cannot act on.
 - llama.cpp shared chat backend launchers.
 - `llm-chat-proxy.py` exposing think, chat, and code ports from one backend.
@@ -136,8 +136,8 @@ Start the default core stack:
 sudo bash scripts/restore-active-stack.sh
 ```
 
-There are two independent large-model slots — `chat-backend-dense` on 8010 and
-`chat-backend2` on 8020 — each fronted by a proxy serving the think, chat and
+There are two independent large-model slots — `llm-a` on 8010 and
+`llm-b` on 8020 — each fronted by a proxy serving the think, chat and
 code personas. They run concurrently if there is memory for both; configure each
 from the Configuration tab rather than switching between them.
 
@@ -171,7 +171,7 @@ Other commands:
 
 ```bash
 llm-stack-manager status            # services, GPU/host memory, throughput, warnings
-llm-stack-manager logs chat-backend-dense
+llm-stack-manager logs llm-a
 sudo llm-stack-manager restart chat-proxy
 llm-stack-manager --help
 ```

@@ -14,7 +14,7 @@ class ComponentSelectionTests(unittest.TestCase):
         self.assertEqual(setup_engine.resolve_components(["glmocr-sdk"]), ["ocr", "glmocr-sdk"])
 
     def test_a_dependency_that_is_not_a_component_is_inert(self):
-        """`primary` declares `chat-proxy`, which is not a component.
+        """`llm-a` declares `chat-proxy`, which is not a component.
 
         `resolve_components` filters against `ALL_COMPONENTS`, so that edge
         resolves to nothing -- and it does not need to, because
@@ -24,8 +24,15 @@ class ComponentSelectionTests(unittest.TestCase):
         and removing it left every remaining cross-component edge either inert
         or, in `glmocr-sdk`'s case, covered above.
         """
-        self.assertEqual(setup_engine.resolve_components(["primary"]), ["primary"])
-        self.assertIn("chat-proxy", setup_engine.COMPONENT_SERVICES["primary"])
+        self.assertEqual(setup_engine.resolve_components(["llm-a"]), ["llm-a"])
+        self.assertIn("chat-proxy", setup_engine.COMPONENT_SERVICES["llm-a"])
+
+    def test_a_component_renamed_out_from_under_a_host_still_resolves(self):
+        """Every `install-state.json` already on disk names the old components,
+        and the boot path derives what to start from this. Without the map a
+        host that upgrades comes back with no chat backend at all."""
+        self.assertEqual(setup_engine.resolve_components(["primary"]), ["llm-a"])
+        self.assertEqual(setup_engine.resolve_components(["secondary"]), ["llm-b"])
 
     def test_selected_ports_are_unique_and_include_manager(self):
         self.assertEqual(setup_engine.selected_ports(["searxng", "playwright"]), [80, 8077])
@@ -73,15 +80,15 @@ class PlacementTests(unittest.TestCase):
         ]
 
     def test_primary_prefers_highest_vram_single_gpu(self):
-        result = setup_engine.plan_gpu_placement(self.gpus, {"primary": {"size": 4 * 1024**3, "context_mib": 1024}})
+        result = setup_engine.plan_gpu_placement(self.gpus, {"llm-a": {"size": 4 * 1024**3, "context_mib": 1024}})
         self.assertTrue(result["ok"])
-        self.assertEqual(result["assignments"]["primary"]["gpu_indices"], [0])
+        self.assertEqual(result["assignments"]["llm-a"]["gpu_indices"], [0])
         self.assertEqual(len(result["assignments"]["glmocr-sdk"]["gpu_indices"]), 1)
 
     def test_primary_spans_gpus_when_one_cannot_fit(self):
-        result = setup_engine.plan_gpu_placement(self.gpus, {"primary": {"size": 25 * 1024**3, "context_mib": 1024}})
+        result = setup_engine.plan_gpu_placement(self.gpus, {"llm-a": {"size": 25 * 1024**3, "context_mib": 1024}})
         self.assertTrue(result["ok"])
-        self.assertEqual(result["assignments"]["primary"]["gpu_indices"], [0, 1])
+        self.assertEqual(result["assignments"]["llm-a"]["gpu_indices"], [0, 1])
 
     def test_over_capacity_blocks_without_override(self):
         result = setup_engine.plan_gpu_placement(self.gpus, {"primary": {"size": 40 * 1024**3, "context_mib": 4096}})

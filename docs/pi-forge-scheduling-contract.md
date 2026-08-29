@@ -16,7 +16,7 @@ the request body, so a long interactive session keeps its prompt prefix in slot
 | Interactive turns pin `id_slot: 0` and `cache_prompt: true` | pi-forge `extensions/inference-scheduling.ts`, `addInteractiveSlot` |
 | Background work pins `id_slot: 1` | pi-forge `lib/forge-llm.mjs` and `lib/forge_llm.py` |
 | Only two providers are scheduled at all | `PROVIDER_SERVICES`: `forge-local` → think, `forge-chat-local` → chat |
-| The backend is launched so slots exist to pin | `CHAT_PRIMARY_N_PARALLEL`, `_CACHE_IDLE_SLOTS`, `_FIT` |
+| The backend is launched so slots exist to pin | `LLM_A_N_PARALLEL`, `_CACHE_IDLE_SLOTS`, `_FIT` |
 | `id_slot` survives the proxy | `scripts/llm-chat-proxy.py` — see below |
 | Both halves are checkable | `GET /api/scheduling/verify` |
 
@@ -88,7 +88,7 @@ That directory belongs to pi-forge, so the rules are conservative:
 
 | Source | What it establishes |
 | --- | --- |
-| `CHAT_PRIMARY_*` in the env | what the contract is configured to be |
+| `LLM_A_*` in the env | what the contract is configured to be |
 | `/proc/<MainPID>/cmdline` | what the running process was actually launched with |
 | `/props`, `/slots` | slot count and per-slot context as the backend sees them |
 | journal, via `telemetry.summarize` | which slots have actually been pinned |

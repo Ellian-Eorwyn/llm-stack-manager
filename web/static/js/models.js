@@ -502,8 +502,8 @@ function syncConfigArgInput(targetId, silent = false) {
     const section = input.closest('.cfg-section')?.id?.replace(/^cfgsec-/, '').replace(/-/g, ' ') || 'Shared Backend';
     markDirty(section);
   }
-  if (targetId === 'cfg-CHAT_PRIMARY_CUSTOM_ARGS_JSON') refreshCacheAwareScheduling('CHAT_PRIMARY');
-  if (targetId === 'cfg-CHAT2_CUSTOM_ARGS_JSON') refreshCacheAwareScheduling('CHAT2');
+  if (targetId === 'cfg-LLM_A_CUSTOM_ARGS_JSON') refreshCacheAwareScheduling('LLM_A');
+  if (targetId === 'cfg-LLM_B_CUSTOM_ARGS_JSON') refreshCacheAwareScheduling('LLM_B');
 }
 
 function renderConfigArgRows(targetId, values = ['']) {

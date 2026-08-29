@@ -145,7 +145,7 @@ The backend slots were once named for what they held — `CHAT_DENSE_*` for a
 dense model, `CHAT_MOE_*` for a mixture-of-experts one — and before that for the
 specific models themselves (`CHAT_MODEL_27B_PATH`). Both schemes described the
 contents rather than the slot, so both went stale the moment a slot's model
-changed. `CHAT_PRIMARY_*` / `CHAT2_*` name the slot, and are canonical.
+changed. `LLM_A_*` / `LLM_B_*` name the slot, and are canonical.
 
 The staged path out, so no stage can break a saved config:
 
@@ -181,7 +181,7 @@ per endpoint by the proxy.
 
 | Key | Applies to | Default |
 | --- | --- | --- |
-| `CHAT_REASONING_EFFORT` / `CHAT_PRIMARY_REASONING_EFFORT` / `CHAT2_REASONING_EFFORT` | backend `--chat-template-kwargs` | empty (model default) |
+| `CHAT_REASONING_EFFORT` / `LLM_A_REASONING_EFFORT` / `LLM_B_REASONING_EFFORT` | backend `--chat-template-kwargs` | empty (model default) |
 | `THINK_REASONING_EFFORT` | thinking proxy port | `xhigh` |
 | `CODE_REASONING_EFFORT` | code proxy port | `medium` |
 | `TASK_REASONING_EFFORT` | task model launcher | `low` |

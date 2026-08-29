@@ -17,7 +17,7 @@ fi
 source "${STACK_DIR}/scripts/stack-services.sh"
 ALL_SERVICES=("${STACK_STOPPABLE_SERVICES[@]}")
 
-DEFAULT_CHAT_BACKEND="chat-backend-dense"
+DEFAULT_CHAT_BACKEND="llm-a"
 DEFAULT_CONFIG_MARKER="${STACK_DIR}/config/default-saved-config"
 if [[ -f "${DEFAULT_CONFIG_MARKER}" ]]; then
     resolved_backend="$(python3 - "${DEFAULT_CONFIG_MARKER}" <<'PYDEFAULT'
@@ -97,7 +97,7 @@ config_path.write_text(re.sub(r"\n{3,}", "\n\n", content))
 # exists and leave the stack with no chat backend at all.
 active = data.get("_active_chat_model") if isinstance(data.get("_active_chat_model"), dict) else {}
 if active.get("variant") or active.get("service"):
-    print("chat-backend-dense")
+    print("llm-a")
 PYDEFAULT
 )"
     if [[ -n "${resolved_backend}" ]]; then
@@ -113,7 +113,7 @@ fi
 # This used to be an if/else on LLM_STACK_SELECTED_COMPONENTS where the else
 # branch started *everything* -- and llm-stack-restore.service sets no such
 # variable, so every boot took it. On this host that meant starting
-# chat-backend2, a second 27B, onto a GPU already holding the primary;
+# llm-b, a second 27B, onto a GPU already holding the primary;
 # service-expectations.json had said `off` for months and nothing here read it.
 #
 # The component-to-unit map moved to setup_engine.COMPONENT_SERVICES rather than

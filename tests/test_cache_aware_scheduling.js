@@ -35,32 +35,32 @@ function recommendation(overrides = {}) {
 }
 
 test("the preset carries the host measurement, not a constant", () => {
-  const values = scheduling.presetValues("CHAT_PRIMARY", recommendation());
-  assert.equal(values.CHAT_PRIMARY_CTX_SIZE, "262144");
-  assert.equal(values.CHAT_PRIMARY_CTX_CHECKPOINTS, "8");
-  assert.equal(values.CHAT_PRIMARY_CACHE_RAM, "3630");
+  const values = scheduling.presetValues("LLM_A", recommendation());
+  assert.equal(values.LLM_A_CTX_SIZE, "262144");
+  assert.equal(values.LLM_A_CTX_CHECKPOINTS, "8");
+  assert.equal(values.LLM_A_CACHE_RAM, "3630");
   // The scheduling contract itself is host-independent.
-  assert.equal(values.CHAT_PRIMARY_N_PARALLEL, "2");
-  assert.equal(values.CHAT_PRIMARY_CACHE_IDLE_SLOTS, "on");
-  assert.equal(values.CHAT_PRIMARY_FIT, "off");
+  assert.equal(values.LLM_A_N_PARALLEL, "2");
+  assert.equal(values.LLM_A_CACHE_IDLE_SLOTS, "on");
+  assert.equal(values.LLM_A_FIT, "off");
 });
 
 test("a different host produces a different preset", () => {
-  const small = scheduling.presetValues("CHAT_PRIMARY",
+  const small = scheduling.presetValues("LLM_A",
     recommendation({ ctx_size: 65536, ctx_checkpoints: 2, cache_ram: 2048 }));
-  assert.equal(small.CHAT_PRIMARY_CTX_SIZE, "65536");
-  assert.equal(small.CHAT_PRIMARY_CTX_CHECKPOINTS, "2");
+  assert.equal(small.LLM_A_CTX_SIZE, "65536");
+  assert.equal(small.LLM_A_CTX_CHECKPOINTS, "2");
 });
 
 test("auto-fit off clears the minimum fit context it would otherwise contradict", () => {
-  assert.equal(scheduling.presetValues("CHAT_PRIMARY", recommendation()).CHAT_PRIMARY_FIT_CTX, "");
-  assert.equal(scheduling.presetValues("CHAT2").CHAT2_FIT_CTX, "");
+  assert.equal(scheduling.presetValues("LLM_A", recommendation()).LLM_A_FIT_CTX, "");
+  assert.equal(scheduling.presetValues("LLM_B").LLM_B_FIT_CTX, "");
 });
 
 test("an unmeasurable host falls back rather than asserting a number", () => {
-  const values = scheduling.presetValues("CHAT2", null);
-  assert.equal(values.CHAT2_CTX_SIZE, scheduling.FALLBACK.CTX_SIZE);
-  assert.equal(values.CHAT2_FIT, "off");
+  const values = scheduling.presetValues("LLM_B", null);
+  assert.equal(values.LLM_B_CTX_SIZE, scheduling.FALLBACK.CTX_SIZE);
+  assert.equal(values.LLM_B_FIT, "off");
 });
 
 test("evaluate reports total and per-slot context", () => {

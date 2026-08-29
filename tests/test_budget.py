@@ -532,18 +532,18 @@ class EvaluateTest(DiscreteGpuTestCase):
 
 class SettingsFromEnvTest(unittest.TestCase):
     ENV = {
-        "CHAT_PRIMARY_MODEL_PATH": "/models/primary.gguf",
-        "CHAT_PRIMARY_MMPROJ_PATH": "/models/primary.mmproj.gguf",
-        "CHAT_PRIMARY_CTX_SIZE": "262144",
-        "CHAT_PRIMARY_N_PARALLEL": "2",
-        "CHAT_PRIMARY_CTX_CHECKPOINTS": "8",
-        "CHAT_PRIMARY_FIT_CTX": "",
-        "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0,1",
-        "CHAT2_CTX_SIZE": "65536",
+        "LLM_A_MODEL_PATH": "/models/primary.gguf",
+        "LLM_A_MMPROJ_PATH": "/models/primary.mmproj.gguf",
+        "LLM_A_CTX_SIZE": "262144",
+        "LLM_A_N_PARALLEL": "2",
+        "LLM_A_CTX_CHECKPOINTS": "8",
+        "LLM_A_FIT_CTX": "",
+        "LLM_A_GPU_VISIBLE_DEVICES": "0,1",
+        "LLM_B_CTX_SIZE": "65536",
     }
 
     def test_reads_the_requested_prefix(self):
-        settings = budget.settings_from_env(self.ENV, "chat-primary")
+        settings = budget.settings_from_env(self.ENV, "llm-a")
         self.assertEqual(settings["ctx_size"], "262144")
         self.assertEqual(settings["parallel"], "2")
         self.assertEqual(settings["devices"], 2)
@@ -551,13 +551,13 @@ class SettingsFromEnvTest(unittest.TestCase):
     def test_empty_values_are_left_unset(self):
         """An explicitly cleared key must not arrive as an empty string, which
         would then be flagged as a configured-but-dead --fit-ctx."""
-        self.assertNotIn("fit_ctx", budget.settings_from_env(self.ENV, "chat-primary"))
+        self.assertNotIn("fit_ctx", budget.settings_from_env(self.ENV, "llm-a"))
 
     def test_prefixes_do_not_leak_between_backends(self):
-        self.assertEqual(budget.settings_from_env(self.ENV, "chat-secondary")["ctx_size"], "65536")
+        self.assertEqual(budget.settings_from_env(self.ENV, "llm-b")["ctx_size"], "65536")
 
     def test_device_count_defaults_to_one(self):
-        self.assertEqual(budget.settings_from_env({}, "chat-primary")["devices"], 1)
+        self.assertEqual(budget.settings_from_env({}, "llm-a")["devices"], 1)
 
     def test_unknown_backend_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -571,35 +571,35 @@ class BudgetForTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_missing_model_reports_rather_than_raises(self):
-        result = budget.budget_for({"CHAT_PRIMARY_MODEL_PATH": "/nope.gguf"}, "chat-primary")
+        result = budget.budget_for({"LLM_A_MODEL_PATH": "/nope.gguf"}, "llm-a")
         self.assertIn("model not found", result["error"])
         self.assertIsNone(result["prediction"])
 
     def test_unreadable_model_reports_rather_than_raises(self):
         path = self.tmp / "junk.gguf"
         path.write_bytes(b"not gguf at all" + b"\0" * 64)
-        result = budget.budget_for({"CHAT_PRIMARY_MODEL_PATH": str(path)}, "chat-primary")
+        result = budget.budget_for({"LLM_A_MODEL_PATH": str(path)}, "llm-a")
         self.assertIn("could not read model metadata", result["error"])
 
     def test_full_budget_from_env(self):
         path = write_gguf(self.tmp / "m.gguf", QWEN36_27B, trailing_bytes=64 * 1024)
         result = budget.budget_for({
-            "CHAT_PRIMARY_MODEL_PATH": str(path),
-            "CHAT_PRIMARY_CTX_SIZE": "131072",
-            "CHAT_PRIMARY_N_PARALLEL": "2",
-            "CHAT_PRIMARY_CTX_CHECKPOINTS": "8",
-            "CHAT_PRIMARY_CACHE_RAM": "8192",
-        }, "chat-primary")
+            "LLM_A_MODEL_PATH": str(path),
+            "LLM_A_CTX_SIZE": "131072",
+            "LLM_A_N_PARALLEL": "2",
+            "LLM_A_CTX_CHECKPOINTS": "8",
+            "LLM_A_CACHE_RAM": "8192",
+        }, "llm-a")
         self.assertIsNone(result["error"])
         self.assertEqual(result["prediction"]["per_slot_context"], 65536)
         self.assertEqual(result["geometry"]["architecture"], "qwen35")
 
     def test_overrides_price_an_unsaved_change(self):
         path = write_gguf(self.tmp / "m.gguf", QWEN36_27B)
-        env = {"CHAT_PRIMARY_MODEL_PATH": str(path), "CHAT_PRIMARY_CTX_SIZE": "262144",
-               "CHAT_PRIMARY_N_PARALLEL": "2"}
-        saved = budget.budget_for(env, "chat-primary")
-        edited = budget.budget_for(env, "chat-primary", overrides={"ctx_size": "65536"})
+        env = {"LLM_A_MODEL_PATH": str(path), "LLM_A_CTX_SIZE": "262144",
+               "LLM_A_N_PARALLEL": "2"}
+        saved = budget.budget_for(env, "llm-a")
+        edited = budget.budget_for(env, "llm-a", overrides={"ctx_size": "65536"})
         self.assertEqual(saved["prediction"]["per_slot_context"], 131072)
         self.assertEqual(edited["prediction"]["per_slot_context"], 32768)
 

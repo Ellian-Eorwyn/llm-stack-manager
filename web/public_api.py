@@ -102,7 +102,7 @@ SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 # Config sections worth reporting: the settings that decide how a backend runs,
 # and therefore the ones that explain why it is behaving as it is.
 CONFIG_SECTIONS = (
-    "Primary Backend", "Secondary Backend", "Shared Backend", "Task Model",
+    "LLM A", "LLM B", "Shared Backend", "Task Model",
     "Embedding", "Reranker", "OCR", "Model Router", "Ports",
     # Agents on the tailnet call the sidecar directly, so which engine and model
     # it is set to is exactly the sort of thing they need to read first.

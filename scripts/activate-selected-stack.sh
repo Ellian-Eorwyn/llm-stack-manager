@@ -3,7 +3,7 @@ set -euo pipefail
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${STACK_DIR}/config/llm-stack.env"
-SELECTED=",${LLM_STACK_SELECTED_COMPONENTS:-primary,embedding,task,ocr,glmocr-sdk,searxng,playwright},"
+SELECTED=",${LLM_STACK_SELECTED_COMPONENTS:-llm-a,embedding,task,ocr,glmocr-sdk,searxng,playwright},"
 
 has_component() { [[ "${SELECTED}" == *",$1,"* ]]; }
 
@@ -20,8 +20,8 @@ router_owns() {
     [[ ",${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}," == *",$1,"* ]]
 }
 
-has_component primary && START_UNITS+=(chat-backend-dense chat-proxy)
-has_component secondary && START_UNITS+=(chat-backend2 chat-proxy2)
+has_component llm-a && START_UNITS+=(llm-a chat-proxy)
+has_component llm-b && START_UNITS+=(llm-b chat-proxy2)
 [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] && START_UNITS+=(llama-router)
 has_component embedding && ! router_owns EMBED && START_UNITS+=(embed)
 has_component reranker && ! router_owns RERANK && START_UNITS+=(rerank)
@@ -52,8 +52,8 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
   LAN_CIDR="$(ip -o -f inet addr show dev "${LAN_IFACE}" scope global | awk 'NR==1 {print $4}')"
   if [[ -n "${LAN_CIDR}" ]]; then
     PORTS=(8077)
-    has_component primary && PORTS+=(8003 8004 8008)
-    has_component secondary && PORTS+=(8103 8104 8108)
+    has_component llm-a && PORTS+=(8003 8004 8008)
+    has_component llm-b && PORTS+=(8103 8104 8108)
     has_component embedding && PORTS+=(8005)
     has_component reranker && PORTS+=(8006)
     has_component task && PORTS+=(8007)
