@@ -20,16 +20,48 @@ let fleetHosts = [];
 // unauthenticated port is how one page bug becomes remote code execution on
 // every machine in the fleet.
 //
-// Reads only, for now. Config saves and service actions against another host
-// arrive with the control channel; until then the controls that would send
-// them are disabled with a reason rather than pointed at a 404.
-const FLEET_PROXIED = ['/api/status'];
+// The writes are here too now, and they are the reason this list is exact
+// rather than a prefix: `/api/saved-configs` is proxied, but
+// `/api/saved-configs/<name>/patch` and `/default` are local-only operations
+// the control API does not implement. A prefix match would have rewritten them
+// into hub routes that do not exist.
+const FLEET_PROXIED = [
+  '/api/status',
+  '/api/config',
+  '/api/config/preflight',
+  '/api/saved-configs',
+];
+
+// The two proxied paths that carry a name in them. Anchored at both ends and
+// spelled out segment by segment, so they match exactly the two hub routes and
+// nothing that merely starts the same way.
+const FLEET_PROXIED_PATTERNS = [
+  /^\/api\/service\/[^/]+\/[^/]+$/,
+  /^\/api\/saved-configs\/[^/]+\/apply$/,
+];
+
+function fleetProxies(path) {
+  return FLEET_PROXIED.includes(path)
+    || FLEET_PROXIED_PATTERNS.some(rule => rule.test(path));
+}
 
 function fleetPath(url) {
   if (!fleetHost || typeof url !== 'string') return url;
   const path = url.split('?')[0];
-  if (!FLEET_PROXIED.includes(path)) return url;
+  if (!fleetProxies(path)) return url;
   return '/api/fleet/' + encodeURIComponent(fleetHost) + url.slice('/api'.length);
+}
+
+// Whether the selected peer may be written to at all. Two independent gates on
+// the hub -- `control` in the registry and a matching API major -- and the page
+// must not offer an editable form when either is shut, so it reads the same
+// answer the hub would give rather than deciding for itself.
+function fleetControllable() {
+  return Boolean(fleetHost && currentFleetHost()?.controllable);
+}
+
+function fleetControlRefused() {
+  return String(currentFleetHost()?.control_refused || '');
 }
 
 // -- selection --
@@ -72,17 +104,29 @@ function selectFleetHost(id) {
 // that, and they are not decoration.
 function applyFleetMode() {
   const remote = Boolean(fleetHost);
+  const writable = fleetControllable();
   document.body.dataset.fleetHost = fleetHost;
+  document.body.dataset.fleetWritable = writable ? '1' : '';
   document.getElementById('app-shell')?.classList.toggle('fleet-remote', remote);
 
   const banner = document.getElementById('fleet-banner');
   if (banner) {
     const host = currentFleetHost();
+    const name = host?.label || fleetHost;
     banner.hidden = !remote;
-    banner.textContent = remote
-      ? `Viewing ${host?.label || fleetHost} — read-only. Configuration and service `
-        + `controls act on the machine you are sitting at, so they are disabled here.`
-      : '';
+    // Three different sentences, because "why can I not edit this" has three
+    // different answers and a single vague one sends the operator to the wrong
+    // machine to look for the cause.
+    if (!remote) banner.textContent = '';
+    else if (writable) {
+      banner.textContent = `Editing ${name}. Saves and service actions go to that `
+        + `machine, not this one.`;
+    } else if (fleetControlRefused()) {
+      banner.textContent = `Viewing ${name} — read-only. ${fleetControlRefused()}`;
+    } else {
+      banner.textContent = `Viewing ${name} — read-only. Control is off for this host; `
+        + `turn it on in the host list to edit it from here.`;
+    }
   }
 
   // Everything except the services view is about this machine. A tab is
@@ -90,16 +134,28 @@ function applyFleetMode() {
   // that acts on a different machine from the one named in the header is the
   // failure this picker exists to prevent -- `bulkAction('stop')` is not
   // proxied, so a live Stop All here would stop the local stack.
+  //
+  // `data-fleet-control` is the exception: a control the hub does proxy, which
+  // is available on a peer this hub may write to and blocked on one it may not.
+  // It is additive to `data-local-only` rather than a replacement, so a tab
+  // stays local-only unless someone decides otherwise -- the default that
+  // matters when the next tab is added.
   document.querySelectorAll('[data-local-only]').forEach(el => {
+    const proxied = writable && el.hasAttribute('data-fleet-control');
+    const blocked = remote && !proxied;
     if (el.classList.contains('tab-btn')) {
-      el.classList.toggle('is-local-only-blocked', remote);
-      el.disabled = remote;
-      el.title = remote ? 'This runs on the machine you are sitting at' : '';
+      el.classList.toggle('is-local-only-blocked', blocked);
+      el.disabled = blocked;
+      el.title = blocked
+        ? (el.hasAttribute('data-fleet-control') && fleetControlRefused())
+          || 'This runs on the machine you are sitting at'
+        : '';
     } else {
-      el.toggleAttribute('hidden', remote);
+      el.toggleAttribute('hidden', blocked);
     }
   });
-  if (remote && document.querySelector('.tab-btn.active[data-local-only]')) {
+  const active = document.querySelector('.tab-btn.active[data-local-only]');
+  if (active && active.disabled) {
     showTab('services');
   }
 
@@ -160,6 +216,20 @@ async function initFleet() {
     hosts = (await fetchJSON('/api/fleet/hosts')).hosts || [];
   } catch { return; }
   fleetHosts = hosts.filter(h => h.enabled !== false);
+
+  // `controllable` is the poller's answer, not the registry's: it folds in the
+  // version check, which needs a round trip to the peer. `/api/fleet/hosts`
+  // knows only that control was requested. Merged here so the page asks one
+  // question -- "may I write to this host" -- rather than two that can disagree.
+  try {
+    const polled = (await fetchJSON('/api/fleet')).hosts || [];
+    const byId = new Map(polled.map(h => [h.id, h]));
+    fleetHosts.forEach(h => {
+      const entry = byId.get(h.id);
+      h.controllable = Boolean(entry?.controllable);
+      h.control_refused = entry?.control_refused || '';
+    });
+  } catch { /* an unpolled fleet is read-only, which is the safe default */ }
 
   const picker = document.getElementById('fleet-picker');
   const select = document.getElementById('fleet-host');

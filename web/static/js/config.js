@@ -3,8 +3,315 @@
 // The configuration form: loading it, tracking which sections are dirty, the
 // per-slot context read-out, the pre-flight budget check, and saved profiles.
 
+// -- another machine's configuration --
+//
+// The local form is rendered by Jinja from this host's `CONFIG_FIELDS`. A peer
+// has its own list, and the two can differ in three ways that matter: it may
+// omit fields this platform has (a Mac withholds every GPU placement control),
+// it may carry fields this build has never heard of, or it may simply be a
+// different version. So the peer's list arrives over
+// `/api/fleet/<id>/config/fields` and this page reconciles it against the form
+// it was served, rather than a second renderer existing for the remote case.
+//
+// `data-cfg-key` on every field wrapper is what makes that possible: the
+// reconciliation is DOM filtering, not template logic.
+//
+// The fourth case -- a peer whose API major differs -- never reaches here. The
+// hub refuses to proxy to it and `applyFleetMode` leaves this tab disabled with
+// the version mismatch as its reason, which is the "read-only with a banner
+// naming both" case handled one layer up.
+
+let cfgRemoteEtag = '';
+let cfgRemoteSchema = null;
+
+// Replacing a control is destructive, and this page is never re-served: switch
+// back to this machine, or to a third host, and whatever the last peer declared
+// would still be sitting there. The original markup is kept so the form can be
+// put back exactly as Jinja rendered it.
+const cfgOriginalControls = new Map();
+
+function restoreReshapedFields() {
+  for (const [key, html] of cfgOriginalControls) {
+    const el = document.getElementById('cfg-' + key);
+    if (el) el.outerHTML = html;
+  }
+  cfgOriginalControls.clear();
+  document.querySelectorAll('[data-remote-reshaped]').forEach(el => el.remove());
+}
+
+// The types the generic renderer can honestly produce. `path` is here because
+// its value is a plain string on the target; what it loses remotely is the file
+// picker beside it, which lists *this* machine's models and would be worse than
+// useless. The rest are bespoke -- a template manager, a custom-argument
+// editor, a transcription model list -- and every one of them is backed by a
+// local-only endpoint, so they say where to go instead of pretending.
+const CFG_GENERIC_TYPES = new Set(['text', 'number', 'select', 'path']);
+
+// Whether the control on the page is the one the peer's declaration describes.
+// Compared against the DOM rather than against a second copy of this host's
+// field list, because the DOM *is* this host's field list -- Jinja rendered it
+// from the same table, and shipping the table again to diff against it would
+// just create a third thing that can disagree.
+function sameShapeAsDeclared(el, field) {
+  if (field.type === 'select') {
+    if (el.tagName !== 'SELECT') return false;
+    const here = [...el.options].map(o => String(o.value)).sort();
+    const there = (field.options || []).map(o => String(o)).sort();
+    return here.length === there.length && here.every((v, i) => v === there[i]);
+  }
+  if (el.tagName === 'SELECT') return false;
+  // `path` renders as a text input remotely; number and text differ only in the
+  // input type, which is what the target's declaration decides.
+  const wanted = field.type === 'number' ? 'number' : 'text';
+  return (el.getAttribute('type') || 'text') === wanted;
+}
+
+function remoteFieldControl(field, value) {
+  const id = 'cfg-' + field.key;
+  const name = escapeHtml(field.key);
+  if (field.type === 'select') {
+    const options = (field.options || []).map(opt =>
+      `<option value="${escapeHtml(opt)}"${String(opt) === String(value) ? ' selected' : ''}>`
+      + `${escapeHtml(opt)}</option>`).join('');
+    return `<select id="${escapeHtml(id)}" name="${name}">${options}</select>`;
+  }
+  const type = field.type === 'number' ? 'number' : 'text';
+  return `<input type="${type}" id="${escapeHtml(id)}" name="${name}" `
+    + `value="${escapeHtml(value == null ? '' : String(value))}">`;
+}
+
+// Fields the peer has and this page does not, grouped under the section the
+// peer files them in so they land somewhere an operator would look.
+function renderRemoteExtras(extras, values) {
+  document.querySelectorAll('.cfg-remote-extra').forEach(el => el.remove());
+  const bySection = new Map();
+  extras.forEach(field => {
+    if (!bySection.has(field.section)) bySection.set(field.section, []);
+    bySection.get(field.section).push(field);
+  });
+  const label = escapeHtml(currentFleetHost()?.label || fleetHost);
+  for (const [section, fields] of bySection) {
+    // Its own panel rather than an existing grid: sections lay their fields out
+    // in several different containers and not all of them have the same ones,
+    // so appending into "whichever grid this section happens to use" would put
+    // a field somewhere different in each section, or nowhere.
+    const host = document.getElementById('cfgsec-' + String(section).replace(/ /g, '-'));
+    const shell = host?.querySelector('.cfg-shell') || host;
+    if (!shell) continue;
+    const panel = document.createElement('div');
+    panel.className = 'cfg-panel cfg-remote-extra';
+    panel.innerHTML = `<h4>Only on ${label}</h4>`
+      + `<p>This machine's configuration has no equivalent of `
+      + `${fields.length === 1 ? 'this setting' : 'these settings'}.</p>`;
+    const grid = document.createElement('div');
+    grid.className = 'cfg-mini-grid';
+    fields.forEach(field => {
+      const wrap = document.createElement('div');
+      wrap.className = 'field';
+      wrap.dataset.cfgKey = field.key;
+      const known = CFG_GENERIC_TYPES.has(field.type);
+      wrap.innerHTML =
+        `<label for="cfg-${escapeHtml(field.key)}">${escapeHtml(field.label || field.key)}</label>`
+        + (known
+          ? remoteFieldControl(field, values[field.key])
+          : `<div class="cfg-remote-bespoke">Edit this on the host itself — `
+            + `it needs a control this page can only run locally.</div>`)
+        + (field.hint ? `<div class="hint">${escapeHtml(field.hint)}</div>` : '');
+      grid.appendChild(wrap);
+    });
+    panel.appendChild(grid);
+    shell.appendChild(panel);
+  }
+}
+
+function renderRemoteSchemaNote(schema, hidden, extras, sameShape, reshaped = []) {
+  const note = document.getElementById('cfg-remote-note');
+  if (!note) return;
+  const host = currentFleetHost();
+  const name = escapeHtml(host?.label || fleetHost);
+  const parts = [`<strong>Editing ${name}</strong>`];
+
+  if (sameShape) {
+    parts.push('<p>Its configuration surface matches this one exactly, so this '
+      + 'is the same form you would see sitting at it.</p>');
+  } else {
+    parts.push(`<p>Its configuration surface differs from this machine's. `
+      + `The form below is reconciled against what it actually accepts.</p>`);
+  }
+
+  if (hidden.length) {
+    // Grouped by reason, because the reason is the useful part: 27 controls
+    // withheld for one cause reads very differently from 27 unrelated gaps.
+    const reasons = new Map();
+    hidden.forEach(([key, why]) => {
+      const reason = why || 'not part of this host\'s configuration';
+      reasons.set(reason, (reasons.get(reason) || 0) + 1);
+    });
+    const lines = [...reasons].map(([reason, count]) =>
+      `<li>${count} hidden — ${escapeHtml(reason)}</li>`).join('');
+    parts.push(`<ul class="cfg-remote-list">${lines}</ul>`);
+  }
+  if (extras.length) {
+    const bespoke = extras.filter(f => !CFG_GENERIC_TYPES.has(f.type)).length;
+    parts.push(`<p>${extras.length} setting${extras.length === 1 ? '' : 's'} this `
+      + `machine does not have ${extras.length === 1 ? 'is' : 'are'} shown with a badge`
+      + (bespoke ? `; ${bespoke} of them need editing on the host itself` : '')
+      + '.</p>');
+  }
+  if (reshaped.length) {
+    parts.push(`<p>${reshaped.length} setting${reshaped.length === 1 ? '' : 's'} `
+      + `${reshaped.length === 1 ? 'is' : 'are'} declared differently here than on `
+      + `this machine; those controls are built from this host's definition.</p>`);
+  }
+  note.innerHTML = parts.join('');
+  note.hidden = false;
+}
+
+// Undo everything the remote pass did, so switching back to this machine does
+// not leave another host's fields on the page.
+function clearRemoteConfigForm() {
+  cfgRemoteSchema = null;
+  cfgRemoteEtag = '';
+  restoreReshapedFields();
+  document.querySelectorAll('.cfg-remote-extra').forEach(el => el.remove());
+  document.querySelectorAll('[data-cfg-key]').forEach(el => {
+    el.removeAttribute('hidden');
+    el.removeAttribute('data-remote-skip');
+  });
+  // The secret pass disabled these; a local page must not inherit that.
+  document.querySelectorAll('[data-cfg-key] [name][disabled]').forEach(el => {
+    el.disabled = false;
+    el.removeAttribute('placeholder');
+  });
+  document.querySelectorAll('[data-remote-secret-note]').forEach(el => el.remove());
+  document.querySelectorAll('[data-remote-reshaped]').forEach(el => el.remove());
+  const note = document.getElementById('cfg-remote-note');
+  if (note) { note.hidden = true; note.innerHTML = ''; }
+}
+
+async function loadRemoteConfigForm() {
+  // Whatever the previous selection reshaped, before this one decides again.
+  restoreReshapedFields();
+  const id = encodeURIComponent(fleetHost);
+  const schema = await fetchJSON(`/api/fleet/${id}/config/fields`);
+  if (!schema || !Array.isArray(schema.fields)) {
+    throw new Error(schema?.error || 'no field list from this host');
+  }
+  const body = await fetchJSON(`/api/fleet/${id}/config`);
+  cfgRemoteSchema = schema;
+  cfgRemoteEtag = body?.config_etag || '';
+
+  // `masked_config` reports a secret as set without ever reporting its value,
+  // so a secret's `value` is null by design and must not be written into a box
+  // that a save would then send back as an empty string.
+  const values = {};
+  const secrets = new Set();
+  for (const [key, entry] of Object.entries(body?.config || {})) {
+    if (entry && typeof entry === 'object') {
+      values[key] = entry.value == null ? '' : entry.value;
+      if (entry.secret) secrets.add(key);
+    } else {
+      values[key] = entry;
+    }
+  }
+  cfgCurrent = values;
+
+  const theirs = new Map(schema.fields.map(f => [f.key, f]));
+  const omitted = schema.omitted || {};
+  const wrappers = [...document.querySelectorAll('[data-cfg-key]')];
+  const mine = new Set(wrappers.map(el => el.dataset.cfgKey));
+
+  const hidden = [];
+  wrappers.forEach(el => {
+    const key = el.dataset.cfgKey;
+    const present = theirs.has(key);
+    el.toggleAttribute('hidden', !present);
+    if (!present) hidden.push([key, omitted[key] || '']);
+  });
+
+  // A shared key whose *shape* differs is the case the digest exists to catch
+  // and neither key set can see: the peer may declare a select where this build
+  // has a text box, or the same select with different options. Rendering the
+  // local widget would offer choices the target rejects, so the control is
+  // replaced with one built from the peer's own declaration.
+  const reshaped = [];
+  schema.fields.forEach(field => {
+    if (!mine.has(field.key)) return;
+    if (!CFG_GENERIC_TYPES.has(field.type)) return;
+    const el = document.getElementById('cfg-' + field.key);
+    if (!el || !sameShapeAsDeclared(el, field)) {
+      if (el) reshaped.push(field);
+    }
+  });
+  reshaped.forEach(field => {
+    const el = document.getElementById('cfg-' + field.key);
+    const wrap = el?.closest('[data-cfg-key]');
+    if (!wrap || !el) return;
+    if (!cfgOriginalControls.has(field.key)) {
+      cfgOriginalControls.set(field.key, el.outerHTML);
+    }
+    el.outerHTML = remoteFieldControl(field, values[field.key]);
+    if (!wrap.querySelector('[data-remote-reshaped]')) {
+      const hint = document.createElement('div');
+      hint.className = 'hint';
+      hint.setAttribute('data-remote-reshaped', '1');
+      hint.textContent = 'This host declares this setting differently from '
+        + 'yours; the control above is built from its definition.';
+      wrap.appendChild(hint);
+    }
+  });
+
+  const extras = schema.fields.filter(f => !mine.has(f.key));
+  renderRemoteExtras(extras, values);
+
+  for (const [key, val] of Object.entries(values)) {
+    const el = document.getElementById('cfg-' + key);
+    if (el && !secrets.has(key)) el.value = val;
+  }
+
+  // A secret is write-only and, by default, refused by the control listener
+  // anyway. Left editable it would post an empty string over a live credential,
+  // so the box is disabled and skipped by the save collector rather than
+  // merely blanked.
+  secrets.forEach(key => {
+    const wrap = document.querySelector(`[data-cfg-key="${CSS.escape(key)}"]`);
+    const el = document.getElementById('cfg-' + key);
+    if (!wrap || !el) return;
+    el.value = '';
+    el.disabled = true;
+    el.placeholder = 'set — write-only';
+    wrap.setAttribute('data-remote-skip', '1');
+    if (!wrap.querySelector('[data-remote-secret-note]')) {
+      const hint = document.createElement('div');
+      hint.className = 'hint';
+      hint.setAttribute('data-remote-secret-note', '1');
+      hint.textContent = 'Secrets cannot be read back or, by default, written '
+        + 'across the fleet. Set this on the host itself.';
+      wrap.appendChild(hint);
+    }
+  });
+
+  const sameShape = !hidden.length && !extras.length && !reshaped.length;
+  renderRemoteSchemaNote(schema, hidden, extras, sameShape, reshaped);
+  initConfigArgEditors();
+  initPerSlotHints();
+}
+
 // -- config --
 async function loadConfig() {
+  // Another machine's form is reconciled, not re-rendered. The local path below
+  // depends on GGUF listings, chat templates and transcription capabilities that
+  // are all this host's, so it is not merely unnecessary remotely -- it would
+  // fill a remote form with local answers.
+  if (typeof fleetHost !== 'undefined' && fleetHost) {
+    try {
+      await loadRemoteConfigForm();
+    } catch (e) {
+      toast('Could not load configuration for this host: ' + e, 'err');
+    }
+    return;
+  }
+  clearRemoteConfigForm();
   try {
     if (!ggufFiles.length) await loadGgufFiles();
     if (!chatTemplates.length) await loadChatTemplates();

@@ -40,6 +40,7 @@ config_env = sys.modules["config_env"]
 fleet = sys.modules["fleet"]
 public_api = sys.modules["public_api"]
 fleet_routes = sys.modules["routes.fleet"]
+control_routes = sys.modules["routes.control"]
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import platform_harness  # noqa: E402
@@ -416,6 +417,159 @@ class CrossPlatformTests(unittest.TestCase):
         for gpu in entry["payload"].get("gpus") or []:
             with self.subTest(gpu.get("index")):
                 self.assertFalse(gpu.get("unified_memory"))
+
+
+class WriteRouteTests(unittest.TestCase):
+    """The hub's write half, against a spoke that is a real control app.
+
+    `_Spoke.control` is `create_control_api_app()`, so these go through the same
+    token check, secret filter and etag logic a real peer would apply -- the
+    only thing standing in for the network is `fleet.fetch`.
+    """
+
+    def setUp(self):
+        self.spoke = _Spoke(env={"LLM_CONTROL_ENABLED": "on",
+                                 "LLM_CONTROL_TOKEN": "ctl-tok"})
+        self.client = manager.app.test_client()
+
+    def _registry(self, **over):
+        _Registry(self, [{**HOST, **over}])
+
+    def _cache(self, **entry):
+        """A poller result for `studio`, since control is version-gated."""
+        cache = fleet.FleetCache(lambda: {}, interval=999)
+        self.addCleanup(cache.stop)
+        cache._state = {"studio": {"ok": True, "error": "", "payload": {},
+                                   "checked_at": 0.0, "controllable": True,
+                                   "control_refused": "", **entry}}
+        fleet_routes.configure(cache)
+        return cache
+
+    def _call(self, method, path, **kwargs):
+        with patch.object(fleet, "fetch", self.spoke.fetch):
+            return getattr(self.client, method)(path, **kwargs)
+
+    def _spoke_answers(self, field, answer):
+        """Substitute one of the spoke's providers for the duration.
+
+        Not `patch.object(manager, "perform_config_save")`, which looks right
+        and silently reaches nothing: `routes.control.PROVIDERS` is a module
+        global, `sys.modules["routes.control"]` is shared across every test file,
+        and each file that loads `app.py` gets its own module object and calls
+        `configure()` with its own providers. Whichever loaded last wins, so the
+        provider actually invoked here may close over a different `app` module
+        than the one this file imported. Patching the provider is the seam that
+        holds whatever the load order turns out to be.
+        """
+        return patch.object(control_routes.PROVIDERS, field, answer)
+
+    # -- the gates ----------------------------------------------------------
+
+    def test_a_peer_that_is_watched_but_not_controlled_is_refused(self):
+        """Adding a machine to look at it must never grant stopping it."""
+        self._registry(control=False)
+        self._cache()
+        response = self._call("get", "/api/fleet/studio/config")
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("not controlled", response.get_json()["error"])
+
+    def test_a_version_mismatch_refuses_with_the_reason(self):
+        self._registry()
+        self._cache(controllable=False,
+                    control_refused="studio speaks state API 2.0; this manager speaks 1.0.")
+        response = self._call("post", "/api/fleet/studio/config", json={"EMBED_CTX_SIZE": "4096"})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("speaks state API 2.0", response.get_json()["error"])
+
+    def test_an_unknown_host_is_a_404_on_every_write_path(self):
+        self._registry()
+        self._cache()
+        for path, method in (("/api/fleet/nope/config", "get"),
+                             ("/api/fleet/nope/config", "post"),
+                             ("/api/fleet/nope/config/fields", "get"),
+                             ("/api/fleet/nope/saved-configs", "get"),
+                             ("/api/fleet/nope/services", "get"),
+                             ("/api/fleet/nope/service/embed/restart", "post"),
+                             ("/api/fleet/nope/saved-configs/x/apply", "post")):
+            with self.subTest(path):
+                self.assertEqual(self._call(method, path, json={}).status_code, 404)
+
+    # -- ignored_keys -------------------------------------------------------
+
+    def test_a_key_the_peer_does_not_know_is_an_error_not_a_save(self):
+        """The rule this whole route exists for.
+
+        `allowed_config_keys` unions in whatever the target's env file holds, so
+        a hub one version ahead can send a renamed key, have it dropped, and get
+        a 200 back. A green toast for a setting that went nowhere is worse than
+        an error.
+        """
+        self._registry()
+        self._cache()
+        with self._spoke_answers("save_config", lambda u, f: (
+                {"ok": True, "restart_needed": [], "ignored_keys": ["LLM_A_CTX_SIZE"]}, 200)):
+            response = self._call("post", "/api/fleet/studio/config",
+                                  json={"LLM_A_CTX_SIZE": "4096"})
+        self.assertEqual(response.status_code, 409)
+        body = response.get_json()
+        self.assertFalse(body["ok"])
+        self.assertIn("LLM_A_CTX_SIZE", body["error"])
+        self.assertEqual(body["ignored_keys"], ["LLM_A_CTX_SIZE"])
+
+    def test_a_save_the_peer_fully_accepted_stays_a_success(self):
+        self._registry()
+        self._cache()
+        with self._spoke_answers("save_config", lambda u, f: (
+                {"ok": True, "restart_needed": ["embed"], "ignored_keys": []}, 200)):
+            response = self._call("post", "/api/fleet/studio/config",
+                                  json={"EMBED_CTX_SIZE": "4096"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ok"])
+
+    def test_the_peers_own_refusal_is_passed_through_unchanged(self):
+        """A preflight failure is the peer's answer, not something to restate."""
+        self._registry()
+        self._cache()
+        with self._spoke_answers("save_config", lambda u, f: (
+                {"ok": False, "error": "will not fit", "ignored_keys": []}, 409)):
+            response = self._call("post", "/api/fleet/studio/config", json={"X": "1"})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "will not fit")
+
+    # -- the plain proxies --------------------------------------------------
+
+    def test_the_field_list_comes_from_the_peer(self):
+        self._registry()
+        self._cache()
+        body = self._call("get", "/api/fleet/studio/config/fields").get_json()
+        self.assertTrue(str(body["fields_digest"]).startswith("sha256:"))
+        self.assertIn("sections", body)
+
+    def test_a_secret_is_never_readable_back_through_the_hub(self):
+        self.spoke.env = {"LLM_CONTROL_ENABLED": "on", "LLM_CONTROL_TOKEN": "ctl-tok",
+                          "TRANSCRIPT_API_TOKEN": "hunter2"}
+        self._registry()
+        self._cache()
+        response = self._call("get", "/api/fleet/studio/config")
+        self.assertNotIn("hunter2", response.get_data(as_text=True))
+        entry = response.get_json()["config"]["TRANSCRIPT_API_TOKEN"]
+        self.assertTrue(entry["secret"] and entry["set"])
+        self.assertIsNone(entry["value"])
+
+    def test_a_service_action_reaches_the_peers_plural_route(self):
+        self._registry()
+        self._cache()
+        with self._spoke_answers("service_action", lambda n, a: (
+                {"ok": True, "name": n, "action": a}, 200)):
+            response = self._call("post", "/api/fleet/studio/service/embed/restart")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(("POST", "/api/control/v1/services/embed/restart"), self.spoke.calls)
+
+    def test_the_write_half_is_not_reachable_from_another_machine(self):
+        for app_factory in (manager.create_state_api_app, manager.create_control_api_app):
+            with self.subTest(app_factory.__name__):
+                rules = {str(r) for r in app_factory().url_map.iter_rules()}
+                self.assertFalse([r for r in rules if r.startswith("/api/fleet")])
 
 
 class ProbeTests(unittest.TestCase):

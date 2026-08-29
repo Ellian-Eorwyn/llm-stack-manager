@@ -13,11 +13,14 @@ a fixed destination. A generic `/api/fleet/<id>/<path:rest>` on this
 unauthenticated port would let anything that can reach 8077 issue authenticated
 requests to every machine in the fleet.
 
-Reads only, for now. The write half -- config saves and service actions against
-a remote host -- is its own commit, on top of a read path that has been used.
+The write half sits behind two gates the read half does not have: a peer must
+be marked `control` in the registry, and the two majors must agree. Both refuse
+with a reason rather than sending a form that half works.
 """
 
 from __future__ import annotations
+
+from urllib.parse import quote
 
 from flask import Blueprint, jsonify, request
 
@@ -162,6 +165,46 @@ def _is_self(entry: dict) -> bool:
     return str(entry.get("read_port")) == str(env.get("LLM_API_PORT") or "8078")
 
 
+def _controllable(host_id: str):
+    """(host, error response) for a peer this hub may write to.
+
+    Two gates, both opt-in and both refusing with a reason:
+
+    `control` is per peer and defaults false, so adding a machine to watch it
+    never grants the ability to stop its backends. The version gate is the one
+    `fleet.compatible` describes -- a hub whose major differs would render a
+    form built from its own field list against a host that means something else
+    by those keys.
+
+    A peer the poller has not reached yet is *not* refused here. The control
+    listener authenticates every request itself and answers 401 or 503 on its
+    own behalf; guessing on this side would only turn a working write into a
+    confusing local error.
+    """
+    host, missing = _known(host_id)
+    if missing:
+        return None, missing
+    if not host.get("control"):
+        return None, (jsonify(
+            ok=False,
+            error=(f"{host_id} is monitored but not controlled. Enable control "
+                   f"for it in the host list first.")), 403)
+    entry = CACHE.one(host_id) if CACHE else None
+    refused = str((entry or {}).get("control_refused") or "")
+    if refused:
+        return None, (jsonify(ok=False, error=refused), 409)
+    return host, None
+
+
+def _control(host, path, **kwargs):
+    """One call to a peer's control listener, as a Flask response."""
+    status, body, error = fleet.call(host, path, port_field="control_port",
+                                     token_field="control_token", **kwargs)
+    if not status:
+        return jsonify(ok=False, error=error or "no answer"), 502
+    return jsonify(body), status
+
+
 # ---------------------------------------------------------------------------
 # proxied reads
 # ---------------------------------------------------------------------------
@@ -209,3 +252,122 @@ def api_fleet_logs(host_id):
         return missing
     status, body, error = fleet.call(host, "/api/v1/logs?" + request.query_string.decode())
     return (jsonify(body), status) if status else (jsonify(ok=False, error=error), 502)
+
+
+# ---------------------------------------------------------------------------
+# proxied writes
+# ---------------------------------------------------------------------------
+#
+# Each mirrors the local path it stands in for, so `fleet.js` can rewrite
+# `/api/config` to `/api/fleet/<id>/config` and leave every call site alone.
+# `/config/fields` is the exception with no local twin: this page renders its
+# own form from Jinja and only needs a field list when the form belongs to
+# somebody else.
+
+@bp.route("/api/fleet/<host_id>/config")
+def api_fleet_config(host_id):
+    host, refused = _controllable(host_id)
+    if refused:
+        return refused
+    return _control(host, "/api/control/v1/config")
+
+
+@bp.route("/api/fleet/<host_id>/config/fields")
+def api_fleet_config_fields(host_id):
+    """The peer's own field list, for rendering a form this hub does not have."""
+    host, refused = _controllable(host_id)
+    if refused:
+        return refused
+    return _control(host, "/api/control/v1/config/fields")
+
+
+@bp.route("/api/fleet/<host_id>/config/preflight", methods=["POST"])
+def api_fleet_config_preflight(host_id):
+    host, refused = _controllable(host_id)
+    if refused:
+        return refused
+    return _control(host, "/api/control/v1/config/preflight",
+                    method="POST", payload=request.get_json(silent=True) or {})
+
+
+@bp.route("/api/fleet/<host_id>/config", methods=["POST"])
+def api_fleet_config_save(host_id):
+    """A remote save, with `ignored_keys` treated as a failure.
+
+    `allowed_config_keys` unions in whatever the *target's* env file holds, so
+    what is writable is a fact about the target and not about this hub. A key
+    the peer does not know is dropped silently and the save returns 200 -- which
+    is indistinguishable from having worked. A hub is exactly where that
+    happens: it renders a form from a field list that may be a version ahead,
+    and the operator watching a green toast has no way to tell that the setting
+    they changed went nowhere.
+
+    So a non-empty `ignored_keys` is reported as a 409 even though the peer
+    called it a success. Whatever the peer *did* write stays written -- this
+    does not roll anything back -- and the names are handed back so the message
+    can say which settings did not land.
+    """
+    host, refused = _controllable(host_id)
+    if refused:
+        return refused
+    headers = {}
+    if request.headers.get("If-Match"):
+        headers["If-Match"] = request.headers["If-Match"]
+    path = "/api/control/v1/config"
+    if str(request.args.get("force", "")).lower() in {"1", "true", "yes", "on"}:
+        path += "?force=1"
+    status, body, error = fleet.call(
+        host, path, port_field="control_port", token_field="control_token",
+        method="POST", payload=request.get_json(silent=True) or {},
+        headers=headers or None)
+    if not status:
+        return jsonify(ok=False, error=error or "no answer"), 502
+    ignored = body.get("ignored_keys") if isinstance(body, dict) else None
+    if status == 200 and ignored:
+        return jsonify({**body, "ok": False, "error": (
+            f"{host_id} does not know "
+            f"{'these settings' if len(ignored) > 1 else 'this setting'}: "
+            f"{', '.join(ignored)}. Nothing was written for "
+            f"{'them' if len(ignored) > 1 else 'it'}.")}), 409
+    return jsonify(body), status
+
+
+@bp.route("/api/fleet/<host_id>/saved-configs")
+def api_fleet_saved_configs(host_id):
+    host, refused = _controllable(host_id)
+    if refused:
+        return refused
+    return _control(host, "/api/control/v1/saved-configs")
+
+
+@bp.route("/api/fleet/<host_id>/saved-configs/<name>/apply", methods=["POST"])
+def api_fleet_saved_config_apply(host_id, name):
+    host, refused = _controllable(host_id)
+    if refused:
+        return refused
+    return _control(host, f"/api/control/v1/saved-configs/{quote(name, safe='')}/apply",
+                    method="POST", payload=request.get_json(silent=True) or {})
+
+
+@bp.route("/api/fleet/<host_id>/services")
+def api_fleet_services(host_id):
+    host, refused = _controllable(host_id)
+    if refused:
+        return refused
+    return _control(host, "/api/control/v1/services")
+
+
+@bp.route("/api/fleet/<host_id>/service/<name>/<action>", methods=["POST"])
+def api_fleet_service_action(host_id, name, action):
+    """Singular `service`, matching the local route this stands in for.
+
+    The control listener spells it `services`; the page calls
+    `/api/service/<name>/<action>`. The rewrite is a prefix substitution, so
+    this side has to match the page, and the translation happens here.
+    """
+    host, refused = _controllable(host_id)
+    if refused:
+        return refused
+    return _control(host,
+                    f"/api/control/v1/services/{quote(name, safe='')}/{quote(action, safe='')}",
+                    method="POST")

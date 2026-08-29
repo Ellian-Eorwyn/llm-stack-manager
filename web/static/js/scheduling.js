@@ -187,13 +187,33 @@ async function saveCfgSection(section, btn) {
     if (target && sec.contains(target)) syncConfigArgInput(list.dataset.configTarget, true);
   });
   const updates = {};
-  sec.querySelectorAll('[name]').forEach(el => { updates[el.name] = el.value; });
+  sec.querySelectorAll('[name]').forEach(el => {
+    // A field the remote pass disabled — a secret, which is write-only and
+    // would otherwise be posted back as an empty string over a live credential.
+    if (el.closest('[data-remote-skip]')) return;
+    updates[el.name] = el.value;
+  });
 
   const orig = btn.textContent;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Saving...';
   try {
     let d = await fetchJSON('/api/config', 'POST', updates);
+    // A key the target does not know is dropped by `allowed_config_keys` and
+    // the save still succeeds from its point of view. What is writable is a
+    // fact about the target, not about the form that was rendered, and a hub
+    // one version ahead is exactly where the two come apart -- so this reads as
+    // a failure naming the settings that went nowhere.
+    //
+    // Deliberately checked before the pre-flight override below: forcing
+    // overrides a *prediction* about memory, and a dropped key is not a
+    // prediction. Offering "save it anyway" here would retry the same no-op.
+    if (d.ignored_keys && d.ignored_keys.length) {
+      showPreflight(section, d.preflight);
+      toast('Not saved: ' + (d.error
+        || `this host does not know ${d.ignored_keys.join(', ')}`), 'err');
+      return;
+    }
     // The budget model refuses configurations it predicts cannot allocate. It
     // is a prediction, so the operator can override it — but they have to be
     // told what they are overriding first.
