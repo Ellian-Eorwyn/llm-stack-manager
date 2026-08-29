@@ -79,6 +79,24 @@ CONTEXT_HIGH_PCT = 85
 # Any config key matching this never leaves the process, whatever the allow-list
 # below says. The allow-list is the intended control; this is the one that has to
 # hold when someone adds a field to it without thinking about who reads it.
+def token_matches(supplied: str, expected: str) -> bool:
+    """Whether a bearer token is the configured one, in constant time.
+
+    Here rather than in either routes module because both listeners need it and
+    a route importing another route is the wrong direction.
+
+    The encode is not cosmetic: `hmac.compare_digest` raises `TypeError` on a
+    non-ASCII `str`, which would turn a garbage token into a 500 where the `!=`
+    this replaces correctly returned a 401. Bytes have no such rule.
+
+    On a tailnet, against per-request jitter measured in hundreds of
+    microseconds, a byte-wise compare was not practically exploitable. It was
+    also one line, and it was about to be copied into a listener that can stop
+    a backend.
+    """
+    return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+
+
 SECRET_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)", re.IGNORECASE)
 
 # Config sections worth reporting: the settings that decide how a backend runs,

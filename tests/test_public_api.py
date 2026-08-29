@@ -24,6 +24,12 @@ config_env = sys.modules["config_env"]
 public_api = sys.modules["public_api"]
 telemetry = sys.modules["telemetry"]
 public_routes = sys.modules["routes.public"]
+control_api = sys.modules["control_api"]
+
+# After the app, so it reaches the `platforms` module already in sys.modules and
+# a substituted adapter is the one the application sees.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import platform_harness  # noqa: E402
 
 
 # A two-GPU box with the primary chat backend and the router both resident, which
@@ -665,8 +671,22 @@ class StateApiAppTests(unittest.TestCase):
     def test_the_mutating_routes_do_not_exist_on_it(self):
         rules = {str(rule) for rule in self.state_app.url_map.iter_rules()}
         for path in ("/api/config", "/api/service/<name>/<action>", "/api/status",
-                     "/api/app/update", "/api/saved-configs", "/"):
+                     "/api/app/update", "/api/saved-configs", "/",
+                     # The control listener is a third app. Nothing it serves
+                     # may appear here, whatever a later blueprint import does.
+                     "/api/control/v1/config",
+                     "/api/control/v1/services/<name>/<action>"):
             self.assertNotIn(path, rules)
+
+    def test_no_control_rule_is_registered_here_however_it_arrives(self):
+        """Prefix-level, so a route added later is caught without being listed.
+
+        The value of three apps is that the read-only one cannot serve a write
+        because it never learned the route. That property is only worth having
+        if something notices when it stops being true.
+        """
+        for rule in self.state_app.url_map.iter_rules():
+            self.assertFalse(str(rule).startswith("/api/control/"), str(rule))
 
     def test_it_does_not_serve_the_ui_assets(self):
         self.assertNotIn("/static/<path:filename>",
@@ -879,6 +899,246 @@ class LogEventTests(unittest.TestCase):
         events = public_api.log_events(["chat-backend-dense"], 3600, limit=2,
                                        registry=self._registry())
         self.assertEqual([e["ts"] for e in events], [200.0, 300.0])
+
+
+class ControlApiAppTests(unittest.TestCase):
+    """The third port: what it carries, and what it must not.
+
+    `StateApiAppTests` clause for clause, in the other direction. The state app
+    may not serve a write; this one may not serve the whole stack's state, the
+    UI, the setup wizard or an application update. Neither property is enforced
+    by a check on a request -- a check that has to be right on every route will
+    eventually be missed on one -- so both are properties of which routes the
+    app was built with, and both are asserted here.
+    """
+
+    TOKEN = "ctl-s3cret"
+
+    def setUp(self):
+        self.control_app = manager.create_control_api_app()
+
+    def _env(self, **overrides):
+        return {**ENV, "LLM_CONTROL_ENABLED": "on", "LLM_CONTROL_TOKEN": self.TOKEN,
+                **overrides}
+
+    def _client(self, **overrides):
+        return patch.object(config_env, "read_env", return_value=self._env(**overrides))
+
+    #: Every rule, pinned. Adding one is a deliberate act rather than a diff
+    #: nobody looked at, because the route list is the security review.
+    EXPECTED_RULES = {
+        ("/api/control/v1/health", frozenset({"GET"})),
+        ("/api/control/v1/schema", frozenset({"GET"})),
+        ("/api/control/v1/config", frozenset({"GET"})),
+        ("/api/control/v1/config", frozenset({"POST"})),
+        ("/api/control/v1/config/fields", frozenset({"GET"})),
+        ("/api/control/v1/config/preflight", frozenset({"POST"})),
+        ("/api/control/v1/saved-configs", frozenset({"GET"})),
+        ("/api/control/v1/saved-configs/<name>/apply", frozenset({"POST"})),
+        ("/api/control/v1/services", frozenset({"GET"})),
+        ("/api/control/v1/services/<name>/<action>", frozenset({"POST"})),
+    }
+
+    def test_every_rule_is_a_mutation_or_a_read_a_mutation_needs(self):
+        actual = {(str(rule), frozenset(rule.methods - {"HEAD", "OPTIONS"}))
+                  for rule in self.control_app.url_map.iter_rules()}
+        self.assertEqual(actual, self.EXPECTED_RULES)
+
+    def test_the_read_only_api_is_not_on_it(self):
+        rules = {str(rule) for rule in self.control_app.url_map.iter_rules()}
+        for path in ("/api/v1/snapshot", "/api/v1/events", "/api/v1/metrics", "/api/v1/logs"):
+            self.assertNotIn(path, rules)
+
+    def test_it_does_not_serve_the_ui_or_the_wizard_or_updates(self):
+        rules = {str(rule) for rule in self.control_app.url_map.iter_rules()}
+        for path in ("/", "/static/<path:filename>", "/api/setup/run", "/api/app/update",
+                     "/api/huggingface/downloads"):
+            self.assertNotIn(path, rules)
+
+    def test_the_control_rules_are_not_on_the_manager_app(self):
+        # Duplicating them there would put an unauthenticated copy of every
+        # write beside the authenticated one.
+        for rule in manager.app.url_map.iter_rules():
+            self.assertFalse(str(rule).startswith("/api/control/"), str(rule))
+
+    def test_health_answers_without_a_token(self):
+        # A fleet has to tell "unreachable" from "rejected my token", and it
+        # should not need a credential to learn that a host is up.
+        with self.control_app.test_client() as client, self._client():
+            self.assertEqual(client.get("/api/control/v1/health").status_code, 200)
+
+    def test_a_token_is_always_required(self):
+        with self.control_app.test_client() as client, self._client():
+            self.assertEqual(client.get("/api/control/v1/schema").status_code, 401)
+            self.assertEqual(client.get(
+                "/api/control/v1/schema",
+                headers={"Authorization": f"Bearer {self.TOKEN}"}).status_code, 200)
+
+    def test_the_query_parameter_form_is_refused(self):
+        """`?token=` exists on the read API because EventSource cannot set
+        headers. There is no stream here, so it buys nothing and costs a secret
+        in werkzeug's access log and in every proxy in front of it."""
+        with self.control_app.test_client() as client, self._client():
+            self.assertEqual(
+                client.get(f"/api/control/v1/schema?token={self.TOKEN}").status_code, 401)
+
+    def test_an_unset_token_refuses_rather_than_opens(self):
+        """The inverse of the read API's rule, and the reason for the inverse.
+
+        An empty `LLM_API_TOKEN` means "an open read-only API", which is a real
+        configuration. There is no reading of an open port that can stop
+        `chat-backend-dense`.
+        """
+        with self.control_app.test_client() as client, self._client(LLM_CONTROL_TOKEN=""):
+            response = client.get("/api/control/v1/schema")
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.get_json()["error"], "control_disabled")
+
+    def test_a_non_ascii_token_is_a_401_and_not_a_500(self):
+        # `hmac.compare_digest` raises TypeError on a non-ASCII str, which the
+        # `!=` it replaced handled fine. The encode is what keeps that true.
+        with self.control_app.test_client() as client, self._client():
+            self.assertEqual(client.get(
+                "/api/control/v1/schema",
+                headers={"Authorization": "Bearer pässwort"}).status_code, 401)
+
+    def test_it_does_not_bind_when_it_is_not_enabled(self):
+        with patch("werkzeug.serving.make_server") as make_server:
+            manager.start_control_api({"enabled": False})
+        make_server.assert_not_called()
+
+    def test_it_refuses_a_non_loopback_bind_with_no_token(self):
+        """A warning would be the read API's answer. This port can stop a
+        backend, so it does not start instead."""
+        with patch("werkzeug.serving.make_server") as make_server:
+            manager.start_control_api({"enabled": True, "host": "100.64.0.1",
+                                       "port": 8079, "token": ""})
+        make_server.assert_not_called()
+
+    def test_it_binds_when_it_is_enabled_and_has_a_token(self):
+        with patch("werkzeug.serving.make_server") as make_server, \
+             patch("threading.Thread"):
+            manager.start_control_api({"enabled": True, "host": "100.64.0.1",
+                                       "port": 8079, "token": self.TOKEN})
+        make_server.assert_called_once()
+
+
+class ControlApiBehaviourTests(unittest.TestCase):
+    """What the control API does once a request gets past the door."""
+
+    TOKEN = "ctl-s3cret"
+
+    def setUp(self):
+        self.control_app = manager.create_control_api_app()
+        self.auth = {"Authorization": f"Bearer {self.TOKEN}"}
+
+    def _env(self, **overrides):
+        return {**ENV, "LLM_CONTROL_ENABLED": "on", "LLM_CONTROL_TOKEN": self.TOKEN,
+                "HF_TOKEN": "hf_secretvalue", **overrides}
+
+    def test_a_secret_is_reported_as_set_and_never_as_itself(self):
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env", return_value=self._env()):
+            body = client.get("/api/control/v1/config", headers=self.auth).get_json()
+        self.assertNotIn("hf_secretvalue", json.dumps(body))
+        self.assertEqual(body["config"]["HF_TOKEN"],
+                         {"value": None, "secret": True, "set": True})
+
+    def test_a_secret_is_dropped_from_a_write_unless_allowed(self):
+        saved = {}
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env", return_value=self._env()), \
+             patch.object(manager, "perform_config_save",
+                          side_effect=lambda u, f: (saved.update(u) or ({"ok": True}, 200))):
+            body = client.post("/api/control/v1/config", json={"HF_TOKEN": "new", "CHAT_TEMP": "0.5"},
+                               headers=self.auth).get_json()
+        self.assertEqual(body["dropped_secret_keys"], ["HF_TOKEN"])
+        self.assertEqual(saved, {"CHAT_TEMP": "0.5"})
+
+    def test_a_secret_is_written_when_the_host_allows_it(self):
+        saved = {}
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env",
+                          return_value=self._env(LLM_CONTROL_ALLOW_SECRETS="on")), \
+             patch.object(manager, "perform_config_save",
+                          side_effect=lambda u, f: (saved.update(u) or ({"ok": True}, 200))):
+            client.post("/api/control/v1/config", json={"HF_TOKEN": "new"}, headers=self.auth)
+        self.assertEqual(saved, {"HF_TOKEN": "new"})
+
+    def test_a_stale_etag_is_refused_rather_than_clobbering(self):
+        """`update_env_values` is an unlocked read-modify-write over a text
+        file, so two writers lose one of the two saves. A caller that sends
+        back the etag it rendered from can be told."""
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env", return_value=self._env()), \
+             patch.object(manager, "perform_config_save") as save:
+            response = client.post("/api/control/v1/config", json={"CHAT_TEMP": "0.5"},
+                                   headers={**self.auth, "If-Match": "sha256:stale"})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "stale_config")
+        save.assert_not_called()
+
+    def test_the_etag_it_serves_is_the_one_it_accepts(self):
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env", return_value=self._env()), \
+             patch.object(manager, "perform_config_save", return_value=({"ok": True}, 200)):
+            etag = client.get("/api/control/v1/config", headers=self.auth).get_json()["config_etag"]
+            response = client.post("/api/control/v1/config", json={"CHAT_TEMP": "0.5"},
+                                   headers={**self.auth, "If-Match": etag})
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_service_action_goes_through_the_managers_own_rule(self):
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env", return_value=self._env()), \
+             patch.object(manager, "perform_service_action",
+                          return_value=({"ok": True, "output": ""}, 200)) as action:
+            response = client.post("/api/control/v1/services/embed/restart", headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        action.assert_called_once_with("embed", "restart")
+
+    def test_the_field_schema_says_what_this_host_cannot_act_on(self):
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env", return_value=self._env()), \
+             platform_harness.as_darwin():
+            body = client.get("/api/control/v1/config/fields", headers=self.auth).get_json()
+        self.assertEqual(body["platform"], "darwin")
+        self.assertIn("CHAT_PRIMARY_GPU_VISIBLE_DEVICES", body["omitted"])
+        self.assertNotIn("CHAT_PRIMARY_GPU_VISIBLE_DEVICES",
+                         [f["key"] for f in body["fields"]])
+
+    def test_a_key_this_host_does_not_know_is_reported_not_swallowed(self):
+        """The failure mode a rename creates across a version gap.
+
+        `allowed_config_keys` unions in whatever the *target's* env file holds,
+        so what is writable is a fact about the target. A hub that has been
+        updated and sends `LLM_A_CTX_SIZE` to a host that still says
+        `CHAT_PRIMARY_CTX_SIZE` would otherwise get a 200 with nothing changed
+        -- the worst possible answer, because it looks like a save.
+        """
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env", return_value=self._env()), \
+             patch.object(manager, "perform_config_save",
+                          wraps=lambda u, f: ({"ok": True, "ignored_keys": sorted(u)}, 200)):
+            body = client.post("/api/control/v1/config",
+                               json={"LLM_A_CTX_SIZE": "1"}, headers=self.auth).get_json()
+        self.assertEqual(body["ignored_keys"], ["LLM_A_CTX_SIZE"])
+
+    def test_an_unknown_key_never_reaches_the_file(self):
+        with self.control_app.test_client() as client, \
+             patch.object(config_env, "read_env", return_value=self._env()), \
+             patch.object(config_env, "update_env_values") as write:
+            client.post("/api/control/v1/config",
+                        json={"NOT_A_REAL_SETTING": "x"}, headers=self.auth)
+        write.assert_called_once()
+        self.assertNotIn("NOT_A_REAL_SETTING", write.call_args[0][0])
+
+    def test_the_digest_tracks_the_shape_and_not_the_prose(self):
+        with platform_harness.as_linux():
+            first = control_api.field_schema()["fields_digest"]
+            second = control_api.field_schema()["fields_digest"]
+        self.assertEqual(first, second)
+        with platform_harness.as_darwin():
+            self.assertNotEqual(control_api.field_schema()["fields_digest"], first)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ import backends
 import budget
 import config_env
 import config_fields
+import control_api
 import core
 import deploy
 import health
@@ -55,6 +56,7 @@ import public_api
 import scheduling
 import telemetry
 
+from routes import control as control_routes
 from routes import graphiti as graphiti_routes
 from routes import models as model_routes
 from routes import public as public_routes
@@ -2359,8 +2361,9 @@ def api_tts_test():
 
 
 
-@app.route('/api/saved-configs', methods=['GET'])
-def api_saved_configs_list():
+def list_saved_configs() -> list[dict]:
+    """The saved profiles, newest name first. Extracted so the control listener
+    can offer the same list it offers the local page."""
     configs = []
     default_name = get_default_saved_config_name()
     for f in sorted(core.SAVED_CONFIGS_DIR.glob('*.json')):
@@ -2379,7 +2382,12 @@ def api_saved_configs_list():
             })
         except Exception:
             pass
-    return jsonify(configs)
+    return configs
+
+
+@app.route('/api/saved-configs', methods=['GET'])
+def api_saved_configs_list():
+    return jsonify(list_saved_configs())
 
 
 @app.route('/api/saved-configs', methods=['POST'])
@@ -2822,6 +2830,21 @@ STATE_API_PROVIDERS = public_api.Providers(
 STATE_API_BROADCASTER = public_routes.configure(STATE_API_PROVIDERS)
 
 
+# The control listener's own bundle, same lambda rule and the same reason.
+CONTROL_API_PROVIDERS = control_api.ControlProviders(
+    read_env=lambda: config_env.read_env(),
+    save_config=lambda updates, forced: perform_config_save(updates, forced),
+    preflight=lambda updates: preflight_config(updates),
+    service_action=lambda name, action: perform_service_action(name, action),
+    services_table=lambda env: patch_service_labels(env),
+    service_status=lambda name: get_service_status(name),
+    saved_configs=lambda: list_saved_configs(),
+    apply_saved_config=lambda name, launch: apply_saved_config(name, launch),
+)
+
+control_routes.configure(CONTROL_API_PROVIDERS)
+
+
 def create_state_api_app() -> Flask:
     """The second listener: the read-only blueprint and nothing else.
 
@@ -2838,6 +2861,61 @@ def create_state_api_app() -> Flask:
     state_app.config['PUBLIC_API_ENFORCE_TOKEN'] = True
     state_app.register_blueprint(public_routes.bp)
     return state_app
+
+
+def create_control_api_app() -> Flask:
+    """The third listener: the control blueprint and nothing else.
+
+    Same argument as `create_state_api_app`, applied the other way round. The
+    read-only app cannot serve a write because it never learned the route; this
+    one cannot serve the whole stack's state because it never learned that one.
+    Each app is small enough that its route list is the security review.
+
+    Registered on the manager app too? No. `/api/v1/*` is, because the local
+    page uses it; `/api/control/v1/*` would only duplicate routes that already
+    exist there unauthenticated, and duplicating them is how one of the copies
+    ends up with different rules.
+    """
+    control_app = Flask(__name__, static_folder=None)
+    control_app.config['CONTROL_API_ENFORCE_TOKEN'] = True
+    control_app.register_blueprint(control_routes.bp)
+    return control_app
+
+
+def start_control_api(settings: dict) -> None:
+    """Serve the control API on its own port, on a daemon thread.
+
+    Off unless asked for, and refuses a non-loopback bind with no token. The
+    read-only API warns in that situation and binds anyway, which is defensible
+    for telemetry; there is no reading of it that is defensible for a port that
+    can stop a backend.
+    """
+    if not settings.get('enabled'):
+        return
+
+    refusal = control_routes.refuses_to_bind(settings)
+    if refusal:
+        print(f'[llm-control] {refusal} Not listening.', flush=True)
+        return
+
+    from werkzeug.serving import make_server
+
+    host, port = settings['host'], settings['port']
+    try:
+        server = make_server(host, port, create_control_api_app(), threaded=True)
+    # Same guard as the state API, and for the same reason: werkzeug calls
+    # sys.exit(1) on a port collision, which must not take the manager down.
+    except (OSError, SystemExit) as exc:
+        detail = exc if isinstance(exc, OSError) else 'address already in use'
+        print(f'[llm-control] Could not bind {host}:{port} ({detail}); '
+              f'the manager is unaffected and the control API is not listening.', flush=True)
+        return
+
+    threading.Thread(target=server.serve_forever, name='llm-control', daemon=True).start()
+    print(f'[llm-control] Control API on http://{host}:{port}/api/control/v1/schema', flush=True)
+    if not settings.get('token'):
+        print('[llm-control] LLM_CONTROL_TOKEN is unset; every request will be refused.',
+              flush=True)
 
 
 def start_state_api(settings: dict) -> None:
@@ -2881,6 +2959,7 @@ def start_state_api(settings: dict) -> None:
 if __name__ == '__main__':
     apply_default_saved_config_on_startup()
     start_state_api(public_routes.api_settings())
+    start_control_api(control_routes.control_settings())
     port = int(os.environ.get('LLM_MANAGER_PORT', 8080))
     host = os.environ.get('LLM_MANAGER_HOST', '0.0.0.0')
     print(f'[llm-manager] Serving on http://{host}:{port}', flush=True)

@@ -118,7 +118,7 @@ def require_token():
     expected = api_settings()["token"]
     if not expected:
         return None
-    if _request_token() != expected:
+    if not public_api.token_matches(_request_token(), expected):
         return jsonify(error="unauthorized",
                        detail="Set Authorization: Bearer <token>, or ?token= for EventSource."), 401
     return None
