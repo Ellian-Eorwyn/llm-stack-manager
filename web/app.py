@@ -134,9 +134,9 @@ def _slot_service(name: str) -> dict:
 # The order is the registry's, interleaved with the services that are not
 # slots. A proxy is not a servable position; it is a thing in front of one.
 SERVICES = [
-    _slot_service("chat-backend-dense"),
+    _slot_service("llm-a"),
     {"group": "chat",      "name": "chat-proxy",       "label": "Primary Proxy",   "desc": "Routes primary think/chat/code", "ports": "8003 / 8004 / 8008 / 8012"},
-    _slot_service("chat-backend2"),
+    _slot_service("llm-b"),
     {"group": "chat",      "name": "chat-proxy2",      "label": "Secondary Proxy", "desc": "Routes secondary think/chat/code", "ports": "8103 / 8104 / 8108 / 8112"},
     _slot_service("embed"),
     _slot_service("rerank"),
@@ -284,8 +284,8 @@ def patch_service_labels(env: dict | None = None) -> list[dict]:
     """
     env = config_env.normalize_env_keys(env or config_env.read_env())
     labels = {
-        "chat-backend-dense": ("CHAT_PRIMARY_LABEL", "Primary Backend"),
-        "chat-backend2": ("CHAT2_LABEL", "Secondary Backend"),
+        "llm-a": ("LLM_A_LABEL", "LLM A"),
+        "llm-b": ("LLM_B_LABEL", "LLM B"),
     }
     patched = []
     for svc in SERVICES:
@@ -357,25 +357,25 @@ def record_service_expectation(name: str, action: str, ok: bool, source: str = '
 def active_chat_model_snapshot(env: dict | None = None) -> dict:
     """The active primary chat backend, in a form saved configs can replay."""
     env = config_env.normalize_env_keys(env or config_env.read_env())
-    if get_service_status('chat-backend-dense') == 'active':
-        label = env.get("CHAT_PRIMARY_LABEL", "Primary Backend").strip() or "Primary Backend"
-        return {"service": "chat-backend-dense", "label": label, "kind": "builtin"}
+    if get_service_status('llm-a') == 'active':
+        label = env.get("LLM_A_LABEL", "LLM A").strip() or "LLM A"
+        return {"service": "llm-a", "label": label, "kind": "builtin"}
 
     return {"variant": None, "service": None, "label": "", "kind": "none"}
 
 
 def active_secondary_backend_snapshot(env: dict | None = None) -> dict:
     env = config_env.normalize_env_keys(env or config_env.read_env())
-    if get_service_status('chat-backend2') != 'active':
+    if get_service_status('llm-b') != 'active':
         return {"variant": None, "service": None, "label": "", "kind": "none"}
-    label = env.get("CHAT2_LABEL", "").strip() or "Secondary Backend"
+    label = env.get("LLM_B_LABEL", "").strip() or "LLM B"
     return {
         "variant": "secondary",
-        "service": "chat-backend2",
+        "service": "llm-b",
         "label": label,
         "kind": "secondary",
-        "model_name": env.get("CHAT2_MODEL_NAME", ""),
-        "model_path": env.get("CHAT2_MODEL_PATH", ""),
+        "model_name": env.get("LLM_B_MODEL_NAME", ""),
+        "model_path": env.get("LLM_B_MODEL_PATH", ""),
     }
 
 
@@ -427,9 +427,9 @@ def launch_chat_backend_for_saved_config(active: dict | None) -> tuple[bool, str
         core.ServiceManager.start('chat-proxy')
         return True, "No saved chat backend was active; left chat backend unchanged.", []
 
-    returncode, output = core.ServiceManager.restart('chat-backend-dense')
+    returncode, output = core.ServiceManager.restart('llm-a')
     core.ServiceManager.start('chat-proxy')
-    return returncode == 0, output, ["chat-backend-dense", "chat-proxy"]
+    return returncode == 0, output, ["llm-a", "chat-proxy"]
 
 
 def process_cmdline(pid: int) -> str:
@@ -1235,7 +1235,7 @@ def api_backend_budget():
     the browser; it is the single source of truth for anything that needs to
     recommend or validate a backend configuration.
     """
-    backend = request.args.get('backend', 'chat-primary')
+    backend = request.args.get('backend', 'llm-a')
     if backend not in budget.BACKEND_PREFIXES:
         return jsonify(error=f"unknown backend {backend!r}",
                        backends=sorted(budget.BACKEND_PREFIXES)), 400
@@ -1259,7 +1259,7 @@ def api_backend_budget_recommend():
     were the ones measured to thrash this box. This computes them instead, from
     detected VRAM, host RAM and the selected model's own geometry.
     """
-    backend = request.args.get('backend', 'chat-primary')
+    backend = request.args.get('backend', 'llm-a')
     if backend not in budget.BACKEND_PREFIXES:
         return jsonify(error=f"unknown backend {backend!r}",
                        backends=sorted(budget.BACKEND_PREFIXES)), 400
@@ -1298,12 +1298,12 @@ def scheduling_verification(window_seconds: int | None = None) -> dict:
     """Assemble everything `scheduling.verify` needs from the running stack."""
     env = config_env.read_env()
     window = telemetry.clamp_window(window_seconds, telemetry.DEFAULT_WINDOW_SECONDS)
-    unit = 'chat-backend-dense' if get_service_status('chat-backend-dense') == 'active' else None
+    unit = 'llm-a' if get_service_status('llm-a') == 'active' else None
     props = slots = stats = None
     cmdline = ''
     if unit:
         target = next((t for t in telemetry.resolve_targets(env, get_service_status)
-                       if t['name'] == 'chat-primary'), None)
+                       if t['name'] == 'llm-a'), None)
         if target:
             props = telemetry.probe_props(target['base_url'])
             slots = telemetry.probe_slots(target['base_url'])
@@ -2240,18 +2240,18 @@ def api_switch(variant):
         return jsonify(ok=False, error='Unknown model variant'), 400
 
     updates = {
-        'CHAT_PRIMARY_MODEL_PATH': model['model_path'],
-        'CHAT_PRIMARY_MODEL_NAME': model.get('model_name', 'chat-custom'),
-        'CHAT_PRIMARY_CTX_SIZE': model.get('ctx_size', '32768'),
-        'CHAT_PRIMARY_MMPROJ_PATH': model.get('mmproj_path', ''),
-        'CHAT_PRIMARY_CUSTOM_ARGS_JSON': json.dumps(
+        'LLM_A_MODEL_PATH': model['model_path'],
+        'LLM_A_MODEL_NAME': model.get('model_name', 'chat-custom'),
+        'LLM_A_CTX_SIZE': model.get('ctx_size', '32768'),
+        'LLM_A_MMPROJ_PATH': model.get('mmproj_path', ''),
+        'LLM_A_CUSTOM_ARGS_JSON': json.dumps(
             models.resolve_custom_args_for_model(model)[0]),
     }
     if model.get('display_name'):
-        updates['CHAT_PRIMARY_LABEL'] = model['display_name']
+        updates['LLM_A_LABEL'] = model['display_name']
     config_env.update_env_values(updates)
 
-    returncode, output = core.ServiceManager.restart('chat-backend-dense')
+    returncode, output = core.ServiceManager.restart('llm-a')
     core.ServiceManager.start('chat-proxy')
     return jsonify(ok=(returncode == 0), output=output)
 
@@ -2425,7 +2425,7 @@ def api_saved_configs_save():
     active_services = []
     for svc in SERVICES:
         name = svc.get('name')
-        if not name or name in ('chat-backend-dense', 
+        if not name or name in ('llm-a', 
                                 'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
             continue
         if get_service_status(name) == 'active':
@@ -2500,7 +2500,7 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
             pooled = router_pooled_units(config_env.read_env())
             for svc in SERVICES:
                 name = svc.get('name')
-                if not name or name in ('chat-backend-dense',
+                if not name or name in ('llm-a',
                                         'qwen-chat-backend-27b', 'qwen-chat-backend-35b', 'qwen-chat-backend', 'chat-proxy'):
                     continue
                 if name in pooled:
@@ -2518,10 +2518,10 @@ def apply_saved_config(name: str, launch: bool = False) -> dict:
                     core.ServiceManager.stop(name)
         else:
             secondary = slots.get("secondary") if isinstance(slots.get("secondary"), dict) else {}
-            if secondary.get("service") == "chat-backend2" and secondary.get("variant"):
-                if get_service_status("chat-backend2") != "active":
-                    core.ServiceManager.start("chat-backend2")
-                    launched.append("chat-backend2")
+            if secondary.get("service") == "llm-b" and secondary.get("variant"):
+                if get_service_status("llm-b") != "active":
+                    core.ServiceManager.start("llm-b")
+                    launched.append("llm-b")
                 if get_service_status("chat-proxy2") != "active":
                     core.ServiceManager.start("chat-proxy2")
                     launched.append("chat-proxy2")

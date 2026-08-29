@@ -263,7 +263,7 @@ if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
             printf '  %s\n' ${STALE_BACKENDS}
             echo "Those backends are still running the previous code. Restart one when"
             echo "you can afford the model reload, for example:"
-            echo "  sudo systemctl restart chat-backend-dense"
+            echo "  sudo systemctl restart llm-a"
         fi
     elif [[ "${SKIP_RESTART}" != "1" ]]; then
         source "${STACK_DIR}/scripts/cross-platform.sh"

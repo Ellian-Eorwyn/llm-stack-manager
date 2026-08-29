@@ -193,7 +193,7 @@ class EngineSelectionTests(unittest.TestCase):
 class PrefixChainTests(unittest.TestCase):
     """A slot may answer to more than one prefix.
 
-    The primary chat slot resolves `CHAT_PRIMARY_X` and then `CHAT_X` for forty
+    The primary chat slot resolves `LLM_A_X` and then `CHAT_X` for forty
     keys. Writing forty two-entry chains out would be honest but unreadable, so
     the slot carries the legacy prefix instead and every relative key is tried
     under each in turn.
@@ -275,7 +275,7 @@ class ClearedMeansClearedTests(unittest.TestCase):
 class SlotKeyOverrideTests(unittest.TestCase):
     """Ports, aliases and mmproj paths do not all follow the prefix.
 
-    The chat slots bind `CHAT_BACKEND_PORT`, not `CHAT_PRIMARY_PORT`, and a
+    The chat slots bind `CHAT_BACKEND_PORT`, not `LLM_A_PORT`, and a
     registry that derived the key from the prefix would move both backends to a
     port nothing else in the stack talks to.
     """

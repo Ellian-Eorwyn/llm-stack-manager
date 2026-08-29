@@ -46,15 +46,15 @@ LOG_DIR = ROOT / "logs" / "setup"
 SLOT_BY_COMPONENT = {slot.component: slot for slot in backends.SLOTS.values()
                      if slot.component}
 
-CORE_DEFAULTS = ["primary", "embedding", "task", "ocr", "glmocr-sdk", "searxng", "playwright"]
-OPTIONAL_COMPONENTS = ["secondary", "reranker", "transcribe"]
+CORE_DEFAULTS = ["llm-a", "embedding", "task", "ocr", "glmocr-sdk", "searxng", "playwright"]
+OPTIONAL_COMPONENTS = ["llm-b", "reranker", "transcribe"]
 ALL_COMPONENTS = CORE_DEFAULTS + OPTIONAL_COMPONENTS
 # Every component that names a model, which is every component that is a slot.
 MODEL_COMPONENTS = list(SLOT_BY_COMPONENT)
 COMPONENT_DEPENDENCIES = {
     "glmocr-sdk": ["ocr"],
-    "primary": ["chat-proxy"],
-    "secondary": ["chat-proxy2"],
+    "llm-a": ["chat-proxy"],
+    "llm-b": ["chat-proxy2"],
 }
 # Component -> the units installing it brings up. The model half comes from the
 # registry; a proxy is not a slot, so it is named here.
@@ -68,7 +68,7 @@ COMPONENT_SERVICES = {
 }
 
 COMPONENT_PORTS = {
-    "primary": [8003, 8004, 8008], "secondary": [8103, 8104, 8108],
+    "llm-a": [8003, 8004, 8008], "llm-b": [8103, 8104, 8108],
     "embedding": [8005], "reranker": [8006],
     "task": [8007], "ocr": [8009], "glmocr-sdk": [5002],
     "searxng": [80], "playwright": [80],
@@ -136,7 +136,19 @@ def save_state(state: dict[str, Any], path: Path = STATE_FILE) -> dict[str, Any]
     return state
 
 
+#: Components renamed when the two chat slots became peers rather than a primary
+#: and a secondary. Read forever, written never -- the same contract
+#: `LEGACY_ENV_KEY_MAP` has for config keys.
+#:
+#: Not cosmetic: every `config/install-state.json` already on disk names the old
+#: components, `resolve_components` filters against `ALL_COMPONENTS`, and the
+#: boot path derives what to start from the result. Without this a host that
+#: upgrades comes back with no chat backend at all.
+LEGACY_COMPONENTS = {"primary": "llm-a", "secondary": "llm-b"}
+
+
 def resolve_components(values: list[str]) -> list[str]:
+    values = [LEGACY_COMPONENTS.get(item, item) for item in values]
     selected = {item for item in values if item in ALL_COMPONENTS}
     changed = True
     while changed:
@@ -357,7 +369,7 @@ def plan_gpu_placement(gpus: list[dict[str, Any]], models: dict[str, dict[str, A
         if not model:
             continue
         need = estimate_model_mib(model)
-        if component in {"primary", "secondary", "ocr"} and max(remaining.values()) < need:
+        if component in {"llm-a", "llm-b", "ocr"} and max(remaining.values()) < need:
             candidates = [gpu for gpu in ordered if remaining[int(gpu["index"])] > 0]
         else:
             candidates = [max(ordered, key=lambda gpu: remaining[int(gpu["index"])] )]
@@ -441,7 +453,7 @@ def placement_env(assignments: dict[str, Any]) -> dict[str, str]:
         updates[f"{prefix}_GPU_VISIBLE_DEVICES"] = item["visible_devices"]
         updates[f"{prefix}_MAIN_GPU"] = "0"
         updates[f"{prefix}_TENSOR_SPLIT"] = item["tensor_split"]
-        if component in {"primary", "secondary"}:
+        if component in {"llm-a", "llm-b"}:
             updates[f"{prefix}_DEVICE"] = ",".join(f"CUDA{i}" for i in range(len(item["gpu_indices"])))
     layout = assignments.get("glmocr-sdk")
     if layout:
@@ -630,7 +642,7 @@ def validate_installation(components: list[str] | None = None) -> dict[str, Any]
         checks[component] = {"ok": all(item["ok"] for item in component_checks), "services": component_checks}
     env = read_env()
     endpoint_checks: dict[str, Any] = {}
-    if "primary" in components:
+    if "llm-a" in components:
         payload = {"model": env.get("NOTHINK_MODEL_NAME", "chat"), "messages": [{"role": "user", "content": "Reply with exactly OK"}], "max_tokens": 8, "temperature": 0}
         ok, detail = probe_json(f"http://127.0.0.1:{env.get('NOTHINK_PORT', '8004')}/v1/chat/completions", payload, attempts=60)
         endpoint_checks["primary_chat"] = {"ok": ok, "detail": detail}

@@ -78,7 +78,7 @@ echo "============================================================"
 echo ""
 
 echo "--- Primary backend (port ${CHAT_BACKEND_PORT:-8010}) ---"
-if should_check chat-backend-dense || should_check || should_check chat-backend; then
+if should_check llm-a || should_check || should_check chat-backend; then
     # The proxy ports below all fan into this one process. Checking only those
     # meant a backend that had died behind a live proxy read as a proxy fault.
     PROPS=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/props" 2>&1 || true)

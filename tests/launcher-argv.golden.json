@@ -1,5 +1,5 @@
 {
- "chat-backend-dense": [
+ "llm-a": [
   "--model",
   "@STACK@/models/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf",
   "--alias",
@@ -80,7 +80,7 @@
   "--spec-draft-p-split",
   "0.10"
  ],
- "chat-backend2": [
+ "llm-b": [
   "--model",
   "@STACK@/models/Qwen3.5-27B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
   "--alias",

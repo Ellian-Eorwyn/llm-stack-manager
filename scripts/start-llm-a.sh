@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# start-chat-backend-dense.sh
+# start-llm-a.sh
 # Shim. This slot is served by scripts/start-backend.sh, which builds the
 # command from web/backends/slots.py.
 #
@@ -12,4 +12,4 @@
 # =============================================================================
 set -euo pipefail
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec "${STACK_DIR}/scripts/start-backend.sh" chat-backend-dense "$@"
+exec "${STACK_DIR}/scripts/start-backend.sh" llm-a "$@"

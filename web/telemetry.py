@@ -670,7 +670,7 @@ def clamp_window(value, default: int = DEFAULT_WINDOW_SECONDS) -> int:
 def resolve_targets(env: dict, service_status) -> list[dict]:
     """Backends worth probing, with the systemd unit currently serving each one.
 
-    A slot like `chat-primary` can be served by any of several units (dense, moe,
+    A slot like `llm-a` can be served by any of several units (dense, moe,
     custom); whichever is active owns the journal we tail.
     """
     targets = []

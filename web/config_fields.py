@@ -169,32 +169,32 @@ def repair_transcription_model(engine: dict, value: str) -> str:
     return raw
 
 LEGACY_ENV_KEY_MAP = {
-    "CHAT_MODEL_27B_PATH": "CHAT_PRIMARY_MODEL_PATH",
-    "CHAT_MMPROJ_27B_PATH": "CHAT_PRIMARY_MMPROJ_PATH",
-    "CHAT_27B_CTX_SIZE": "CHAT_PRIMARY_CTX_SIZE",
-    "CHAT_MODEL_35B_PATH": "CHAT2_MODEL_PATH",
-    "CHAT_MMPROJ_35B_PATH": "CHAT2_MMPROJ_PATH",
-    "CHAT_35B_CTX_SIZE": "CHAT2_CTX_SIZE",
-    "CHAT_DENSE_LABEL": "CHAT_PRIMARY_LABEL",
-    "CHAT_DENSE_MODEL_NAME": "CHAT_PRIMARY_MODEL_NAME",
-    "CHAT_DENSE_MODEL_PATH": "CHAT_PRIMARY_MODEL_PATH",
-    "CHAT_DENSE_MMPROJ_PATH": "CHAT_PRIMARY_MMPROJ_PATH",
-    "CHAT_DENSE_CTX_SIZE": "CHAT_PRIMARY_CTX_SIZE",
+    "CHAT_MODEL_27B_PATH": "LLM_A_MODEL_PATH",
+    "CHAT_MMPROJ_27B_PATH": "LLM_A_MMPROJ_PATH",
+    "CHAT_27B_CTX_SIZE": "LLM_A_CTX_SIZE",
+    "CHAT_MODEL_35B_PATH": "LLM_B_MODEL_PATH",
+    "CHAT_MMPROJ_35B_PATH": "LLM_B_MMPROJ_PATH",
+    "CHAT_35B_CTX_SIZE": "LLM_B_CTX_SIZE",
+    "CHAT_DENSE_LABEL": "LLM_A_LABEL",
+    "CHAT_DENSE_MODEL_NAME": "LLM_A_MODEL_NAME",
+    "CHAT_DENSE_MODEL_PATH": "LLM_A_MODEL_PATH",
+    "CHAT_DENSE_MMPROJ_PATH": "LLM_A_MMPROJ_PATH",
+    "CHAT_DENSE_CTX_SIZE": "LLM_A_CTX_SIZE",
     # The MoE keys described an *alternative* model for the one shared backend,
     # selected by switch-chat-model.sh and mutually exclusive with the dense
     # one. That slot is gone; what replaced it is a genuinely concurrent second
-    # backend on its own port, which is what CHAT2_* configures.
+    # backend on its own port, which is what LLM_B_* configures.
     #
     # Pointing them there rather than dropping them means a host that had a MoE
     # model configured and no second slot gets that model promoted into slot B
     # instead of silently losing it. `normalize_env_keys` only ever backfills --
-    # `if new_key not in normalized` -- so a host that already has CHAT2_* set
+    # `if new_key not in normalized` -- so a host that already has LLM_B_* set
     # keeps it, and the two cannot collide.
-    "CHAT_MOE_LABEL": "CHAT2_LABEL",
-    "CHAT_MOE_MODEL_NAME": "CHAT2_MODEL_NAME",
-    "CHAT_MOE_MODEL_PATH": "CHAT2_MODEL_PATH",
-    "CHAT_MOE_MMPROJ_PATH": "CHAT2_MMPROJ_PATH",
-    "CHAT_MOE_CTX_SIZE": "CHAT2_CTX_SIZE",
+    "CHAT_MOE_LABEL": "LLM_B_LABEL",
+    "CHAT_MOE_MODEL_NAME": "LLM_B_MODEL_NAME",
+    "CHAT_MOE_MODEL_PATH": "LLM_B_MODEL_PATH",
+    "CHAT_MOE_MMPROJ_PATH": "LLM_B_MMPROJ_PATH",
+    "CHAT_MOE_CTX_SIZE": "LLM_B_CTX_SIZE",
     "WHISPERKIT_LARGE_V3_BACKEND_TYPE": "FASTER_WHISPER_BACKEND_TYPE",
     "WHISPERKIT_LARGE_V3_LOCAL_MODEL": "FASTER_WHISPER_LOCAL_MODEL",
     "WHISPERKIT_LARGE_V3_UPSTREAM_URL": "FASTER_WHISPER_UPSTREAM_URL",
@@ -208,9 +208,53 @@ LEGACY_ENV_KEY_MAP = {
     "WHISPERKIT_LARGE_V3_SPEAKER_MODE": "FASTER_WHISPER_SPEAKER_MODE",
     "WHISPERKIT_LARGE_V3_SPEAKER_COUNT": "FASTER_WHISPER_SPEAKER_COUNT",
 }
+# `CHAT_PRIMARY_*` and `CHAT2_*` were the canonical spellings until the slots
+# became peers named `llm-a` and `llm-b`. Generated rather than written out
+# because there are 330 of them and a hand-maintained list would go stale the
+# first time a field was added.
+#
+# Filled in after `CONFIG_FIELDS` is defined, at the bottom of this module: the
+# canonical names are the field keys, and this map has to be declared before
+# them because `normalize_env_keys` imports it.
+#
+# Flattened, never chained. `CHAT_DENSE_MODEL_PATH` points straight at
+# `LLM_A_MODEL_PATH` rather than at `CHAT_PRIMARY_MODEL_PATH`, which is now a
+# legacy name itself -- `tests/test_llm_stack_manager.py` asserts no canonical
+# key is also a legacy key, and a chain would make every rename a lookup deeper
+# than the last.
+_RENAMED_SLOT_PREFIXES = (("CHAT_PRIMARY_", "LLM_A_"), ("CHAT2_", "LLM_B_"))
+
+#: The two keys that keep their old spelling: they name the port and host the
+#: proxy dials, section 2.1 freezes those, and every consumer -- the proxies,
+#: telemetry, health -- talks to them by name.
+_PREFIX_RENAME_EXEMPT = frozenset({
+    "CHAT2_BACKEND_PORT", "CHAT2_BACKEND_HOST",
+})
+
+
+def _register_prefix_renames() -> None:
+    """Map every `CHAT_PRIMARY_*` / `CHAT2_*` field key to its new name."""
+    for field in CONFIG_FIELDS:
+        key = field.get("key", "")
+        for old_prefix, new_prefix in _RENAMED_SLOT_PREFIXES:
+            if not key.startswith(new_prefix):
+                continue
+            legacy = old_prefix + key[len(new_prefix):]
+            if legacy in _PREFIX_RENAME_EXEMPT or legacy in LEGACY_ENV_KEY_MAP:
+                continue
+            LEGACY_ENV_KEY_MAP[legacy] = key
+
+
 NEW_ENV_KEY_LEGACY_ALIASES = defaultdict(list)
-for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
-    NEW_ENV_KEY_LEGACY_ALIASES[new_key].append(legacy_key)
+
+
+def _rebuild_legacy_aliases() -> None:
+    NEW_ENV_KEY_LEGACY_ALIASES.clear()
+    for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
+        NEW_ENV_KEY_LEGACY_ALIASES[new_key].append(legacy_key)
+
+
+_rebuild_legacy_aliases()
 
 # Why the dual naming exists, and how it ends.
 #
@@ -218,7 +262,7 @@ for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():
 # dense model, CHAT_MOE_* for a mixture-of-experts one — and before that for the
 # specific models themselves (CHAT_MODEL_27B_PATH). Both schemes described the
 # contents rather than the slot, so both went stale the moment a slot's model
-# changed. CHAT_PRIMARY_* / CHAT2_* name the slot instead, and are the canonical
+# changed. LLM_A_* / LLM_B_* name the slot instead, and are the canonical
 # form: `normalize_env_keys` backfills the canonical key from its legacy twin on
 # read, and `normalize_config_updates` rewrites legacy keys to canonical on
 # write. Nothing writes a legacy key any more.
@@ -269,8 +313,8 @@ DEFAULT_DEPRECATION_NOTE = "named for the model architecture a slot happened to 
 
 CORE_CONFIG_SECTIONS = {
     "Chat Templates",
-    "Primary Backend",
-    "Secondary Backend",
+    "LLM A",
+    "LLM B",
     "Shared Backend",
     "Task Model",
     "Thinking Endpoint",
@@ -328,71 +372,71 @@ LLAMA_REASONING_EFFORT_OPTIONS = [
 CONFIG_FIELDS = [
     {"section": "Chat Templates", "key": "CHAT_TEMPLATE_MANAGER", "label": "Template Manager", "type": "template_manager", "hint": "Create and edit reusable llama.cpp Jinja chat templates"},
 
-    # Secondary Backend
-    {"section": "Secondary Backend", "key": "CHAT2_LABEL",                 "label": "Backend Label",           "type": "text",   "hint": "UI label for the secondary backend slot"},
-    {"section": "Secondary Backend", "key": "CHAT2_MODEL_NAME",            "label": "Model Alias",             "type": "text",   "hint": "llama.cpp alias for the secondary backend"},
-    {"section": "Secondary Backend", "key": "CHAT2_MODEL_PATH",            "label": "Model Path",              "type": "path"},
-    {"section": "Secondary Backend", "key": "CHAT2_MMPROJ_PATH",           "label": "MMProj Path",             "type": "path"},
-    {"section": "Secondary Backend", "key": "CHAT2_CTX_SIZE",              "label": "Context Size",            "type": "number"},
-    {"section": "Secondary Backend", "key": "CHAT2_BACKEND_PORT",          "label": "Backend Port",            "type": "number"},
-    {"section": "Secondary Backend", "key": "THINK2_PORT",                 "label": "Think Port",              "type": "number"},
-    {"section": "Secondary Backend", "key": "NOTHINK2_PORT",               "label": "Chat Port",               "type": "number"},
-    {"section": "Secondary Backend", "key": "CODE2_PORT",                  "label": "Code Port",               "type": "number"},
-    {"section": "Secondary Backend", "key": "AGGREGATE2_ENABLED",          "label": "Aggregate Proxy",         "type": "select", "options": ["on", "off"], "hint": "Single model-routed endpoint exposing think, chat, and code for the secondary backend"},
-    {"section": "Secondary Backend", "key": "AGGREGATE2_PORT",             "label": "Aggregate Port",          "type": "number"},
-    {"section": "Secondary Backend", "key": "THINK2_MODEL_NAME",           "label": "Think Alias",             "type": "text", "hint": "Advertised model id on the secondary aggregate and think port"},
-    {"section": "Secondary Backend", "key": "NOTHINK2_MODEL_NAME",         "label": "Chat Alias",              "type": "text", "hint": "Advertised model id on the secondary aggregate and chat port"},
-    {"section": "Secondary Backend", "key": "CODE2_MODEL_NAME",            "label": "Code Alias",              "type": "text", "hint": "Advertised model id on the secondary aggregate and code port"},
-    {"section": "Secondary Backend", "key": "CHAT2_N_PARALLEL",            "label": "Parallel Slots",          "type": "number"},
-    {"section": "Secondary Backend", "key": "CHAT2_THREADS",               "label": "CPU Threads",             "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
-    {"section": "Secondary Backend", "key": "CHAT2_THREADS_BATCH",         "label": "CPU Batch Threads",       "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
-    {"section": "Secondary Backend", "key": "CHAT2_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",     "type": "number"},
-    {"section": "Secondary Backend", "key": "CHAT2_MAIN_GPU",              "label": "Main GPU Index",          "type": "number", "hint": LLAMA_MAIN_GPU_HINT},
-    {"section": "Secondary Backend", "key": "CHAT2_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override; use --list-devices names like CUDA0,CUDA1 or none"},
-    {"section": "Secondary Backend", "key": "CHAT2_TENSOR_SPLIT",          "label": "Tensor Split",            "type": "text",   "hint": LLAMA_TENSOR_SPLIT_HINT},
-    {"section": "Secondary Backend", "key": "CHAT2_SPLIT_MODE",            "label": "Split Mode",              "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
-    {"section": "Secondary Backend", "key": "CHAT2_KV_OFFLOAD",            "label": "KV Offload",              "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
-    {"section": "Secondary Backend", "key": "CHAT2_OP_OFFLOAD",            "label": "Host Op Offload",         "type": "select", "options": ["on", "off"], "hint": "Controls --op-offload / --no-op-offload for host tensor ops"},
-    {"section": "Secondary Backend", "key": "CHAT2_MMPROJ_OFFLOAD",        "label": "MMProj Offload",          "type": "select", "options": ["on", "off"], "hint": "Controls --mmproj-offload / --no-mmproj-offload when an MMProj is loaded"},
-    {"section": "Secondary Backend", "key": "CHAT2_FLASH_ATTN",            "label": "Flash Attention",         "type": "select", "options": ["on", "off", "auto"]},
-    {"section": "Secondary Backend", "key": "CHAT2_CACHE_TYPE_K",          "label": "KV Cache Key Type",       "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
-    {"section": "Secondary Backend", "key": "CHAT2_CACHE_TYPE_V",          "label": "KV Cache Value Type",     "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
-    {"section": "Secondary Backend", "key": "CHAT2_CACHE_RAM",             "label": "Prompt Cache RAM",        "type": "number", "hint": "llama.cpp --cache-ram in MiB; 0 disables server prompt-cache storage"},
-    {"section": "Secondary Backend", "key": "CHAT2_CTX_CHECKPOINTS",       "label": "Context Checkpoints",     "type": "number", "hint": "llama.cpp --ctx-checkpoints; 0 disables context checkpoint creation"},
-    {"section": "Secondary Backend", "key": "CHAT2_SWA_FULL",              "label": "Full SWA KV Cache",       "type": "select", "options": ["off", "on"], "hint": "Adds llama.cpp --swa-full for SWA models; uses more KV VRAM but improves prompt-cache reuse"},
-    {"section": "Secondary Backend", "key": "CHAT2_BATCH_SIZE",            "label": "Batch Size",              "type": "number", "hint": "Prefill batch (default 2048)"},
-    {"section": "Secondary Backend", "key": "CHAT2_UBATCH_SIZE",           "label": "Micro-Batch Size",        "type": "number", "hint": "Physical sub-batch (default 512)"},
-    {"section": "Secondary Backend", "key": "CHAT2_NO_MMAP",               "label": "Disable mmap",            "type": "select", "options": ["false", "true"]},
-    {"section": "Secondary Backend", "key": "CHAT2_MLOCK",                 "label": "Lock Memory",             "type": "select", "options": ["false", "true"]},
-    {"section": "Secondary Backend", "key": "CHAT2_GPU_VISIBLE_DEVICES",   "label": "GPU Devices",             "type": "text",   "hint": "e.g. 0,1"},
-    {"section": "Secondary Backend", "key": "CHAT2_JINJA",                 "label": "Backend Jinja Support",   "type": "select", "options": ["off", "on"], "hint": "Enables --jinja on the secondary backend so proxy ports can expose tool calling"},
-    {"section": "Secondary Backend", "key": "CHAT2_PRESERVE_THINKING",     "label": "Preserve Thinking",       "type": "select", "options": ["on", "off"], "hint": "Backend default for chat_template_kwargs.preserve_thinking on the secondary backend"},
-    {"section": "Secondary Backend", "key": "CHAT2_REASONING_EFFORT",      "label": "Thinking Level",          "type": "select", "options": LLAMA_REASONING_EFFORT_OPTIONS, "hint": "Backend default for templates that read reasoning_effort (Qwen 3.8+). medium adds no steering instruction — it is the model's unsteered baseline"},
-    {"section": "Secondary Backend", "key": "CHAT2_TEMPLATE_ID",           "label": "Effective Chat Template", "type": "chat_template", "hint": "Custom Jinja template file passed to the secondary backend; model default leaves GGUF metadata unchanged"},
-    {"section": "Secondary Backend", "key": "CHAT2_FIT",                   "label": "Auto-Fit to VRAM",        "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
-    {"section": "Secondary Backend", "key": "CHAT2_FIT_TARGET",            "label": "Fit Target MiB",          "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
-    {"section": "Secondary Backend", "key": "CHAT2_FIT_CTX",               "label": "Minimum Fit Context",     "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
-    {"section": "Secondary Backend", "key": "CHAT2_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",        "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
-    {"section": "Secondary Backend", "key": "CHAT2_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
-    {"section": "Secondary Backend", "key": "CHAT2_CACHE_REUSE",           "label": "Cache Reuse Chunk",       "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_METHOD",           "label": "Speculative Method",      "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",       "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",        "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",      "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",           "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_TYPE_K",     "label": "Draft KV Key Type",       "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-k"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_TYPE_V",     "label": "Draft KV Value Type",     "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-v"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_N_MAX",      "label": "Draft Max Tokens",        "type": "number", "hint": "llama.cpp --spec-draft-n-max (recommended 6 for MTP)"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_N_MIN",      "label": "Draft Min Tokens",        "type": "number", "hint": "llama.cpp --spec-draft-n-min (default 0)"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_P_MIN",      "label": "Draft Min Probability",   "type": "text",   "hint": "llama.cpp --spec-draft-p-min (default 0.75)"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_DRAFT_P_SPLIT",    "label": "Draft Split Probability", "type": "text",   "hint": "llama.cpp --spec-draft-p-split (default 0.10)"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD_N_MATCH","label": "N-Gram Match Tokens",     "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-match (default 24)"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD_N_MIN",  "label": "N-Gram Min Tokens",       "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-min (default 48)"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MOD_N_MAX",  "label": "N-Gram Max Tokens",       "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-max (default 64)"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_SIZE_N",     "label": "N-Gram Lookup Size",      "type": "number", "hint": "llama.cpp --spec-ngram-*-size-n for ngram-simple/map modes"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_SIZE_M",     "label": "N-Gram Draft Size",       "type": "number", "hint": "llama.cpp --spec-ngram-*-size-m for ngram-simple/map modes"},
-    {"section": "Secondary Backend", "key": "CHAT2_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",         "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
-    {"section": "Secondary Backend", "key": "CHAT2_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",        "type": "custom_args", "hint": "Extra llama.cpp flags applied to the secondary backend"},
+    # LLM B
+    {"section": "LLM B", "key": "LLM_B_LABEL",                 "label": "Backend Label",           "type": "text",   "hint": "UI label for the secondary backend slot"},
+    {"section": "LLM B", "key": "LLM_B_MODEL_NAME",            "label": "Model Alias",             "type": "text",   "hint": "llama.cpp alias for the secondary backend"},
+    {"section": "LLM B", "key": "LLM_B_MODEL_PATH",            "label": "Model Path",              "type": "path"},
+    {"section": "LLM B", "key": "LLM_B_MMPROJ_PATH",           "label": "MMProj Path",             "type": "path"},
+    {"section": "LLM B", "key": "LLM_B_CTX_SIZE",              "label": "Context Size",            "type": "number"},
+    {"section": "LLM B", "key": "CHAT2_BACKEND_PORT",          "label": "Backend Port",            "type": "number"},
+    {"section": "LLM B", "key": "THINK2_PORT",                 "label": "Think Port",              "type": "number"},
+    {"section": "LLM B", "key": "NOTHINK2_PORT",               "label": "Chat Port",               "type": "number"},
+    {"section": "LLM B", "key": "CODE2_PORT",                  "label": "Code Port",               "type": "number"},
+    {"section": "LLM B", "key": "AGGREGATE2_ENABLED",          "label": "Aggregate Proxy",         "type": "select", "options": ["on", "off"], "hint": "Single model-routed endpoint exposing think, chat, and code for the secondary backend"},
+    {"section": "LLM B", "key": "AGGREGATE2_PORT",             "label": "Aggregate Port",          "type": "number"},
+    {"section": "LLM B", "key": "THINK2_MODEL_NAME",           "label": "Think Alias",             "type": "text", "hint": "Advertised model id on the secondary aggregate and think port"},
+    {"section": "LLM B", "key": "NOTHINK2_MODEL_NAME",         "label": "Chat Alias",              "type": "text", "hint": "Advertised model id on the secondary aggregate and chat port"},
+    {"section": "LLM B", "key": "CODE2_MODEL_NAME",            "label": "Code Alias",              "type": "text", "hint": "Advertised model id on the secondary aggregate and code port"},
+    {"section": "LLM B", "key": "LLM_B_N_PARALLEL",            "label": "Parallel Slots",          "type": "number"},
+    {"section": "LLM B", "key": "LLM_B_THREADS",               "label": "CPU Threads",             "type": "number", "hint": "llama.cpp --threads for generation; -1 lets llama.cpp choose"},
+    {"section": "LLM B", "key": "LLM_B_THREADS_BATCH",         "label": "CPU Batch Threads",       "type": "number", "hint": "llama.cpp --threads-batch for prompt/batch processing; -1 follows --threads"},
+    {"section": "LLM B", "key": "LLM_B_N_GPU_LAYERS",          "label": "GPU Layers (−1=all)",     "type": "number"},
+    {"section": "LLM B", "key": "LLM_B_MAIN_GPU",              "label": "Main GPU Index",          "type": "number", "hint": LLAMA_MAIN_GPU_HINT},
+    {"section": "LLM B", "key": "LLM_B_DEVICE",                "label": "Main/Draft Offload Devices", "type": "text", "hint": "Optional llama.cpp --device override; use --list-devices names like CUDA0,CUDA1 or none"},
+    {"section": "LLM B", "key": "LLM_B_TENSOR_SPLIT",          "label": "Tensor Split",            "type": "text",   "hint": LLAMA_TENSOR_SPLIT_HINT},
+    {"section": "LLM B", "key": "LLM_B_SPLIT_MODE",            "label": "Split Mode",              "type": "select", "options": LLAMA_SPLIT_MODE_OPTIONS, "hint": LLAMA_SPLIT_MODE_HINT},
+    {"section": "LLM B", "key": "LLM_B_KV_OFFLOAD",            "label": "KV Offload",              "type": "select", "options": ["on", "off"], "hint": "Controls --kv-offload / --no-kv-offload"},
+    {"section": "LLM B", "key": "LLM_B_OP_OFFLOAD",            "label": "Host Op Offload",         "type": "select", "options": ["on", "off"], "hint": "Controls --op-offload / --no-op-offload for host tensor ops"},
+    {"section": "LLM B", "key": "LLM_B_MMPROJ_OFFLOAD",        "label": "MMProj Offload",          "type": "select", "options": ["on", "off"], "hint": "Controls --mmproj-offload / --no-mmproj-offload when an MMProj is loaded"},
+    {"section": "LLM B", "key": "LLM_B_FLASH_ATTN",            "label": "Flash Attention",         "type": "select", "options": ["on", "off", "auto"]},
+    {"section": "LLM B", "key": "LLM_B_CACHE_TYPE_K",          "label": "KV Cache Key Type",       "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
+    {"section": "LLM B", "key": "LLM_B_CACHE_TYPE_V",          "label": "KV Cache Value Type",     "type": "select", "options": LLAMA_KV_CACHE_OPTIONS},
+    {"section": "LLM B", "key": "LLM_B_CACHE_RAM",             "label": "Prompt Cache RAM",        "type": "number", "hint": "llama.cpp --cache-ram in MiB; 0 disables server prompt-cache storage"},
+    {"section": "LLM B", "key": "LLM_B_CTX_CHECKPOINTS",       "label": "Context Checkpoints",     "type": "number", "hint": "llama.cpp --ctx-checkpoints; 0 disables context checkpoint creation"},
+    {"section": "LLM B", "key": "LLM_B_SWA_FULL",              "label": "Full SWA KV Cache",       "type": "select", "options": ["off", "on"], "hint": "Adds llama.cpp --swa-full for SWA models; uses more KV VRAM but improves prompt-cache reuse"},
+    {"section": "LLM B", "key": "LLM_B_BATCH_SIZE",            "label": "Batch Size",              "type": "number", "hint": "Prefill batch (default 2048)"},
+    {"section": "LLM B", "key": "LLM_B_UBATCH_SIZE",           "label": "Micro-Batch Size",        "type": "number", "hint": "Physical sub-batch (default 512)"},
+    {"section": "LLM B", "key": "LLM_B_NO_MMAP",               "label": "Disable mmap",            "type": "select", "options": ["false", "true"]},
+    {"section": "LLM B", "key": "LLM_B_MLOCK",                 "label": "Lock Memory",             "type": "select", "options": ["false", "true"]},
+    {"section": "LLM B", "key": "LLM_B_GPU_VISIBLE_DEVICES",   "label": "GPU Devices",             "type": "text",   "hint": "e.g. 0,1"},
+    {"section": "LLM B", "key": "LLM_B_JINJA",                 "label": "Backend Jinja Support",   "type": "select", "options": ["off", "on"], "hint": "Enables --jinja on the secondary backend so proxy ports can expose tool calling"},
+    {"section": "LLM B", "key": "LLM_B_PRESERVE_THINKING",     "label": "Preserve Thinking",       "type": "select", "options": ["on", "off"], "hint": "Backend default for chat_template_kwargs.preserve_thinking on the secondary backend"},
+    {"section": "LLM B", "key": "LLM_B_REASONING_EFFORT",      "label": "Thinking Level",          "type": "select", "options": LLAMA_REASONING_EFFORT_OPTIONS, "hint": "Backend default for templates that read reasoning_effort (Qwen 3.8+). medium adds no steering instruction — it is the model's unsteered baseline"},
+    {"section": "LLM B", "key": "LLM_B_TEMPLATE_ID",           "label": "Effective Chat Template", "type": "chat_template", "hint": "Custom Jinja template file passed to the secondary backend; model default leaves GGUF metadata unchanged"},
+    {"section": "LLM B", "key": "LLM_B_FIT",                   "label": "Auto-Fit to VRAM",        "type": "select", "options": ["on", "off"], "hint": "When on, may reduce context size to fit in VRAM"},
+    {"section": "LLM B", "key": "LLM_B_FIT_TARGET",            "label": "Fit Target MiB",          "type": "text",   "hint": "llama.cpp --fit-target per-device margin, e.g. 1024 or 1024,2048; empty uses llama.cpp default"},
+    {"section": "LLM B", "key": "LLM_B_FIT_CTX",               "label": "Minimum Fit Context",     "type": "number", "hint": "llama.cpp --fit-ctx minimum context when auto-fit adjusts settings"},
+    {"section": "LLM B", "key": "LLM_B_CACHE_IDLE_SLOTS",      "label": "Cache Idle Slots",        "type": "select", "options": LLAMA_CACHE_IDLE_OPTIONS, "hint": "Controls --cache-idle-slots / --no-cache-idle-slots"},
+    {"section": "LLM B", "key": "LLM_B_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
+    {"section": "LLM B", "key": "LLM_B_CACHE_REUSE",           "label": "Cache Reuse Chunk",       "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_METHOD",           "label": "Speculative Method",      "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",       "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",        "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",      "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",           "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_TYPE_K",     "label": "Draft KV Key Type",       "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-k"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_TYPE_V",     "label": "Draft KV Value Type",     "type": "select", "options": LLAMA_KV_CACHE_OPTIONS, "hint": "llama.cpp --spec-draft-type-v"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_N_MAX",      "label": "Draft Max Tokens",        "type": "number", "hint": "llama.cpp --spec-draft-n-max (recommended 6 for MTP)"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_N_MIN",      "label": "Draft Min Tokens",        "type": "number", "hint": "llama.cpp --spec-draft-n-min (default 0)"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_P_MIN",      "label": "Draft Min Probability",   "type": "text",   "hint": "llama.cpp --spec-draft-p-min (default 0.75)"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_P_SPLIT",    "label": "Draft Split Probability", "type": "text",   "hint": "llama.cpp --spec-draft-p-split (default 0.10)"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_MOD_N_MATCH","label": "N-Gram Match Tokens",     "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-match (default 24)"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_MOD_N_MIN",  "label": "N-Gram Min Tokens",       "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-min (default 48)"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_MOD_N_MAX",  "label": "N-Gram Max Tokens",       "type": "number", "hint": "llama.cpp --spec-ngram-mod-n-max (default 64)"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_SIZE_N",     "label": "N-Gram Lookup Size",      "type": "number", "hint": "llama.cpp --spec-ngram-*-size-n for ngram-simple/map modes"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_SIZE_M",     "label": "N-Gram Draft Size",       "type": "number", "hint": "llama.cpp --spec-ngram-*-size-m for ngram-simple/map modes"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_MIN_HITS",   "label": "N-Gram Min Hits",         "type": "number", "hint": "llama.cpp --spec-ngram-*-min-hits for ngram-simple/map modes"},
+    {"section": "LLM B", "key": "LLM_B_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",        "type": "custom_args", "hint": "Extra llama.cpp flags applied to the secondary backend"},
     # Shared Backend
     {"section": "Shared Backend", "key": "CHAT_DENSE_LABEL",           "label": "Dense Slot Label",       "type": "text",   "hint": "UI label for the dense preset button/card"},
     {"section": "Shared Backend", "key": "CHAT_DENSE_MODEL_NAME",      "label": "Dense Model Alias",      "type": "text",   "hint": "llama.cpp alias for the dense preset"},
@@ -807,8 +851,8 @@ CONFIG_FIELDS = [
     # pi-forge integration. Slot scheduling is coordinated through lease files
     # in pi-forge's own agent directory; the manager reads them to verify the
     # contract, and only writes there when explicitly allowed to.
-    {"section": "Primary Backend", "key": "PI_FORGE_AGENT_DIR",     "label": "pi-forge Agent Directory", "type": "text",   "hint": "Holds inference-leases/. Blank uses the stack owner's ~/.pi-forge/agent"},
-    {"section": "Primary Backend", "key": "PI_FORGE_LEASE_REAP",    "label": "Reap Orphaned Leases",     "type": "select", "options": ["off", "on"], "hint": "Periodically delete leases whose writing process is gone; the panel's Reap button does this on request either way"},
+    {"section": "LLM A", "key": "PI_FORGE_AGENT_DIR",     "label": "pi-forge Agent Directory", "type": "text",   "hint": "Holds inference-leases/. Blank uses the stack owner's ~/.pi-forge/agent"},
+    {"section": "LLM A", "key": "PI_FORGE_LEASE_REAP",    "label": "Reap Orphaned Leases",     "type": "select", "options": ["off", "on"], "hint": "Periodically delete leases whose writing process is gone; the panel's Reap button does this on request either way"},
     # TTS Gateway
     {"section": "TTS Gateway", "key": "TTS_PUBLIC_URL",             "label": "Public TTS URL",       "type": "text",   "hint": "Stable URL clients should use"},
     {"section": "TTS Gateway", "key": "TTS_GATEWAY_HOST",           "label": "Gateway Listen Host",  "type": "text"},
@@ -914,11 +958,11 @@ CONFIG_FIELDS.extend(_transcription_engine_fields())
 
 CHAT_BACKEND_IDENTITY_KEYS = {
     "primary": {
-        "CHAT_DENSE_LABEL": "CHAT_PRIMARY_LABEL",
-        "CHAT_DENSE_MODEL_NAME": "CHAT_PRIMARY_MODEL_NAME",
-        "CHAT_DENSE_MODEL_PATH": "CHAT_PRIMARY_MODEL_PATH",
-        "CHAT_DENSE_MMPROJ_PATH": "CHAT_PRIMARY_MMPROJ_PATH",
-        "CHAT_DENSE_CTX_SIZE": "CHAT_PRIMARY_CTX_SIZE",
+        "CHAT_DENSE_LABEL": "LLM_A_LABEL",
+        "CHAT_DENSE_MODEL_NAME": "LLM_A_MODEL_NAME",
+        "CHAT_DENSE_MODEL_PATH": "LLM_A_MODEL_PATH",
+        "CHAT_DENSE_MMPROJ_PATH": "LLM_A_MMPROJ_PATH",
+        "CHAT_DENSE_CTX_SIZE": "LLM_A_CTX_SIZE",
     },
 }
 CHAT_BACKEND_GENERIC_SKIP_KEYS = {
@@ -943,19 +987,19 @@ def _clone_chat_backend_field(field: dict, variant: str) -> dict | None:
         cloned = dict(field)
         cloned["key"] = identity_key
         if variant == "primary":
-            cloned["section"] = "Primary Backend"
+            cloned["section"] = "LLM A"
             cloned["label"] = cloned.get("label", "").replace("Dense", "Primary").replace("Slot", "Backend")
             cloned["hint"] = cloned.get("hint", "").replace("dense preset", "primary backend")
         else:
-            cloned["section"] = "Secondary Backend"
+            cloned["section"] = "LLM B"
             cloned["label"] = cloned.get("label", "").replace("MoE", "Secondary").replace("Slot", "Backend")
             cloned["hint"] = cloned.get("hint", "").replace("MoE preset", "secondary backend")
         return cloned
     if not key.startswith("CHAT_") or key in CHAT_BACKEND_GENERIC_SKIP_KEYS:
         return None
     cloned = dict(field)
-    cloned["section"] = "Primary Backend" if variant == "primary" else "Secondary Backend"
-    cloned["key"] = ("CHAT_PRIMARY" if variant == "primary" else "CHAT_SECONDARY") + key[len("CHAT"):]
+    cloned["section"] = "LLM A" if variant == "primary" else "LLM B"
+    cloned["key"] = ("LLM_A" if variant == "primary" else "CHAT_SECONDARY") + key[len("CHAT"):]
     return cloned
 
 
@@ -1003,7 +1047,7 @@ def applicable_fields(inert: dict[str, str] | None = None,
                       fields: list[dict] | None = None) -> tuple[list[dict], dict[str, str]]:
     """(the fields this host can act on, {omitted key: why}).
 
-    The Mac renders `CHAT_PRIMARY_GPU_VISIBLE_DEVICES`, `_MAIN_GPU`,
+    The Mac renders `LLM_A_GPU_VISIBLE_DEVICES`, `_MAIN_GPU`,
     `_TENSOR_SPLIT` and `_SPLIT_MODE` today -- twenty-seven controls across
     seven sections -- and every one of them does nothing:
     `CUDA_VISIBLE_DEVICES` is not read by a Metal build, and
@@ -1051,61 +1095,61 @@ RESTART_HINTS = {
     "MLX_PARAKEET_MODEL_NAME":      ["transcript-backend"],
     "MLX_PARAKEET_CHUNK_SECONDS":   ["transcript-backend"],
     "MLX_PARAKEET_OVERLAP_SECONDS": ["transcript-backend"],
-    "CHAT_MODEL_NAME":           ["chat-backend-dense"],
-    "CHAT_N_PARALLEL":           ["chat-backend-dense"],
-    "CHAT_THREADS":              ["chat-backend-dense"],
-    "CHAT_THREADS_BATCH":        ["chat-backend-dense"],
-    "CHAT_N_GPU_LAYERS":         ["chat-backend-dense"],
-    "CHAT_MAIN_GPU":             ["chat-backend-dense"],
-    "CHAT_DEVICE":               ["chat-backend-dense"],
-    "CHAT_TENSOR_SPLIT":         ["chat-backend-dense"],
-    "CHAT_SPLIT_MODE":           ["chat-backend-dense"],
-    "CHAT_KV_OFFLOAD":           ["chat-backend-dense"],
-    "CHAT_OP_OFFLOAD":           ["chat-backend-dense"],
-    "CHAT_MMPROJ_OFFLOAD":       ["chat-backend-dense"],
-    "CHAT_FLASH_ATTN":           ["chat-backend-dense"],
-    "CHAT_CACHE_TYPE_K":         ["chat-backend-dense"],
-    "CHAT_CACHE_TYPE_V":         ["chat-backend-dense"],
-    "CHAT_BATCH_SIZE":           ["chat-backend-dense"],
-    "CHAT_UBATCH_SIZE":          ["chat-backend-dense"],
-    "CHAT_METRICS":              ["chat-backend-dense"],
-    "CHAT_NO_MMAP":              ["chat-backend-dense"],
-    "CHAT_MLOCK":                ["chat-backend-dense"],
-    "CHAT_GPU_VISIBLE_DEVICES":  ["chat-backend-dense"],
-    "CHAT_TEMP":                 ["chat-backend-dense"],
-    "CHAT_TOP_P":                ["chat-backend-dense"],
-    "CHAT_TOP_K":                ["chat-backend-dense"],
-    "CHAT_MIN_P":                ["chat-backend-dense"],
-    "CHAT_PRESERVE_THINKING":    ["chat-backend-dense"],
-    "CHAT_REASONING_EFFORT":     ["chat-backend-dense"],
-    "CHAT_JINJA":                ["chat-backend-dense"],
-    "CHAT_REASONING_FORMAT":     ["chat-backend-dense"],
-    "CHAT_FIT":                  ["chat-backend-dense"],
-    "CHAT_SPEC_METHOD":          ["chat-backend-dense"],
-    "CHAT_SPEC_NGRAM_MOD":       ["chat-backend-dense"],
-    "CHAT_SPEC_DRAFT_MODEL_PATH": ["chat-backend-dense"],
-    "CHAT_SPEC_DRAFT_N_GPU_LAYERS": ["chat-backend-dense"],
-    "CHAT_SPEC_DRAFT_DEVICES":   ["chat-backend-dense"],
-    "CHAT_SPEC_DRAFT_N_MAX":     ["chat-backend-dense"],
-    "CHAT_SPEC_DRAFT_N_MIN":     ["chat-backend-dense"],
-    "CHAT_SPEC_DRAFT_P_MIN":     ["chat-backend-dense"],
-    "CHAT_SPEC_DRAFT_P_SPLIT":   ["chat-backend-dense"],
-    "CHAT_SPEC_NGRAM_MOD_N_MATCH": ["chat-backend-dense"],
-    "CHAT_SPEC_NGRAM_MOD_N_MIN": ["chat-backend-dense"],
-    "CHAT_SPEC_NGRAM_MOD_N_MAX": ["chat-backend-dense"],
-    "CHAT_CACHE_RAM":            ["chat-backend-dense"],
-    "CHAT_CTX_CHECKPOINTS":      ["chat-backend-dense"],
-    "CHAT_SWA_FULL":             ["chat-backend-dense"],
-    "CHAT_CUSTOM_ARGS_JSON":     ["chat-backend-dense"],
-    "CHAT_TEMPLATE_ID":           ["chat-backend-dense"],
+    "CHAT_MODEL_NAME":           ["llm-a"],
+    "CHAT_N_PARALLEL":           ["llm-a"],
+    "CHAT_THREADS":              ["llm-a"],
+    "CHAT_THREADS_BATCH":        ["llm-a"],
+    "CHAT_N_GPU_LAYERS":         ["llm-a"],
+    "CHAT_MAIN_GPU":             ["llm-a"],
+    "CHAT_DEVICE":               ["llm-a"],
+    "CHAT_TENSOR_SPLIT":         ["llm-a"],
+    "CHAT_SPLIT_MODE":           ["llm-a"],
+    "CHAT_KV_OFFLOAD":           ["llm-a"],
+    "CHAT_OP_OFFLOAD":           ["llm-a"],
+    "CHAT_MMPROJ_OFFLOAD":       ["llm-a"],
+    "CHAT_FLASH_ATTN":           ["llm-a"],
+    "CHAT_CACHE_TYPE_K":         ["llm-a"],
+    "CHAT_CACHE_TYPE_V":         ["llm-a"],
+    "CHAT_BATCH_SIZE":           ["llm-a"],
+    "CHAT_UBATCH_SIZE":          ["llm-a"],
+    "CHAT_METRICS":              ["llm-a"],
+    "CHAT_NO_MMAP":              ["llm-a"],
+    "CHAT_MLOCK":                ["llm-a"],
+    "CHAT_GPU_VISIBLE_DEVICES":  ["llm-a"],
+    "CHAT_TEMP":                 ["llm-a"],
+    "CHAT_TOP_P":                ["llm-a"],
+    "CHAT_TOP_K":                ["llm-a"],
+    "CHAT_MIN_P":                ["llm-a"],
+    "CHAT_PRESERVE_THINKING":    ["llm-a"],
+    "CHAT_REASONING_EFFORT":     ["llm-a"],
+    "CHAT_JINJA":                ["llm-a"],
+    "CHAT_REASONING_FORMAT":     ["llm-a"],
+    "CHAT_FIT":                  ["llm-a"],
+    "CHAT_SPEC_METHOD":          ["llm-a"],
+    "CHAT_SPEC_NGRAM_MOD":       ["llm-a"],
+    "CHAT_SPEC_DRAFT_MODEL_PATH": ["llm-a"],
+    "CHAT_SPEC_DRAFT_N_GPU_LAYERS": ["llm-a"],
+    "CHAT_SPEC_DRAFT_DEVICES":   ["llm-a"],
+    "CHAT_SPEC_DRAFT_N_MAX":     ["llm-a"],
+    "CHAT_SPEC_DRAFT_N_MIN":     ["llm-a"],
+    "CHAT_SPEC_DRAFT_P_MIN":     ["llm-a"],
+    "CHAT_SPEC_DRAFT_P_SPLIT":   ["llm-a"],
+    "CHAT_SPEC_NGRAM_MOD_N_MATCH": ["llm-a"],
+    "CHAT_SPEC_NGRAM_MOD_N_MIN": ["llm-a"],
+    "CHAT_SPEC_NGRAM_MOD_N_MAX": ["llm-a"],
+    "CHAT_CACHE_RAM":            ["llm-a"],
+    "CHAT_CTX_CHECKPOINTS":      ["llm-a"],
+    "CHAT_SWA_FULL":             ["llm-a"],
+    "CHAT_CUSTOM_ARGS_JSON":     ["llm-a"],
+    "CHAT_TEMPLATE_ID":           ["llm-a"],
     "CHAT_BACKEND_HOST":         ["chat-proxy"],
     "CHAT_BACKEND_PORT":         ["chat-proxy"],
     "PROXY_STREAM_PASSTHROUGH":  ["chat-proxy"],
     "UPSTREAM_400_CAPTURE_ENABLED": ["chat-proxy"],
-    "CHAT2_CACHE_RAM":           ["chat-backend2"],
-    "CHAT2_CTX_CHECKPOINTS":     ["chat-backend2"],
-    "CHAT2_SWA_FULL":            ["chat-backend2"],
-    "CHAT2_CUSTOM_ARGS_JSON":    ["chat-backend2"],
+    "LLM_B_CACHE_RAM":           ["llm-b"],
+    "LLM_B_CTX_CHECKPOINTS":     ["llm-b"],
+    "LLM_B_SWA_FULL":            ["llm-b"],
+    "LLM_B_CUSTOM_ARGS_JSON":    ["llm-b"],
     "CODE_THINKING":             ["chat-proxy"],
     "CODE_PRESERVE_THINKING":    ["chat-proxy"],
     "CODE_REASONING_EFFORT":     ["chat-proxy"],
@@ -1301,9 +1345,9 @@ RESTART_HINTS = {
     "RERANK_PORT":               ["rerank"],
     "TASK_PORT":                 ["task"],
     "LISTEN_HOST":               ["chat-proxy", "embed", "rerank", "task"],
-    "CHAT_MODEL_PATH":           ["chat-backend-dense"],
-    "CHAT_MMPROJ_PATH":          ["chat-backend-dense"],
-    "CHAT_CTX_SIZE":             ["chat-backend-dense"],
+    "CHAT_MODEL_PATH":           ["llm-a"],
+    "CHAT_MMPROJ_PATH":          ["llm-a"],
+    "CHAT_CTX_SIZE":             ["llm-a"],
     "TTS_PUBLIC_URL":            ["tts-gateway"],
     "TTS_GATEWAY_HOST":          ["tts-gateway"],
     "TTS_GATEWAY_PORT":          ["tts-gateway"],
@@ -1332,10 +1376,10 @@ RESTART_HINTS = {
 
 for _field in CONFIG_FIELDS:
     _key = _field.get("key", "")
-    if _key.startswith("CHAT_PRIMARY_"):
-        RESTART_HINTS.setdefault(_key, ["chat-backend-dense"])
-    if _key.startswith("CHAT2_"):
-        RESTART_HINTS.setdefault(_key, ["chat-backend2"])
+    if _key.startswith("LLM_A_"):
+        RESTART_HINTS.setdefault(_key, ["llm-a"])
+    if _key.startswith("LLM_B_"):
+        RESTART_HINTS.setdefault(_key, ["llm-b"])
     if _key.startswith("OCR_"):
         RESTART_HINTS.setdefault(_key, ["ocr"])
     if _key.startswith("GLMOCR_"):
@@ -1354,3 +1398,12 @@ for _field in CONFIG_FIELDS:
     # through `apply_router_restart_hints` — that only redirects pooled *units*.
     if _key.startswith("ASR_"):
         RESTART_HINTS.setdefault(_key, ["llama-router"])
+
+
+# Last, deliberately: `CONFIG_FIELDS` is extended three times after its literal
+# definition -- the transcription engines, the cloned chat-backend variants --
+# and a rename map built before those ran would cover only the fields that
+# happened to exist yet. It did, the first time this was written, and silently
+# produced half a map.
+_register_prefix_renames()
+_rebuild_legacy_aliases()

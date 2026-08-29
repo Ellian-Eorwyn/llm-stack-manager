@@ -98,12 +98,12 @@ that sends a key this host has never heard of gets a 200 with that key listed
 in `ignored_keys`, and the value is not written.
 
 This matters most across a version gap. A hub updated to the renamed
-`LLM_A_CTX_SIZE` writing to a host that still says `CHAT_PRIMARY_CTX_SIZE`
+`LLM_A_CTX_SIZE` writing to a host that still says `LLM_A_CTX_SIZE`
 would otherwise get a success with nothing changed, which is the worst possible
 answer because it looks like a save. **A non-empty `ignored_keys` on a remote
 save is an error, not a success**, and a client should render it as one.
 
-The other direction is safe: an older controller sending `CHAT_PRIMARY_*` to a
+The other direction is safe: an older controller sending `LLM_A_*` to a
 renamed host has its keys mapped through `LEGACY_ENV_KEY_MAP`. That asymmetry
 is why the rename must add the old names to that map *before* a fleet spans a
 version gap, not after.

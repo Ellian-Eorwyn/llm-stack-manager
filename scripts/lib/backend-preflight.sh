@@ -108,7 +108,7 @@ add_fit_ctx_opt() {
 # reports the placement llama-server is actually given rather than the one that
 # was asked for. Call as:
 #
-#   resolve_split_opts "[chat-backend-dense]" "${MODE}" "${MODEL}" \
+#   resolve_split_opts "[llm-a]" "${MODE}" "${MODEL}" \
 #       "${TENSOR_SPLIT}" "${MAIN_GPU}" "${FLASH_ATTN}"
 #
 # Pass an empty main_gpu for the backends that never emitted --main-gpu
@@ -313,7 +313,7 @@ add_chat_template_kwargs_opt() {
 # settings independently is precisely how --fit-ctx stayed live after it had
 # been cleared. Call as:
 #
-#   preflight_report "[chat-backend-dense]" chat-primary \
+#   preflight_report "[llm-a]" llm-a \
 #       "${MODEL}" "${MMPROJ}" ctx_size="${CTX}" parallel="${SLOTS}" ...
 preflight_report() {
     local prefix="$1" backend="$2" model_path="$3" mmproj_path="$4"

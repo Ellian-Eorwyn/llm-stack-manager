@@ -783,7 +783,7 @@ def evaluate(geometry: dict, settings: dict, prediction: dict,
 
 # Each backend the model can price, and the env prefix its settings live under.
 # Keyed by the name the budget model knows, which is not the unit name: the
-# unit is `chat-backend-dense` and the price is quoted for `chat-primary`.
+# unit is `llm-a` and the price is quoted for `llm-a`.
 BACKEND_PREFIXES = {slot.budget: slot.prefix for slot in backends.SLOTS.values()} | {
     # Only pooled when ASR is in MODEL_ROUTER_MEMBERS, but priced either way:
     # an audio GGUF the budget cannot see is one the pre-flight check silently
@@ -822,10 +822,10 @@ OVERRIDABLE_SETTINGS = frozenset(_SETTING_SUFFIXES) | {
 }
 
 
-def settings_from_env(env: dict, backend: str = "chat-primary") -> dict:
+def settings_from_env(env: dict, backend: str = "llm-a") -> dict:
     """Read one backend's launcher settings out of the env file.
 
-    `read_env` has already backfilled the `CHAT_PRIMARY_*` keys from their
+    `read_env` has already backfilled the `LLM_A_*` keys from their
     legacy `CHAT_*` twins, so this reads the new names only.
     """
     prefix = BACKEND_PREFIXES.get(backend)
@@ -845,7 +845,7 @@ def settings_from_env(env: dict, backend: str = "chat-primary") -> dict:
     return settings
 
 
-def budget_for(env: dict, backend: str = "chat-primary",
+def budget_for(env: dict, backend: str = "llm-a",
                gpus: list[dict] | None = None, host: dict | None = None,
                overrides: dict | None = None) -> dict:
     """Full budget for one backend: geometry, prediction and verdict.
@@ -1010,8 +1010,8 @@ def _read_env_file(path: Path) -> dict:
     except OSError:
         pass
     # Mirror the manager's legacy backfill so the CLI and the UI agree.
-    for key in [k for k in env if k.startswith("CHAT_") and not k.startswith(("CHAT_PRIMARY_", "CHAT_SECONDARY_"))]:
-        env.setdefault("CHAT_PRIMARY_" + key[len("CHAT_"):], env[key])
+    for key in [k for k in env if k.startswith("CHAT_") and not k.startswith(("LLM_A_", "CHAT_SECONDARY_"))]:
+        env.setdefault("LLM_A_" + key[len("CHAT_"):], env[key])
     return env
 
 
@@ -1137,7 +1137,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Predict the memory footprint of a backend configuration.")
     default_env = Path(__file__).resolve().parent.parent / "config" / "llm-stack.env"
     parser.add_argument("--env", type=Path, default=default_env, help="path to llm-stack.env")
-    parser.add_argument("--backend", default="chat-primary", choices=sorted(BACKEND_PREFIXES),
+    parser.add_argument("--backend", default="llm-a", choices=sorted(BACKEND_PREFIXES),
                         help="which backend to price")
     parser.add_argument("--model", help="price this model file instead of the backend's configured one")
     parser.add_argument("--mmproj", help="multimodal projector accompanying --model")

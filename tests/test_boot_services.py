@@ -4,7 +4,7 @@
 and that script used to read the boot set from `LLM_STACK_SELECTED_COMPONENTS`
 with an else-branch that started *everything* when the variable was unset --
 which it always was, on the one code path where it mattered. On the production
-host that meant every boot started `chat-backend2`, a second 27B model, onto a
+host that meant every boot started `llm-b`, a second 27B model, onto a
 GPU already holding the primary. `config/service-expectations.json` had recorded
 `off` for that unit for months. Nothing on the boot path read the file.
 
@@ -42,9 +42,9 @@ boot = _load("boot_services", "scripts/lib/boot-services.py")
 #: its proxy on, the secondary pair deliberately off, the router pooling the
 #: four auxiliary models, transcription on.
 LLMS_EXPECTATIONS = {
-    "chat-backend-dense": {"expected": "on"},
+    "llm-a": {"expected": "on"},
     "chat-proxy": {"expected": "on"},
-    "chat-backend2": {"expected": "off"},
+    "llm-b": {"expected": "off"},
     "chat-proxy2": {"expected": "off"},
     "embed": {"expected": "on"},
     "embed2": {"expected": "off"},
@@ -77,14 +77,14 @@ class AuthorityTests(unittest.TestCase):
         `LLM_STACK_SELECTED_COMPONENTS`, nothing overriding anything.
         """
         units = self.units()
-        self.assertNotIn("chat-backend2", units)
+        self.assertNotIn("llm-b", units)
         self.assertNotIn("chat-proxy2", units)
-        self.assertIn("chat-backend-dense", units)
+        self.assertIn("llm-a", units)
 
     def test_off_outranks_a_component_that_selects_the_unit(self):
         """Selecting `secondary` does not override a deliberate stop."""
         units = self.units(LLM_STACK_SELECTED_COMPONENTS="primary,secondary")
-        self.assertNotIn("chat-backend2", units)
+        self.assertNotIn("llm-b", units)
 
     def test_on_outranks_a_selection_that_never_mentioned_the_unit(self):
         """`transcribe` is not in this host's wizard selection.
@@ -122,14 +122,14 @@ class AuthorityTests(unittest.TestCase):
     def test_a_backend_starts_before_the_proxy_in_front_of_it(self):
         units = self.units(LLM_STACK_SELECTED_COMPONENTS="primary,secondary",
                            expectations={})
-        self.assertLess(units.index("chat-backend-dense"), units.index("chat-proxy"))
-        self.assertLess(units.index("chat-backend2"), units.index("chat-proxy2"))
+        self.assertLess(units.index("llm-a"), units.index("chat-proxy"))
+        self.assertLess(units.index("llm-b"), units.index("chat-proxy2"))
 
     def test_a_saved_profile_can_name_a_different_primary_unit(self):
         units = boot.boot_units(LLMS_ENV, expectations=LLMS_EXPECTATIONS,
                                 chat_backend="chat-backend-moe")
         self.assertIn("chat-backend-moe", units)
-        self.assertNotIn("chat-backend-dense", units)
+        self.assertNotIn("llm-a", units)
 
 
 class FallbackTests(unittest.TestCase):
@@ -139,7 +139,7 @@ class FallbackTests(unittest.TestCase):
         units = boot.boot_units({**LLMS_ENV,
                                  "LLM_STACK_SELECTED_COMPONENTS": "primary,playwright"},
                                 expectations={})
-        self.assertEqual(units, ["chat-backend-dense", "chat-proxy",
+        self.assertEqual(units, ["llm-a", "chat-proxy",
                                  "llama-router", "playwright-server"])
 
     def test_the_fallback_matches_the_other_boot_path(self):
@@ -154,8 +154,8 @@ class FallbackTests(unittest.TestCase):
         """The caller refuses to stop anything on an empty list, so an empty
         list must only happen when it is genuinely correct."""
         units = boot.boot_units({"MODEL_ROUTER_ENABLED": "off"},
-                                expectations={}, chat_backend="chat-backend-dense")
-        self.assertIn("chat-backend-dense", units)
+                                expectations={}, chat_backend="llm-a")
+        self.assertIn("llm-a", units)
 
 
 class KeySetTests(unittest.TestCase):

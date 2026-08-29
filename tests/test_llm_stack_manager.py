@@ -44,20 +44,20 @@ import platform_harness  # noqa: E402
 class ConfigSectionTests(unittest.TestCase):
     def test_primary_and_secondary_backend_fields_are_separate(self):
         sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
-        self.assertEqual(sections["CHAT_PRIMARY_MODEL_PATH"], "Primary Backend")
-        self.assertEqual(sections["CHAT_PRIMARY_SPEC_METHOD"], "Primary Backend")
-        self.assertEqual(sections["CHAT_PRIMARY_CUSTOM_ARGS_JSON"], "Primary Backend")
-        self.assertEqual(sections["CHAT2_LABEL"], "Secondary Backend")
-        self.assertEqual(sections["CHAT2_MODEL_PATH"], "Secondary Backend")
-        self.assertEqual(sections["CHAT2_SPEC_METHOD"], "Secondary Backend")
-        self.assertEqual(sections["CHAT2_CUSTOM_ARGS_JSON"], "Secondary Backend")
+        self.assertEqual(sections["LLM_A_MODEL_PATH"], "LLM A")
+        self.assertEqual(sections["LLM_A_SPEC_METHOD"], "LLM A")
+        self.assertEqual(sections["LLM_A_CUSTOM_ARGS_JSON"], "LLM A")
+        self.assertEqual(sections["LLM_B_LABEL"], "LLM B")
+        self.assertEqual(sections["LLM_B_MODEL_PATH"], "LLM B")
+        self.assertEqual(sections["LLM_B_SPEC_METHOD"], "LLM B")
+        self.assertEqual(sections["LLM_B_CUSTOM_ARGS_JSON"], "LLM B")
         self.assertNotIn("CHAT_SECONDARY_MODEL_PATH", sections)
 
     def test_primary_and_secondary_backend_restart_independently(self):
-        self.assertEqual(manager.RESTART_HINTS["CHAT_PRIMARY_MODEL_PATH"], ["chat-backend-dense"])
-        self.assertEqual(manager.RESTART_HINTS["CHAT_PRIMARY_BATCH_SIZE"], ["chat-backend-dense"])
-        self.assertEqual(manager.RESTART_HINTS["CHAT2_MODEL_PATH"], ["chat-backend2"])
-        self.assertEqual(manager.RESTART_HINTS["CHAT2_BATCH_SIZE"], ["chat-backend2"])
+        self.assertEqual(manager.RESTART_HINTS["LLM_A_MODEL_PATH"], ["llm-a"])
+        self.assertEqual(manager.RESTART_HINTS["LLM_A_BATCH_SIZE"], ["llm-a"])
+        self.assertEqual(manager.RESTART_HINTS["LLM_B_MODEL_PATH"], ["llm-b"])
+        self.assertEqual(manager.RESTART_HINTS["LLM_B_BATCH_SIZE"], ["llm-b"])
 
     def test_cache_aware_scheduling_cards_render_for_both_backends(self):
         template_dir = pathlib.Path(__file__).resolve().parents[1] / "web" / "templates"
@@ -73,8 +73,8 @@ class ConfigSectionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
-        self.assertIn('data-cache-aware-prefix="CHAT_PRIMARY"', html)
-        self.assertIn('data-cache-aware-prefix="CHAT2"', html)
+        self.assertIn('data-cache-aware-prefix="LLM_A"', html)
+        self.assertIn('data-cache-aware-prefix="LLM_B"', html)
         self.assertEqual(html.count("Enable Cache-Aware Scheduling"), 2)
         self.assertIn("cache-aware-scheduling.js", html)
         self.assertIn("~/.pi-forge/agent/settings.json", html)
@@ -88,8 +88,8 @@ class ConfigSectionTests(unittest.TestCase):
             "CACHE_IDLE_SLOTS",
             "FIT",
         ):
-            self.assertEqual(manager.RESTART_HINTS[f"CHAT_PRIMARY_{suffix}"], ["chat-backend-dense"])
-            self.assertEqual(manager.RESTART_HINTS[f"CHAT2_{suffix}"], ["chat-backend2"])
+            self.assertEqual(manager.RESTART_HINTS[f"LLM_A_{suffix}"], ["llm-a"])
+            self.assertEqual(manager.RESTART_HINTS[f"LLM_B_{suffix}"], ["llm-b"])
 
     def test_primary_and_secondary_backend_normalize_from_legacy_keys(self):
         env = config_env.normalize_env_keys({
@@ -102,18 +102,18 @@ class ConfigSectionTests(unittest.TestCase):
             "CHAT_BATCH_SIZE": "2048",
             "CHAT_GPU_VISIBLE_DEVICES": "0,1",
         })
-        self.assertEqual(env["CHAT_PRIMARY_LABEL"], "Primary Backend")
-        self.assertEqual(env["CHAT_PRIMARY_MODEL_PATH"], "/models/primary.gguf")
-        self.assertEqual(env["CHAT_PRIMARY_CTX_SIZE"], "32768")
-        self.assertEqual(env["CHAT_PRIMARY_BATCH_SIZE"], "2048")
-        self.assertEqual(env["CHAT_PRIMARY_GPU_VISIBLE_DEVICES"], "0,1")
+        self.assertEqual(env["LLM_A_LABEL"], "LLM A")
+        self.assertEqual(env["LLM_A_MODEL_PATH"], "/models/primary.gguf")
+        self.assertEqual(env["LLM_A_CTX_SIZE"], "32768")
+        self.assertEqual(env["LLM_A_BATCH_SIZE"], "2048")
+        self.assertEqual(env["LLM_A_GPU_VISIBLE_DEVICES"], "0,1")
         # The MoE keys described an alternative model for the *one* shared
         # backend. That slot is retired, so they backfill the concurrent second
         # slot instead of vanishing -- a host with a MoE model and no second
         # slot keeps its model.
-        self.assertEqual(env["CHAT2_LABEL"], "Secondary Backend")
-        self.assertEqual(env["CHAT2_MODEL_PATH"], "/models/secondary.gguf")
-        self.assertEqual(env["CHAT2_CTX_SIZE"], "65536")
+        self.assertEqual(env["LLM_B_LABEL"], "LLM B")
+        self.assertEqual(env["LLM_B_MODEL_PATH"], "/models/secondary.gguf")
+        self.assertEqual(env["LLM_B_CTX_SIZE"], "65536")
         self.assertNotIn("CHAT_SECONDARY_LABEL", env)
         self.assertNotIn("CHAT_SECONDARY_BATCH_SIZE", {f["key"] for f in manager.CONFIG_FIELDS})
 
@@ -121,9 +121,9 @@ class ConfigSectionTests(unittest.TestCase):
         """The backfill never overwrites, so the two cannot collide."""
         env = config_env.normalize_env_keys({
             "CHAT_MOE_MODEL_PATH": "/models/old-moe.gguf",
-            "CHAT2_MODEL_PATH": "/models/current-b.gguf",
+            "LLM_B_MODEL_PATH": "/models/current-b.gguf",
         })
-        self.assertEqual(env["CHAT2_MODEL_PATH"], "/models/current-b.gguf")
+        self.assertEqual(env["LLM_B_MODEL_PATH"], "/models/current-b.gguf")
 
     def test_removed_backend_fields_are_not_in_config_surface(self):
         sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
@@ -160,8 +160,8 @@ class ConfigSectionTests(unittest.TestCase):
     def test_chat_template_fields_are_exposed(self):
         fields = {f["key"]: f for f in manager.CONFIG_FIELDS}
         self.assertEqual(fields["CHAT_TEMPLATE_MANAGER"]["type"], "template_manager")
-        self.assertEqual(fields["CHAT_PRIMARY_TEMPLATE_ID"]["type"], "chat_template")
-        self.assertEqual(fields["CHAT2_TEMPLATE_ID"]["type"], "chat_template")
+        self.assertEqual(fields["LLM_A_TEMPLATE_ID"]["type"], "chat_template")
+        self.assertEqual(fields["LLM_B_TEMPLATE_ID"]["type"], "chat_template")
         self.assertEqual(fields["TASK_CHAT_TEMPLATE_ID"]["type"], "chat_template")
 
     def test_glmocr_sdk_fields_restart_sdk_only(self):
@@ -439,16 +439,16 @@ class SavedConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             saved_dir = pathlib.Path(tmp)
             env = {
-                "CHAT_PRIMARY_CTX_SIZE": "32768",
-                "CHAT_PRIMARY_SPLIT_MODE": "layer",
-                "CHAT_PRIMARY_TENSOR_SPLIT": "1,1",
-                "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0,1",
+                "LLM_A_CTX_SIZE": "32768",
+                "LLM_A_SPLIT_MODE": "layer",
+                "LLM_A_TENSOR_SPLIT": "1,1",
+                "LLM_A_GPU_VISIBLE_DEVICES": "0,1",
             }
             form = {
-                "CHAT_PRIMARY_CTX_SIZE": "128000",
-                "CHAT_PRIMARY_SPLIT_MODE": "none",
-                "CHAT_PRIMARY_TENSOR_SPLIT": "",
-                "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0",
+                "LLM_A_CTX_SIZE": "128000",
+                "LLM_A_SPLIT_MODE": "none",
+                "LLM_A_TENSOR_SPLIT": "",
+                "LLM_A_GPU_VISIBLE_DEVICES": "0",
             }
 
             with (
@@ -461,32 +461,32 @@ class SavedConfigTests(unittest.TestCase):
 
             self.assertEqual(resp.status_code, 200)
             data = json.loads((saved_dir / "OneGpu.json").read_text())
-            self.assertEqual(data["_config_form"]["CHAT_PRIMARY_CTX_SIZE"], "128000")
-            self.assertEqual(data["_config_form"]["CHAT_PRIMARY_SPLIT_MODE"], "none")
-            self.assertEqual(data["_config_form"]["CHAT_PRIMARY_TENSOR_SPLIT"], "")
-            self.assertEqual(data["_config_form"]["CHAT_PRIMARY_GPU_VISIBLE_DEVICES"], "0")
+            self.assertEqual(data["_config_form"]["LLM_A_CTX_SIZE"], "128000")
+            self.assertEqual(data["_config_form"]["LLM_A_SPLIT_MODE"], "none")
+            self.assertEqual(data["_config_form"]["LLM_A_TENSOR_SPLIT"], "")
+            self.assertEqual(data["_config_form"]["LLM_A_GPU_VISIBLE_DEVICES"], "0")
 
     def test_apply_saved_config_prefers_form_snapshot_over_top_level_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             saved_dir = pathlib.Path(tmp)
             config_file = saved_dir / "llm-stack.env"
             config_file.write_text(
-                "CHAT_PRIMARY_CTX_SIZE=32768\n"
-                "CHAT_PRIMARY_SPLIT_MODE=layer\n"
-                "CHAT_PRIMARY_TENSOR_SPLIT=1,1\n"
-                "CHAT_PRIMARY_GPU_VISIBLE_DEVICES=0,1\n"
+                "LLM_A_CTX_SIZE=32768\n"
+                "LLM_A_SPLIT_MODE=layer\n"
+                "LLM_A_TENSOR_SPLIT=1,1\n"
+                "LLM_A_GPU_VISIBLE_DEVICES=0,1\n"
             )
             (saved_dir / "OneGpu.json").write_text(json.dumps({
-                "CHAT_PRIMARY_CTX_SIZE": "262144",
+                "LLM_A_CTX_SIZE": "262144",
                 "CHAT_CTX_SIZE": "262144",
-                "CHAT_PRIMARY_SPLIT_MODE": "layer",
-                "CHAT_PRIMARY_TENSOR_SPLIT": "1,1",
-                "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0,1",
+                "LLM_A_SPLIT_MODE": "layer",
+                "LLM_A_TENSOR_SPLIT": "1,1",
+                "LLM_A_GPU_VISIBLE_DEVICES": "0,1",
                 "_config_form": {
-                    "CHAT_PRIMARY_CTX_SIZE": "128000",
-                    "CHAT_PRIMARY_SPLIT_MODE": "none",
-                    "CHAT_PRIMARY_TENSOR_SPLIT": "",
-                    "CHAT_PRIMARY_GPU_VISIBLE_DEVICES": "0",
+                    "LLM_A_CTX_SIZE": "128000",
+                    "LLM_A_SPLIT_MODE": "none",
+                    "LLM_A_TENSOR_SPLIT": "",
+                    "LLM_A_GPU_VISIBLE_DEVICES": "0",
                 },
                 "_active_chat_model": {"variant": None, "service": None, "label": "", "kind": "none"},
             }))
@@ -499,10 +499,10 @@ class SavedConfigTests(unittest.TestCase):
             content = config_file.read_text()
 
             self.assertTrue(result["ok"])
-            self.assertIn("CHAT_PRIMARY_CTX_SIZE=128000", content)
-            self.assertIn('CHAT_PRIMARY_TENSOR_SPLIT=""', content)
-            self.assertIn("CHAT_PRIMARY_SPLIT_MODE=none", content)
-            self.assertIn("CHAT_PRIMARY_GPU_VISIBLE_DEVICES=0", content)
+            self.assertIn("LLM_A_CTX_SIZE=128000", content)
+            self.assertIn('LLM_A_TENSOR_SPLIT=""', content)
+            self.assertIn("LLM_A_SPLIT_MODE=none", content)
+            self.assertIn("LLM_A_GPU_VISIBLE_DEVICES=0", content)
 
     def test_apply_saved_config_prefers_canonical_pane_key_over_legacy_alias(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -510,7 +510,7 @@ class SavedConfigTests(unittest.TestCase):
             config_file = saved_dir / "llm-stack.env"
             config_file.write_text("CHAT_DENSE_CTX_SIZE=32768\nCHAT_CTX_SIZE=32768\n")
             (saved_dir / "Context.json").write_text(json.dumps({
-                "CHAT_PRIMARY_CTX_SIZE": "128000",
+                "LLM_A_CTX_SIZE": "128000",
                 "CHAT_DENSE_CTX_SIZE": "32768",
                 "CHAT_CTX_SIZE": "262144",
                 "_active_chat_model": {"variant": None, "service": None, "label": "", "kind": "none"},
@@ -524,16 +524,16 @@ class SavedConfigTests(unittest.TestCase):
             content = config_file.read_text()
 
             self.assertTrue(result["ok"])
-            self.assertIn("CHAT_PRIMARY_CTX_SIZE=128000", content)
+            self.assertIn("LLM_A_CTX_SIZE=128000", content)
             self.assertNotIn("CHAT_DENSE_CTX_SIZE=32768", content)
 
     def test_apply_saved_config_accepts_numeric_json_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             saved_dir = pathlib.Path(tmp)
             config_file = saved_dir / "llm-stack.env"
-            config_file.write_text("CHAT_PRIMARY_CTX_SIZE=32768\n")
+            config_file.write_text("LLM_A_CTX_SIZE=32768\n")
             (saved_dir / "Numeric.json").write_text(json.dumps({
-                "CHAT_PRIMARY_CTX_SIZE": 128000,
+                "LLM_A_CTX_SIZE": 128000,
                 "_active_chat_model": {"variant": None, "service": None, "label": "", "kind": "none"},
             }))
 
@@ -544,20 +544,20 @@ class SavedConfigTests(unittest.TestCase):
                 result = manager.apply_saved_config("Numeric", launch=False)
 
             self.assertTrue(result["ok"])
-            self.assertIn("CHAT_PRIMARY_CTX_SIZE=128000", config_file.read_text())
+            self.assertIn("LLM_A_CTX_SIZE=128000", config_file.read_text())
 
     def test_save_records_primary_and_secondary_backend_slots(self):
         with tempfile.TemporaryDirectory() as tmp:
             saved_dir = pathlib.Path(tmp)
             env = {
-                "CHAT_PRIMARY_LABEL": "Primary Backend",
-                "CHAT2_LABEL": "Local Secondary",
-                "CHAT2_MODEL_NAME": "chat-secondary",
-                "CHAT2_MODEL_PATH": "/models/secondary.gguf",
+                "LLM_A_LABEL": "LLM A",
+                "LLM_B_LABEL": "Local Secondary",
+                "LLM_B_MODEL_NAME": "llm-b",
+                "LLM_B_MODEL_PATH": "/models/secondary.gguf",
             }
 
             def fake_status(name):
-                return "active" if name in {"chat-backend-dense", "chat-backend2"} else "inactive"
+                return "active" if name in {"llm-a", "llm-b"} else "inactive"
 
             with (
                 manager.app.test_client() as client,
@@ -570,22 +570,22 @@ class SavedConfigTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         body = listed.get_json()[0]
-        self.assertEqual(body["active_backend_slots"]["primary"]["label"], "Primary Backend")
+        self.assertEqual(body["active_backend_slots"]["primary"]["label"], "LLM A")
         self.assertEqual(body["active_backend_slots"]["secondary"]["label"], "Local Secondary")
-        self.assertEqual(body["active_backend_slots"]["secondary"]["service"], "chat-backend2")
+        self.assertEqual(body["active_backend_slots"]["secondary"]["service"], "llm-b")
 
     def test_apply_saved_config_launches_secondary_from_slot_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             saved_dir = pathlib.Path(tmp)
             config_file = saved_dir / "llm-stack.env"
-            config_file.write_text("CHAT2_LABEL=Old\n")
+            config_file.write_text("LLM_B_LABEL=Old\n")
             (saved_dir / "Secondary.json").write_text(json.dumps({
-                "CHAT2_LABEL": "Local Secondary",
+                "LLM_B_LABEL": "Local Secondary",
                 "_active_chat_model": {"variant": None, "service": None, "label": "", "kind": "none"},
                 "_active_backend_slots": {
                     "secondary": {
                         "variant": "secondary",
-                        "service": "chat-backend2",
+                        "service": "llm-b",
                         "label": "Local Secondary",
                         "kind": "secondary",
                     }
@@ -612,9 +612,9 @@ class SavedConfigTests(unittest.TestCase):
             content = config_file.read_text()
 
             self.assertTrue(result["ok"])
-            self.assertIn("chat-backend2", started)
+            self.assertIn("llm-b", started)
             self.assertIn("chat-proxy2", started)
-            self.assertIn('CHAT2_LABEL="Local Secondary"', content)
+            self.assertIn('LLM_B_LABEL="Local Secondary"', content)
 
     def test_patch_saved_config_updates_only_supplied_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -642,8 +642,8 @@ class MetricsFlagTests(unittest.TestCase):
     def test_every_llamacpp_backend_exposes_a_metrics_toggle(self):
         sections = {f["key"]: f["section"] for f in manager.CONFIG_FIELDS}
         for key, section in [
-            ("CHAT_PRIMARY_METRICS", "Primary Backend"),
-            ("CHAT2_METRICS", "Secondary Backend"),
+            ("LLM_A_METRICS", "LLM A"),
+            ("LLM_B_METRICS", "LLM B"),
             ("EMBED_METRICS", "Embedding"),
             ("RERANK_METRICS", "Reranker"),
             ("TASK_METRICS", "Task Model"),
@@ -652,8 +652,8 @@ class MetricsFlagTests(unittest.TestCase):
             self.assertEqual(sections.get(key), section, key)
 
     def test_metrics_changes_restart_only_their_own_backend(self):
-        self.assertEqual(manager.RESTART_HINTS["CHAT_PRIMARY_METRICS"], ["chat-backend-dense"])
-        self.assertEqual(manager.RESTART_HINTS["CHAT2_METRICS"], ["chat-backend2"])
+        self.assertEqual(manager.RESTART_HINTS["LLM_A_METRICS"], ["llm-a"])
+        self.assertEqual(manager.RESTART_HINTS["LLM_B_METRICS"], ["llm-b"])
         self.assertEqual(manager.RESTART_HINTS["EMBED_METRICS"], ["embed"])
         self.assertEqual(manager.RESTART_HINTS["TASK_METRICS"], ["task"])
 
@@ -668,13 +668,13 @@ class MetricsFlagTests(unittest.TestCase):
         """
         env = {"LLAMA_SERVER_BIN": "/bin/llama-server", "LISTEN_HOST": "127.0.0.1",
                "EMBEDDING_MODEL_PATH": "/m.gguf", "RERANKER_MODEL_PATH": "/m.gguf",
-               "OCR_MODEL_PATH": "/m.gguf", "CHAT_PRIMARY_MODEL_PATH": "/m.gguf",
-               "CHAT2_MODEL_PATH": "/m.gguf", "TASK_MODEL_PATH": "/m.gguf"}
+               "OCR_MODEL_PATH": "/m.gguf", "LLM_A_MODEL_PATH": "/m.gguf",
+               "LLM_B_MODEL_PATH": "/m.gguf", "TASK_MODEL_PATH": "/m.gguf"}
         with platform_harness.as_linux():
             import backends
             for slot, prefix in (("embed", "EMBED"), ("rerank", "RERANK"), ("ocr", "OCR"),
-                                 ("chat-backend-dense", "CHAT_PRIMARY"),
-                                 ("chat-backend2", "CHAT2"), ("task", "TASK")):
+                                 ("llm-a", "LLM_A"),
+                                 ("llm-b", "LLM_B"), ("task", "TASK")):
                 with self.subTest(slot):
                     self.assertIn("--metrics", backends.build_command(slot, dict(env)))
                     self.assertNotIn("--metrics", backends.build_command(
@@ -695,12 +695,12 @@ class MetricsFlagTests(unittest.TestCase):
 
     def test_thinking_level_reaches_every_chat_launcher(self):
         env = {"LLAMA_SERVER_BIN": "/bin/llama-server", "LISTEN_HOST": "127.0.0.1",
-               "CHAT_PRIMARY_MODEL_PATH": "/m.gguf", "CHAT2_MODEL_PATH": "/m.gguf",
+               "LLM_A_MODEL_PATH": "/m.gguf", "LLM_B_MODEL_PATH": "/m.gguf",
                "TASK_MODEL_PATH": "/m.gguf", "TASK_THINKING": "on"}
         with platform_harness.as_linux():
             import backends
-            for slot, prefix in (("chat-backend-dense", "CHAT_PRIMARY"),
-                                 ("chat-backend2", "CHAT2"), ("task", "TASK")):
+            for slot, prefix in (("llm-a", "LLM_A"),
+                                 ("llm-b", "LLM_B"), ("task", "TASK")):
                 with self.subTest(slot):
                     argv = backends.build_command(
                         slot, dict(env, **{f"{prefix}_REASONING_EFFORT": "medium"}))
@@ -708,8 +708,8 @@ class MetricsFlagTests(unittest.TestCase):
                     self.assertIn('"reasoning_effort": "medium"', kwargs)
 
     def test_metrics_toggle_is_a_recognised_config_key(self):
-        filtered = config_env.filter_config_updates({"CHAT_PRIMARY_METRICS": "off"}, env={})
-        self.assertEqual(filtered, {"CHAT_PRIMARY_METRICS": "off"})
+        filtered = config_env.filter_config_updates({"LLM_A_METRICS": "off"}, env={})
+        self.assertEqual(filtered, {"LLM_A_METRICS": "off"})
 
 
 class UpdateCliTests(unittest.TestCase):
@@ -769,8 +769,8 @@ class UpdateCliTests(unittest.TestCase):
         cheap = re.search(r"CHEAP_RESTART_SERVICES=\(([^)]*)\)", self.update)
         self.assertIsNotNone(cheap)
         services = cheap.group(1).split()
-        for backend in ("chat-backend-dense",
-                        "chat-backend2", "embed", "rerank", "task", "ocr"):
+        for backend in ("llm-a",
+                        "llm-b", "embed", "rerank", "task", "ocr"):
             self.assertNotIn(backend, services)
         self.assertIn("llm-manager", services)
         self.assertIn("chat-proxy", services)
@@ -826,9 +826,9 @@ class BudgetRouteTests(unittest.TestCase):
         )
 
     def test_budget_prices_the_configured_backend(self):
-        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model),
-               "CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2",
-               "CHAT_PRIMARY_CTX_CHECKPOINTS": "8", "CHAT_PRIMARY_CACHE_RAM": "8192"}
+        env = {"LLM_A_MODEL_PATH": str(self.model),
+               "LLM_A_CTX_SIZE": "262144", "LLM_A_N_PARALLEL": "2",
+               "LLM_A_CTX_CHECKPOINTS": "8", "LLM_A_CACHE_RAM": "8192"}
         client, *patches = self._client(env)
         with client, patches[0], patches[1], patches[2]:
             response = client.get("/api/backend/budget")
@@ -839,15 +839,15 @@ class BudgetRouteTests(unittest.TestCase):
         self.assertEqual(payload["geometry"]["recurrent_layers"], 48)
 
     def test_query_parameters_price_an_unsaved_edit(self):
-        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model),
-               "CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2"}
+        env = {"LLM_A_MODEL_PATH": str(self.model),
+               "LLM_A_CTX_SIZE": "262144", "LLM_A_N_PARALLEL": "2"}
         client, *patches = self._client(env)
         with client, patches[0], patches[1], patches[2]:
             response = client.get("/api/backend/budget?ctx_size=65536")
         self.assertEqual(response.get_json()["prediction"]["per_slot_context"], 32768)
 
     def test_unknown_query_parameters_are_ignored(self):
-        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model), "CHAT_PRIMARY_CTX_SIZE": "131072"}
+        env = {"LLM_A_MODEL_PATH": str(self.model), "LLM_A_CTX_SIZE": "131072"}
         client, *patches = self._client(env)
         with client, patches[0], patches[1], patches[2]:
             response = client.get("/api/backend/budget?model_alias=evil&ctx_size=131072")
@@ -859,17 +859,17 @@ class BudgetRouteTests(unittest.TestCase):
         with client, patches[0], patches[1], patches[2]:
             response = client.get("/api/backend/budget?backend=nope")
         self.assertEqual(response.status_code, 400)
-        self.assertIn("chat-primary", response.get_json()["backends"])
+        self.assertIn("llm-a", response.get_json()["backends"])
 
     def test_missing_model_reports_without_failing_the_request(self):
-        client, *patches = self._client({"CHAT_PRIMARY_MODEL_PATH": "/nope.gguf"})
+        client, *patches = self._client({"LLM_A_MODEL_PATH": "/nope.gguf"})
         with client, patches[0], patches[1], patches[2]:
             response = client.get("/api/backend/budget")
         self.assertEqual(response.status_code, 200)
         self.assertIn("model not found", response.get_json()["error"])
 
     def test_recommendation_is_derived_from_detected_hardware(self):
-        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model)}
+        env = {"LLM_A_MODEL_PATH": str(self.model)}
         client, *patches = self._client(env)
         with client, patches[0], patches[1], patches[2]:
             response = client.get("/api/backend/budget/recommend?slots=2")
@@ -882,7 +882,7 @@ class BudgetRouteTests(unittest.TestCase):
         self.assertGreaterEqual(payload["ctx_checkpoints"], 2)
 
     def test_recommendation_rejects_an_unreadable_model(self):
-        client, *patches = self._client({"CHAT_PRIMARY_MODEL_PATH": "/nope.gguf"})
+        client, *patches = self._client({"LLM_A_MODEL_PATH": "/nope.gguf"})
         with client, patches[0], patches[1], patches[2]:
             response = client.get("/api/backend/budget/recommend")
         self.assertEqual(response.status_code, 400)
@@ -891,14 +891,14 @@ class BudgetRouteTests(unittest.TestCase):
     def test_recommendation_stays_within_the_trained_context(self):
         """A recommendation that trips the pre-flight is not a recommendation:
         `evaluate` warns above the trained context, so `recommend` stops there."""
-        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model)}
+        env = {"LLM_A_MODEL_PATH": str(self.model)}
         client, *patches = self._client(env)
         with client, patches[0], patches[1], patches[2]:
             payload = client.get("/api/backend/budget/recommend?slots=2").get_json()
         self.assertLessEqual(payload["ctx_size"], payload["train_context_length"])
 
     def test_recommendation_clears_the_flags_it_disables(self):
-        env = {"CHAT_PRIMARY_MODEL_PATH": str(self.model)}
+        env = {"LLM_A_MODEL_PATH": str(self.model)}
         client, *patches = self._client(env)
         with client, patches[0], patches[1], patches[2]:
             payload = client.get("/api/backend/budget/recommend").get_json()
@@ -963,8 +963,8 @@ class ConfigFieldRenderingTests(unittest.TestCase):
         # control stays. Only the shipped CUDA0 default is wrong for the host,
         # which is a different problem.
         html = self._render(platform_harness.as_darwin)
-        for key in ("CHAT_PRIMARY_DEVICE", "CHAT_PRIMARY_N_GPU_LAYERS",
-                    "CHAT_PRIMARY_CTX_SIZE", "TASK_DEVICE"):
+        for key in ("LLM_A_DEVICE", "LLM_A_N_GPU_LAYERS",
+                    "LLM_A_CTX_SIZE", "TASK_DEVICE"):
             with self.subTest(key):
                 self.assertIn(f"cfg-{key}", html)
 
@@ -972,7 +972,7 @@ class ConfigFieldRenderingTests(unittest.TestCase):
         # `data-cfg-key` is what lets a control be found without re-deriving
         # the curated panel layouts in JavaScript.
         html = self._render()
-        for key in ("CHAT_PRIMARY_CTX_SIZE", "OCR_TEMP", "TASK_METRICS"):
+        for key in ("LLM_A_CTX_SIZE", "OCR_TEMP", "TASK_METRICS"):
             with self.subTest(key):
                 self.assertIn(f'data-cfg-key="{key}"', html)
 
@@ -985,7 +985,7 @@ class ConfigFieldRenderingTests(unittest.TestCase):
         """Named directly: the backend telemetry work added --metrics keys that
         no panel listed, so the flag it exists to set could not be set."""
         html = self._render()
-        for key in ("CHAT_PRIMARY_METRICS", "CHAT2_METRICS", "TASK_METRICS", "OCR_METRICS"):
+        for key in ("LLM_A_METRICS", "LLM_B_METRICS", "TASK_METRICS", "OCR_METRICS"):
             self.assertIn(f"cfg-{key}", html, key)
 
     def test_the_upstream_capture_toggle_is_reachable(self):
@@ -998,13 +998,13 @@ class ContextAccountingTests(unittest.TestCase):
     request."""
 
     def test_status_reports_per_slot_context_for_each_backend(self):
-        env = {"CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2",
-               "CHAT2_CTX_SIZE": "65536", "CHAT2_N_PARALLEL": "1"}
+        env = {"LLM_A_CTX_SIZE": "262144", "LLM_A_N_PARALLEL": "2",
+               "LLM_B_CTX_SIZE": "65536", "LLM_B_N_PARALLEL": "1"}
         with patch.object(config_env, "read_env", return_value=env):
             summary = manager.backend_context_summary()
-        self.assertEqual(summary["chat-backend-dense"]["per_slot_context"], 131072)
-        self.assertEqual(summary["chat-backend-dense"]["total_context"], 262144)
-        self.assertEqual(summary["chat-backend2"]["per_slot_context"], 65536)
+        self.assertEqual(summary["llm-a"]["per_slot_context"], 131072)
+        self.assertEqual(summary["llm-a"]["total_context"], 262144)
+        self.assertEqual(summary["llm-b"]["per_slot_context"], 65536)
 
     def test_a_missing_parallel_setting_means_one_slot(self):
         with patch.object(config_env, "read_env", return_value={"EMBED_CTX_SIZE": "8192"}):
@@ -1013,8 +1013,8 @@ class ContextAccountingTests(unittest.TestCase):
                                             "per_slot_context": 8192})
 
     def test_unconfigured_backends_are_omitted_rather_than_reported_as_zero(self):
-        with patch.object(config_env, "read_env", return_value={"CHAT_PRIMARY_CTX_SIZE": "0"}):
-            self.assertNotIn("chat-backend-dense", manager.backend_context_summary())
+        with patch.object(config_env, "read_env", return_value={"LLM_A_CTX_SIZE": "0"}):
+            self.assertNotIn("llm-a", manager.backend_context_summary())
 
     def test_a_non_numeric_context_does_not_break_the_status_poll(self):
         with patch.object(config_env, "read_env", return_value={"OCR_CTX_SIZE": "lots"}):
@@ -1092,7 +1092,7 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertEqual(state["main_pid"], 4242)
 
     def test_status_carries_health_without_changing_the_services_map(self):
-        env = {"CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2"}
+        env = {"LLM_A_CTX_SIZE": "262144", "LLM_A_N_PARALLEL": "2"}
         statuses = {"glmocr-sdk": "active", "ocr": "inactive"}
         with (
             manager.app.test_client() as client,
@@ -1169,7 +1169,7 @@ class ServiceHealthTests(unittest.TestCase):
             statuses = manager.all_service_statuses()
         # chat-proxy's upstream has no card of its own in this stubbed panel,
         # and still has to be asked about.
-        self.assertIn("chat-backend-dense", statuses)
+        self.assertIn("llm-a", statuses)
         self.assertIn("chat-proxy", statuses)
 
 
@@ -1177,15 +1177,15 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
     """The pi-forge slot contract worked, and nothing could show that it did."""
 
     def test_verification_reads_the_stack_and_sends_nothing(self):
-        env = {"CHAT_PRIMARY_CTX_SIZE": "262144", "CHAT_PRIMARY_N_PARALLEL": "2",
-               "CHAT_PRIMARY_CACHE_IDLE_SLOTS": "on", "CHAT_PRIMARY_FIT": "off"}
+        env = {"LLM_A_CTX_SIZE": "262144", "LLM_A_N_PARALLEL": "2",
+               "LLM_A_CACHE_IDLE_SLOTS": "on", "LLM_A_FIT": "off"}
         stats = {"scheduling": {"select_methods": {"id": 62},
                                 "select_by_id_slots": {"0": 56, "1": 6}}}
         with (
             manager.app.test_client() as client,
             patch.object(config_env, "read_env", return_value=env),
             patch.object(manager, "get_service_status",
-                         side_effect=lambda n: "active" if n == "chat-backend-dense" else "inactive"),
+                         side_effect=lambda n: "active" if n == "llm-a" else "inactive"),
             patch.object(manager.telemetry, "probe_props",
                          return_value={"total_slots": 2, "n_ctx_per_slot": 131072}),
             patch.object(manager.telemetry, "probe_slots", return_value=[]),
@@ -1200,7 +1200,7 @@ class SchedulingVerifyRouteTests(unittest.TestCase):
             payload = client.get("/api/scheduling/verify").get_json()
 
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["unit"], "chat-backend-dense")
+        self.assertEqual(payload["unit"], "llm-a")
         self.assertTrue(payload["evidence"]["observed"])
         self.assertEqual(payload["runtime"]["n_ctx_per_slot"], 131072)
 
@@ -1270,7 +1270,7 @@ class ConfigPreflightTests(unittest.TestCase):
         self.model = module.write_gguf(
             pathlib.Path(self._tmp.name) / "model.gguf", module.QWEN36_27B)
         self.config_file = pathlib.Path(self._tmp.name) / "llm-stack.env"
-        self.config_file.write_text("CHAT_PRIMARY_CTX_SIZE=131072\n")
+        self.config_file.write_text("LLM_A_CTX_SIZE=131072\n")
 
     def _patches(self, env):
         return (
@@ -1281,9 +1281,9 @@ class ConfigPreflightTests(unittest.TestCase):
         )
 
     def _env(self, **overrides):
-        return {"CHAT_PRIMARY_MODEL_PATH": str(self.model),
-                "CHAT_PRIMARY_CTX_SIZE": "131072",
-                "CHAT_PRIMARY_N_PARALLEL": "2", **overrides}
+        return {"LLM_A_MODEL_PATH": str(self.model),
+                "LLM_A_CTX_SIZE": "131072",
+                "LLM_A_N_PARALLEL": "2", **overrides}
 
     def test_untouched_backends_are_not_priced(self):
         """Pricing means reading GGUF metadata off disk; a port change should
@@ -1294,37 +1294,37 @@ class ConfigPreflightTests(unittest.TestCase):
         self.assertTrue(result["ok"])
 
     def test_a_configuration_that_cannot_allocate_is_refused(self):
-        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0")
+        env = self._env(LLM_A_GPU_VISIBLE_DEVICES="0")
         patches = self._patches(env)
         with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
-            response = client.post("/api/config", json={"CHAT_PRIMARY_CTX_SIZE": "1048576"})
+            response = client.post("/api/config", json={"LLM_A_CTX_SIZE": "1048576"})
         self.assertEqual(response.status_code, 409)
         payload = response.get_json()
         self.assertFalse(payload["ok"])
         self.assertEqual([issue["code"] for issue in payload["preflight"]["errors"]],
                          ["vram_overcommit"])
         # Refused means not written.
-        self.assertIn("CHAT_PRIMARY_CTX_SIZE=131072", self.config_file.read_text())
+        self.assertIn("LLM_A_CTX_SIZE=131072", self.config_file.read_text())
 
     def test_the_operator_can_override_the_prediction(self):
-        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0")
+        env = self._env(LLM_A_GPU_VISIBLE_DEVICES="0")
         patches = self._patches(env)
         with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
             response = client.post("/api/config?force=1",
-                                   json={"CHAT_PRIMARY_CTX_SIZE": "1048576"})
+                                   json={"LLM_A_CTX_SIZE": "1048576"})
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ok"])
         self.assertTrue(response.get_json()["forced"])
-        self.assertIn("CHAT_PRIMARY_CTX_SIZE=1048576", self.config_file.read_text())
+        self.assertIn("LLM_A_CTX_SIZE=1048576", self.config_file.read_text())
 
     def test_a_workable_configuration_saves_and_reports_its_warnings(self):
-        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0,1")
+        env = self._env(LLM_A_GPU_VISIBLE_DEVICES="0,1")
         patches = self._patches(env)
         with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
             response = client.post("/api/config", json={
-                "CHAT_PRIMARY_CTX_SIZE": "131072",
-                "CHAT_PRIMARY_CTX_CHECKPOINTS": "32",
-                "CHAT_PRIMARY_CACHE_RAM": "1024",
+                "LLM_A_CTX_SIZE": "131072",
+                "LLM_A_CTX_CHECKPOINTS": "32",
+                "LLM_A_CACHE_RAM": "1024",
             })
         payload = response.get_json()
         self.assertTrue(payload["ok"])
@@ -1335,34 +1335,34 @@ class ConfigPreflightTests(unittest.TestCase):
                       {issue["code"] for issue in payload["preflight"]["warnings"]})
 
     def test_dead_and_contradictory_flags_are_reported_on_save(self):
-        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0,1")
+        env = self._env(LLM_A_GPU_VISIBLE_DEVICES="0,1")
         patches = self._patches(env)
         with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
             response = client.post("/api/config", json={
-                "CHAT_PRIMARY_SWA_FULL": "on",
-                "CHAT_PRIMARY_FIT": "off",
-                "CHAT_PRIMARY_FIT_CTX": "4096",
+                "LLM_A_SWA_FULL": "on",
+                "LLM_A_FIT": "off",
+                "LLM_A_FIT_CTX": "4096",
             })
         codes = {issue["code"] for issue in response.get_json()["preflight"]["warnings"]}
         self.assertIn("swa_full_unsupported", codes)
         self.assertIn("fit_ctx_without_fit", codes)
 
     def test_preflight_endpoint_prices_without_writing(self):
-        env = self._env(CHAT_PRIMARY_GPU_VISIBLE_DEVICES="0,1")
+        env = self._env(LLM_A_GPU_VISIBLE_DEVICES="0,1")
         patches = self._patches(env)
         with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
             response = client.post("/api/config/preflight",
-                                   json={"CHAT_PRIMARY_CTX_SIZE": "262144"})
+                                   json={"LLM_A_CTX_SIZE": "262144"})
         payload = response.get_json()
         self.assertEqual(payload["backends"][0]["per_slot_context"], 131072)
-        self.assertIn("CHAT_PRIMARY_CTX_SIZE=131072", self.config_file.read_text())
+        self.assertIn("LLM_A_CTX_SIZE=131072", self.config_file.read_text())
 
     def test_an_unreadable_model_reports_rather_than_blocking_the_save(self):
         """Pointing at a model that has not been fetched yet is not a
         configuration that fails to fit."""
-        patches = self._patches({"CHAT_PRIMARY_MODEL_PATH": "/nope.gguf"})
+        patches = self._patches({"LLM_A_MODEL_PATH": "/nope.gguf"})
         with manager.app.test_client() as client, patches[0], patches[1], patches[2], patches[3]:
-            response = client.post("/api/config", json={"CHAT_PRIMARY_CTX_SIZE": "262144"})
+            response = client.post("/api/config", json={"LLM_A_CTX_SIZE": "262144"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("model not found", response.get_json()["preflight"]["backends"][0]["error"])
 
@@ -1385,13 +1385,16 @@ class EnvDeprecationTests(unittest.TestCase):
             "CHAT_DENSE_MODEL_PATH=/models/a.gguf\nCHAT_PRIMARY_CTX_SIZE=131072\n")
         with self._patches()[0], self._patches()[1]:
             report = manager.collect_env_deprecations()
+        # `CHAT_PRIMARY_CTX_SIZE` is here because the slot was renamed again:
+        # the spelling that replaced `CHAT_DENSE_*` is itself legacy now, and
+        # the report names every generation of the name, not just the oldest.
         self.assertEqual([entry["key"] for entry in report["env_keys"]],
-                         ["CHAT_DENSE_MODEL_PATH"])
-        self.assertEqual(report["env_keys"][0]["replacement"], "CHAT_PRIMARY_MODEL_PATH")
+                         ["CHAT_DENSE_MODEL_PATH", "CHAT_PRIMARY_CTX_SIZE"])
+        self.assertEqual(report["env_keys"][0]["replacement"], "LLM_A_MODEL_PATH")
         self.assertFalse(report["env_keys"][0]["canonical_present"])
 
     def test_a_clean_env_file_reports_nothing_to_migrate(self):
-        self.config_file.write_text("CHAT_PRIMARY_MODEL_PATH=/models/a.gguf\n")
+        self.config_file.write_text("LLM_A_MODEL_PATH=/models/a.gguf\n")
         with self._patches()[0], self._patches()[1]:
             self.assertEqual(manager.collect_env_deprecations()["migratable"], 0)
 
@@ -1419,16 +1422,16 @@ class EnvDeprecationTests(unittest.TestCase):
             resolved = config_env.read_env()
         self.assertTrue(response.get_json()["ok"])
         written = self.config_file.read_text()
-        self.assertIn("CHAT_PRIMARY_MODEL_PATH=/models/a.gguf", written)
+        self.assertIn("LLM_A_MODEL_PATH=/models/a.gguf", written)
         self.assertNotIn("CHAT_DENSE_MODEL_PATH", written)
-        self.assertEqual(resolved["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
+        self.assertEqual(resolved["LLM_A_MODEL_PATH"], "/models/a.gguf")
 
     def test_read_env_raw_shows_the_file_without_backfill(self):
         self.config_file.write_text("CHAT_DENSE_MODEL_PATH=/models/a.gguf\n")
         with self._patches()[0]:
             self.assertEqual(config_env.read_env_raw(),
                              {"CHAT_DENSE_MODEL_PATH": "/models/a.gguf"})
-            self.assertEqual(config_env.read_env()["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
+            self.assertEqual(config_env.read_env()["LLM_A_MODEL_PATH"], "/models/a.gguf")
 
 
 class RouteInventoryTests(unittest.TestCase):
@@ -1799,9 +1802,9 @@ class ConfigNormalizationTests(unittest.TestCase):
     def test_normalize_env_keys_does_not_overwrite_a_canonical_value(self):
         env = config_env.normalize_env_keys({
             "CHAT_DENSE_CTX_SIZE": "32768",
-            "CHAT_PRIMARY_CTX_SIZE": "131072",
+            "LLM_A_CTX_SIZE": "131072",
         })
-        self.assertEqual(env["CHAT_PRIMARY_CTX_SIZE"], "131072")
+        self.assertEqual(env["LLM_A_CTX_SIZE"], "131072")
 
     def test_every_code_mirror_reaches_its_chat_keys(self):
         for code_key, chat_keys in manager.CODE_TO_CHAT_MIRRORS.items():
@@ -1830,8 +1833,8 @@ class ConfigNormalizationTests(unittest.TestCase):
 
     def test_unknown_keys_are_dropped(self):
         filtered = config_env.filter_config_updates(
-            {"CHAT_PRIMARY_CTX_SIZE": "131072", "RM_RF_SLASH": "1"}, env={})
-        self.assertEqual(filtered, {"CHAT_PRIMARY_CTX_SIZE": "131072"})
+            {"LLM_A_CTX_SIZE": "131072", "RM_RF_SLASH": "1"}, env={})
+        self.assertEqual(filtered, {"LLM_A_CTX_SIZE": "131072"})
 
     def test_keys_already_in_the_env_file_survive_even_without_a_ui_field(self):
         """Saved configs predate some UI controls; dropping their values on
@@ -1843,39 +1846,39 @@ class ConfigNormalizationTests(unittest.TestCase):
 
     def test_allowed_keys_span_every_source_it_claims(self):
         allowed = config_env.allowed_config_keys(env={"ADHOC_KEY": ""})
-        self.assertIn("CHAT_PRIMARY_CTX_SIZE", allowed)          # CONFIG_FIELDS
+        self.assertIn("LLM_A_CTX_SIZE", allowed)          # CONFIG_FIELDS
         self.assertIn("CHAT_DENSE_CTX_SIZE", allowed)            # legacy names
         self.assertIn("ADHOC_KEY", allowed)                      # current env
         self.assertTrue(set(manager.RESTART_HINTS) <= allowed)
 
     def test_values_are_coerced_to_strings_and_none_becomes_empty(self):
         filtered = config_env.filter_config_updates({
-            "CHAT_PRIMARY_CTX_SIZE": 131072,
-            "CHAT_PRIMARY_FLASH_ATTN": True,
-            "CHAT_PRIMARY_FIT_TARGET": None,
+            "LLM_A_CTX_SIZE": 131072,
+            "LLM_A_FLASH_ATTN": True,
+            "LLM_A_FIT_TARGET": None,
         }, env={})
-        self.assertEqual(filtered["CHAT_PRIMARY_CTX_SIZE"], "131072")
-        self.assertEqual(filtered["CHAT_PRIMARY_FLASH_ATTN"], "True")
-        self.assertEqual(filtered["CHAT_PRIMARY_FIT_TARGET"], "")
+        self.assertEqual(filtered["LLM_A_CTX_SIZE"], "131072")
+        self.assertEqual(filtered["LLM_A_FLASH_ATTN"], "True")
+        self.assertEqual(filtered["LLM_A_FIT_TARGET"], "")
 
     def test_structured_values_are_rejected_rather_than_stringified(self):
         filtered = config_env.filter_config_updates(
-            {"CHAT_PRIMARY_CTX_SIZE": {"nested": 1}, "CHAT_PRIMARY_MODEL_PATH": ["a"]}, env={})
+            {"LLM_A_CTX_SIZE": {"nested": 1}, "LLM_A_MODEL_PATH": ["a"]}, env={})
         self.assertEqual(filtered, {})
 
     def test_a_non_dict_payload_is_not_an_error(self):
-        for payload in (None, [], "CHAT_PRIMARY_CTX_SIZE=1", 7):
+        for payload in (None, [], "LLM_A_CTX_SIZE=1", 7):
             self.assertEqual(config_env.filter_config_updates(payload, env={}), {})
 
     def test_config_form_snapshot_round_trips_a_saved_profile(self):
         values = {
             "CHAT_DENSE_MODEL_PATH": "/models/a.gguf",
-            "CHAT_PRIMARY_CTX_SIZE": "131072",
-            "CHAT_PRIMARY_N_PARALLEL": "2",
+            "LLM_A_CTX_SIZE": "131072",
+            "LLM_A_N_PARALLEL": "2",
         }
         snapshot = config_env.config_form_snapshot(values, env={})
-        self.assertEqual(snapshot["CHAT_PRIMARY_MODEL_PATH"], "/models/a.gguf")
-        self.assertEqual(snapshot["CHAT_PRIMARY_CTX_SIZE"], "131072")
+        self.assertEqual(snapshot["LLM_A_MODEL_PATH"], "/models/a.gguf")
+        self.assertEqual(snapshot["LLM_A_CTX_SIZE"], "131072")
         self.assertEqual(config_env.config_form_snapshot(snapshot, env={}), snapshot)
 
 
@@ -1914,7 +1917,7 @@ class SplitModeTests(unittest.TestCase):
         """Embedding and reranking used to offer a different list than the chat
         backends, for no reason anyone recorded."""
         keys = {f["key"] for f in config_fields.CONFIG_FIELDS if f["key"].endswith("_SPLIT_MODE")}
-        self.assertIn("CHAT_PRIMARY_SPLIT_MODE", keys)
+        self.assertIn("LLM_A_SPLIT_MODE", keys)
         self.assertIn("EMBED_SPLIT_MODE", keys)
         self.assertIn("RERANK_SPLIT_MODE", keys)
 
@@ -1922,17 +1925,17 @@ class SplitModeTests(unittest.TestCase):
         """allowed_config_keys unions in whatever the env already holds, so a
         saved profile written before row was withdrawn can still offer it."""
         out = config_env.filter_config_updates({
-            "CHAT_PRIMARY_SPLIT_MODE": "row",
-            "CHAT2_SPLIT_MODE": "sideways",
+            "LLM_A_SPLIT_MODE": "row",
+            "LLM_B_SPLIT_MODE": "sideways",
             "TASK_SPLIT_MODE": "tensor",
             "EMBED_SPLIT_MODE": "layer",
-            "CHAT_PRIMARY_TENSOR_SPLIT": "1,1",
+            "LLM_A_TENSOR_SPLIT": "1,1",
         })
-        self.assertNotIn("CHAT_PRIMARY_SPLIT_MODE", out)
-        self.assertNotIn("CHAT2_SPLIT_MODE", out)
+        self.assertNotIn("LLM_A_SPLIT_MODE", out)
+        self.assertNotIn("LLM_B_SPLIT_MODE", out)
         self.assertEqual(out["TASK_SPLIT_MODE"], "tensor")
         self.assertEqual(out["EMBED_SPLIT_MODE"], "layer")
-        self.assertEqual(out["CHAT_PRIMARY_TENSOR_SPLIT"], "1,1")
+        self.assertEqual(out["LLM_A_TENSOR_SPLIT"], "1,1")
 
     # -- the launcher helper ------------------------------------------------
 
@@ -2015,7 +2018,7 @@ class SplitModeTests(unittest.TestCase):
 
     def test_an_empty_ratio_is_omitted_not_passed_empty(self):
         """llama.cpp reads `--tensor-split ""` as an explicit empty split and
-        refuses it; TASK_TENSOR_SPLIT and CHAT2_TENSOR_SPLIT are both empty."""
+        refuses it; TASK_TENSOR_SPLIT and LLM_B_TENSOR_SPLIT are both empty."""
         flags, _ = self._resolve("layer", self.dense, tensor_split="")
         self.assertEqual(flags, ["--split-mode", "layer", "--main-gpu", "0"])
 

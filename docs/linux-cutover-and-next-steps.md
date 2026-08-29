@@ -145,7 +145,11 @@ API on purpose.
 
 In order. Each step should leave the tree releasable.
 
-**Step 9 — the fleet write half.** Two parts, and the second is the larger one:
+**Step 9 — the fleet write half. Done.** Both parts, plus a fifth schema case
+the four below do not name: two hosts can share a key set and still disagree
+about a field's type or options, which is what `fields_digest` catches and
+neither key set can see. `ignored_keys` is enforced at the hub as a 409 rather
+than only rendered, so every client gets the rule.
 
 - `/api/fleet/<id>/config` (GET/POST), `/config/fields`, `/saved-configs`,
   `/service/<name>/<action>` on the hub, each proxying to the peer's control
@@ -167,7 +171,31 @@ In order. Each step should leave the tree releasable.
   a success — otherwise a hub that knows a renamed key gets a 200 with nothing
   changed, which looks exactly like a save.
 
-**Step 10 — rename to `llm-a`/`llm-b`.** Small now: `web/backends/slots.py` is
+**Step 10 — rename to `llm-a`/`llm-b`. Done.** Units, config prefixes, budget
+names, components, labels and sections. Ports, aliases and persona semantics
+untouched per §2.1, and `CHAT_BACKEND_PORT` / `CHAT2_BACKEND_PORT` / their hosts
+keep their names because they *are* the port contract.
+
+**This one needs a cutover on `llms`.** The launchers were renamed with the
+units, so the installed `chat-backend-dense.service` points at a script that no
+longer exists: it keeps running, but it cannot restart until `install.sh` has
+retired it and installed `llm-a`. Run `install.sh` then `restore-active-stack.sh`
+before the next reboot, not after.
+
+Three migrations carry existing hosts across it, all read-generously /
+write-strictly: `LEGACY_ENV_KEY_MAP` gains 110 generated entries so a config
+holding only `CHAT_PRIMARY_*` still reads; `setup_engine.LEGACY_COMPONENTS` maps
+the old component names, without which every `install-state.json` on disk names
+components that no longer resolve and the boot path starts no chat backend at
+all; and `health.LEGACY_UNIT_NAMES` carries `service-expectations.json`, without
+which `chat-backend2: off` stops applying and the boot path starts a second 27B
+onto a GPU holding the first.
+
+Verified on `llms` by building the command line from the renamed registry
+against the untouched live config and diffing it against the running process:
+78 arguments, identical.
+
+The original note, kept because the reasoning still applies to step 11: `web/backends/slots.py` is
 the one source and twelve tables derive from it, asserted key-for-key in
 `tests/test_slot_registry.py`. Ports and aliases unchanged (§2.1). Two things
 the legacy map does not cover:

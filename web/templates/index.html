@@ -1043,14 +1043,14 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     <h3>2. Components</h3>
     <p>The requested local stack is preselected. Required dependencies are selected automatically when this section is saved.</p>
     <div class="cfg-grid" id="setup-component-list">
-      <label><input type="checkbox" value="primary" checked> Primary backend + proxy</label>
+      <label><input type="checkbox" value="llm-a" checked> LLM A backend + proxy</label>
       <label><input type="checkbox" value="embedding" checked> Embedding backend</label>
       <label><input type="checkbox" value="task" checked> Task backend</label>
       <label><input type="checkbox" value="ocr" checked> OCR backend</label>
       <label><input type="checkbox" value="glmocr-sdk" checked> GLM-OCR SDK</label>
       <label><input type="checkbox" value="searxng" checked> SearXNG</label>
       <label><input type="checkbox" value="playwright" checked> Playwright</label>
-      <label><input type="checkbox" value="secondary"> Secondary backend</label>
+      <label><input type="checkbox" value="llm-b"> LLM B backend</label>
       <label><input type="checkbox" value="reranker"> Reranker</label>
       <label><input type="checkbox" value="transcribe"> Transcription (speech-to-text)</label>
     </div>
@@ -1710,7 +1710,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     </div>
     <div class="config-note">
       <strong>How To Use This Page</strong>
-      <p>Each section saves independently. Primary Backend and Secondary Backend each have their own proxy and model-routed aggregate endpoint.</p>
+      <p>Each section saves independently. LLM A and LLM B each have their own proxy and model-routed aggregate endpoint.</p>
     </div>
     <!-- What this form is, when it is not this machine's. Written by
          `renderRemoteSchemaNote`; empty and hidden on the local page. -->
@@ -1737,9 +1737,9 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         <div>
           <h3>{{ section }}</h3>
           <p>
-            {% if section == 'Primary Backend' %}
+            {% if section == 'LLM A' %}
             Configure the primary llama.cpp backend. It binds to the primary internal backend port used by Primary Proxy.
-            {% elif section == 'Secondary Backend' %}
+            {% elif section == 'LLM B' %}
             Configure the secondary llama.cpp backend. It binds to its own internal backend port and is served by Secondary Proxy.
             {% elif section == 'Thinking Endpoint' %}
             Request-time defaults for the thinking proxy port. These overrides are injected by the proxy without reloading the shared backend model.
@@ -1752,7 +1752,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
             {% elif section == 'OCR' %}
             Configure the standalone GLM-OCR multimodal backend and its default extraction behavior.
             {% elif section == 'Chat Templates' %}
-            Create and edit reusable llama.cpp Jinja templates, then select them in Primary Backend, Secondary Backend, or Task Model.
+            Create and edit reusable llama.cpp Jinja templates, then select them in LLM A, LLM B, or Task Model.
             {% else %}
             Update this section and save it independently. Changes apply to the environment file used by the stack manager.
             {% endif %}
@@ -1778,8 +1778,8 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
          declares `curated`, and whatever is left over renders below rather than
          disappearing. #}
       {% set curated = fields | map(attribute='key') | list %}
-      {% if section == 'Primary Backend' or section == 'Secondary Backend' %}
-      {% set backend_prefix = 'CHAT_PRIMARY' if section == 'Primary Backend' else 'CHAT2' %}
+      {% if section == 'LLM A' or section == 'LLM B' %}
+      {% set backend_prefix = 'LLM_A' if section == 'LLM A' else 'LLM_B' %}
       {% set identity_keys = [backend_prefix ~ '_LABEL', backend_prefix ~ '_MODEL_NAME', backend_prefix ~ '_MODEL_PATH', backend_prefix ~ '_MMPROJ_PATH', backend_prefix ~ '_CTX_SIZE'] %}
       {% set shared_keys = [backend_prefix ~ '_N_PARALLEL', backend_prefix ~ '_BATCH_SIZE', backend_prefix ~ '_UBATCH_SIZE', backend_prefix ~ '_FLASH_ATTN', backend_prefix ~ '_JINJA', backend_prefix ~ '_TEMPLATE_ID', backend_prefix ~ '_FIT', backend_prefix ~ '_FIT_TARGET', backend_prefix ~ '_FIT_CTX'] %}
       {% set gpu_keys = [backend_prefix ~ '_GPU_VISIBLE_DEVICES', backend_prefix ~ '_DEVICE', backend_prefix ~ '_N_GPU_LAYERS', backend_prefix ~ '_MAIN_GPU', backend_prefix ~ '_TENSOR_SPLIT', backend_prefix ~ '_SPLIT_MODE', backend_prefix ~ '_KV_OFFLOAD', backend_prefix ~ '_OP_OFFLOAD', backend_prefix ~ '_MMPROJ_OFFLOAD', backend_prefix ~ '_CACHE_TYPE_K', backend_prefix ~ '_CACHE_TYPE_V', backend_prefix ~ '_CACHE_RAM', backend_prefix ~ '_CTX_CHECKPOINTS', backend_prefix ~ '_CACHE_IDLE_SLOTS', backend_prefix ~ '_CACHE_REUSE', backend_prefix ~ '_SWA_FULL', backend_prefix ~ '_NO_MMAP', backend_prefix ~ '_MLOCK'] %}
@@ -1819,7 +1819,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         <div id="cache-aware-status-{{ backend_prefix }}" class="cache-aware-status" aria-live="polite">Load configuration to check compatibility.</div>
         <div class="cache-aware-snippet-label">Merge the copied JSON into <code>~/.pi-forge/agent/settings.json</code>. LLM Stack Manager does not modify that file.</div>
 
-        {% if backend_prefix == 'CHAT_PRIMARY' %}
+        {% if backend_prefix == 'LLM_A' %}
         <div class="sched-verify" id="sched-verify">
           <h5>Contract Verification</h5>
           <p class="sched-verify-lead">What the running backend was launched with, and whether pi-forge's slot pinning is actually reaching it. Read from <code>/props</code>, the backend's own command line and the journal — no requests are sent.</p>
