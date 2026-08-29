@@ -105,7 +105,7 @@ _REASONING_EFFORT_ALIASES = {
 REASONING_EFFORT_OPT_OUT = {"none", "off"}
 
 
-def _normalize_reasoning_effort(effort: Any, default: str = "xhigh") -> str:
+def _normalize_reasoning_effort(effort: Any, default: str = "medium") -> str:
     if not isinstance(effort, str):
         return default
     effort = effort.strip().lower()
@@ -145,7 +145,7 @@ THINK_OVERRIDES = {
 }
 THINK_MAX_TOKENS = int(os.environ.get("THINK_MAX_TOKENS", "0"))
 THINK_REASONING_STREAM_MODE = os.environ.get("THINK_REASONING_STREAM_MODE", "hidden").strip().lower()
-THINK_REASONING_EFFORT = _reasoning_effort_env("THINK_REASONING_EFFORT", "xhigh")
+THINK_REASONING_EFFORT = _reasoning_effort_env("THINK_REASONING_EFFORT", "medium")
 NOTHINK_PRESERVE_THINKING = os.environ.get("NOTHINK_PRESERVE_THINKING", "off").lower() == "on"
 NOTHINK_JINJA = os.environ.get("NOTHINK_JINJA", "on").lower() == "on"
 NOTHINK_OVERRIDES = {
