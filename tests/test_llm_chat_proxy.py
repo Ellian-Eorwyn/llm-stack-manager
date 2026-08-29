@@ -146,6 +146,38 @@ class ReasoningEffortTests(unittest.TestCase):
         proxy._inject_thinking(payload, True, True, "xhigh")
         self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "xhigh")
 
+    def test_medium_is_the_baseline_and_xhigh_is_asked_for(self):
+        """The arrangement the endpoints ship with, stated once.
+
+        `medium` adds no steering instruction -- it is the model's unsteered
+        baseline -- so it is what an endpoint gives a caller who said nothing.
+        A caller that wants the model to work harder asks, per request, and does
+        not need a second port to ask on. `THINK` shipped at `xhigh`, which made
+        the expensive level the one you got by accident.
+        """
+        default = {}
+        proxy._inject_thinking(default, True, True, "medium")
+        self.assertEqual(default["chat_template_kwargs"]["reasoning_effort"], "medium")
+
+        asked = {"reasoning_effort": "xhigh"}
+        proxy._inject_thinking(asked, True, True, "medium")
+        self.assertEqual(asked["chat_template_kwargs"]["reasoning_effort"], "xhigh")
+
+        # And down as well as up: the level is the caller's to choose, in either
+        # direction, on an endpoint whose thinking is on.
+        lower = {"reasoning_effort": "low"}
+        proxy._inject_thinking(lower, True, True, "medium")
+        self.assertEqual(lower["chat_template_kwargs"]["reasoning_effort"], "low")
+
+    def test_the_shipped_default_is_medium_on_every_thinking_endpoint(self):
+        """`TASK` is deliberately `low` -- a small utility model asked to be
+        quick -- and is not one of the proxy's endpoints."""
+        example = (pathlib.Path(__file__).resolve().parents[1]
+                   / "config" / "llm-stack.env.example").read_text()
+        for key in ("THINK_REASONING_EFFORT", "CODE_REASONING_EFFORT"):
+            with self.subTest(key):
+                self.assertIn(f"{key}=medium", example)
+
     def test_top_level_field_is_consumed_rather_than_forwarded(self):
         """llama.cpp 7e4c0a9 forwards a top-level reasoning_effort straight into
         the template, so leaving one on the payload is what would raise."""
