@@ -335,3 +335,74 @@ class OneSourceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallParityTests(unittest.TestCase):
+    """The two platform branches of `install.sh` must offer the same choices.
+
+    They did not. `install_mac_service` was called unconditionally for all
+    thirteen services where the systemd branch gates each on
+    `setup_has_component`, and the retired-service sweep existed only on the
+    systemd side. So a Mac got agents for every slot whether or not the
+    installer asked for them -- on a machine with no llama.cpp build, that is
+    nine agents that fail on start and are reported as broken services rather
+    than as services nobody wanted -- and it kept every retired agent forever,
+    including four whose launchers were renamed out from under them.
+
+    Asserted against the file rather than by running it: `install.sh` writes
+    into `/etc/systemd/system` and `~/Library/LaunchAgents`, so the test that
+    could run it is the one nobody would want to.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (ROOT / "install.sh").read_text()
+
+    #: Component -> the services installing it brings up, from the wizard's own
+    #: map. Anything here must be gated on both platforms.
+    @property
+    def optional(self):
+        import setup_engine
+        return {component: services
+                for component, services in setup_engine.COMPONENT_SERVICES.items()
+                if component in setup_engine.OPTIONAL_COMPONENTS
+                or component in setup_engine.SLOT_BY_COMPONENT}
+
+    def test_the_component_gate_is_defined_once_for_both_platforms(self):
+        self.assertEqual(self.text.count("setup_has_component() {"), 1)
+
+    def test_every_optional_service_is_gated_on_the_launchd_side(self):
+        for component, services in self.optional.items():
+            for service in services:
+                with self.subTest(service=service):
+                    call = re.search(
+                        r"setup_has_component (\S+) && \\\n\s*install_mac_service "
+                        rf'"{re.escape(service)}"', self.text)
+                    self.assertIsNotNone(
+                        call, f"install_mac_service {service} is not gated on a component")
+                    self.assertEqual(call.group(1), component)
+
+    def test_the_manager_itself_is_never_gated(self):
+        # It is the thing being installed; a selection cannot exclude it.
+        self.assertIn('\n    install_mac_service "llm-manager"', self.text)
+
+    def test_both_platforms_remove_what_was_not_selected(self):
+        for helper in ("remove_unselected_units", "remove_unselected_mac_services"):
+            with self.subTest(helper):
+                self.assertIn(f"{helper}() {{", self.text)
+        for component in self.optional:
+            with self.subTest(component=component):
+                self.assertIn(f"remove_unselected_mac_services {component} ", self.text)
+
+    def test_the_retired_list_is_stated_once_and_swept_on_both_platforms(self):
+        self.assertEqual(self.text.count("RETIRED_SERVICES=("), 1)
+        self.assertIn('for unit in "${RETIRED_SERVICES[@]}"', self.text)
+        self.assertIn('for name in "${RETIRED_SERVICES[@]}"', self.text)
+
+    def test_the_renamed_chat_units_are_among_the_retired(self):
+        """Their launchers were renamed with them, so an agent or unit left
+        behind points at a script that no longer exists."""
+        block = re.search(r"RETIRED_SERVICES=\((.*?)\n\)", self.text, re.S).group(1)
+        for name in ("chat-backend-dense", "chat-backend2", "chat-proxy", "chat-proxy2"):
+            with self.subTest(name):
+                self.assertIn(name, block)

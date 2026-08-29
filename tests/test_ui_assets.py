@@ -227,7 +227,7 @@ class FleetUiTests(unittest.TestCase):
     def test_the_fetch_wrapper_asks_which_host_a_request_is_for(self):
         # The one mechanism. Seventy-eight call sites in the other modules do
         # not know a fleet exists.
-        self.assertIn("fleetPath(url)", self.util)
+        self.assertIn("fleetPath(url, method)", self.util)
         self.assertIn("typeof fleetPath === 'function'", self.util,
                       "util.js must stay first in the load order, so the call is guarded")
 
@@ -238,8 +238,39 @@ class FleetUiTests(unittest.TestCase):
         becomes a request to every machine in the fleet.
         """
         self.assertIn("FLEET_PROXIED", self.fleet)
-        self.assertIn("FLEET_PROXIED.includes(path)", self.fleet)
+        self.assertIn("FLEET_PROXIED[`${verb} ${path}`] === true", self.fleet)
         self.assertNotIn("startsWith('/api/')", self.fleet)
+
+    def test_the_whitelist_is_keyed_by_method_as_well_as_path(self):
+        """The hub's routes are method-specific and this has to match them.
+
+        `/api/saved-configs` is a GET on the hub and has no POST, so a
+        path-only whitelist rewrote Save Current into it and got a 405 whose
+        HTML body made `r.json()` throw. Method-blind was not a near-miss; it
+        was a different route.
+        """
+        self.assertIn("'GET /api/saved-configs': true", self.fleet)
+        self.assertNotIn("'POST /api/saved-configs': true", self.fleet)
+        self.assertIn("'POST /api/config': true", self.fleet)
+        self.assertIn("'GET /api/config': true", self.fleet)
+
+    def test_the_saved_config_controls_without_a_hub_route_are_local_only(self):
+        """Set Default, Clear Default, Delete and Save Current write profiles on
+        the machine this page is served from, and the hub proxies none of them.
+        Unmarked, they act on the wrong machine and report success."""
+        for handler in ("setDefaultSavedConfig()", "clearDefaultSavedConfig()",
+                        "deleteSavedConfig()", "saveCurrentConfig()"):
+            with self.subTest(handler):
+                button = re.search(rf'<button([^>]*)onclick="{re.escape(handler)}"',
+                                   self.template)
+                self.assertIsNotNone(button, handler)
+                self.assertIn("data-local-only", button.group(1))
+        # Apply and the list stay: both have real hub routes.
+        for handler in ("loadSavedConfig(false)", "loadSavedConfig(true)"):
+            with self.subTest(handler):
+                button = re.search(rf'<button([^>]*)onclick="{re.escape(handler)}"',
+                                   self.template)
+                self.assertNotIn("data-local-only", button.group(1))
 
     def test_the_two_proxied_paths_that_carry_a_name_are_anchored(self):
         """`/api/service/<n>/<a>` and `/api/saved-configs/<n>/apply` cannot be
@@ -339,9 +370,22 @@ class FleetUiTests(unittest.TestCase):
         self.assertEqual(sorted(marked),
                          ["config", "logs", "playwright", "searxng", "setup", "transcribe"])
 
-    def test_showtab_refuses_a_local_only_tab_on_a_remote_host(self):
+    def test_one_predicate_decides_whether_a_tab_may_open(self):
+        """There were two, and they disagreed.
+
+        `applyFleetMode` honoured the `data-fleet-control` exception and enabled
+        the Configuration tab for a writable peer; `showTab` looked only at
+        `data-local-only` and refused it. The remote config form was reachable
+        by neither the operator nor a click -- present, tested, and unopenable.
+        """
         shell = (STATIC / "js" / "shell.js").read_text()
-        self.assertIn("dataset.localOnly", shell)
+        self.assertIn("fleetBlocks(button)", shell)
+        self.assertNotIn("dataset.localOnly", shell,
+                         "showTab must not re-derive the answer fleet.js already gives")
+        self.assertIn("function fleetBlocks(", self.fleet)
+        # The exception has to be inside the one predicate, or the two drift again.
+        blocks = self.fleet[self.fleet.index("function fleetBlocks("):]
+        self.assertIn("data-fleet-control", blocks[:blocks.index("\n}")])
 
     def test_the_controls_that_act_on_this_machine_are_marked_too(self):
         """Not just the tabs.

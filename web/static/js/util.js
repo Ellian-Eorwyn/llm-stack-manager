@@ -20,7 +20,7 @@ async function fetchJSON(url, method = 'GET', body = null) {
   // guard rather than referenced directly so util.js stays first in the load
   // order and depends on nothing -- and so a page that somehow loaded without
   // fleet.js talks to this host instead of throwing on every fetch.
-  const target = (typeof fleetPath === 'function') ? fleetPath(url) : url;
+  const target = (typeof fleetPath === 'function') ? fleetPath(url, method) : url;
   const r = await fetch(target, opts);
   return r.json();
 }

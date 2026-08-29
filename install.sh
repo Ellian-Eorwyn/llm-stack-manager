@@ -77,6 +77,32 @@ resolve_engine_script() {
     esac
 }
 
+# Which components this install was asked for. An empty selection means all of
+# them, which is what a recovery install or a hand-run `install.sh` gets.
+#
+# Both platform branches read it. They did not always: the launchd branch
+# installed every service unconditionally, so a Mac with no llama.cpp build got
+# agents for llm-a, llm-b, both proxies, rerank, task, ocr, llama-router and
+# glmocr-sdk, each failing on start and each reported by the manager as a
+# broken service rather than as one nobody asked for.
+# Services this stack no longer installs, removed on every install rather than
+# only when component selection is in play: a host that predates their
+# retirement would otherwise keep one whose launcher no longer exists, and find
+# out at the next restart.
+#
+# Stated once because both platforms need it. It used to live in the systemd
+# branch alone, so a Mac kept every one of these -- including the four renamed
+# chat units, whose launchers were renamed with them and no longer exist.
+RETIRED_SERVICES=(
+    think nothink embed2 chat-backend chat-backend-moe
+    honcho-api honcho-deriver
+    chat-backend-dense chat-backend2 chat-proxy chat-proxy2
+)
+
+setup_has_component() {
+    [[ -z "${LLM_STACK_SETUP_COMPONENTS:-}" || ",${LLM_STACK_SETUP_COMPONENTS}," == *",$1,"* ]]
+}
+
 EMBED_SCRIPT="$(resolve_engine_script embed "${EMBED_ENGINE}" "start-embed.sh" "start-embed-mlx.sh")"
 TRANSCRIPT_SCRIPT="$(resolve_engine_script transcription "${TRANSCRIPT_ENGINE}" "start-transcribe.sh" "start-parakeet-mlx.sh")"
 SERVICE_USER="$(cp_stat_user "${STACK_DIR}")"
@@ -379,9 +405,6 @@ UNIT
     chmod 644 /etc/systemd/system/llm-stack-restore.service
     echo "  installed: llm-stack-restore.service"
 
-    setup_has_component() {
-        [[ -z "${LLM_STACK_SETUP_COMPONENTS:-}" || ",${LLM_STACK_SETUP_COMPONENTS}," == *",$1,"* ]]
-    }
     remove_unselected_units() {
         local component="$1"
         shift
@@ -419,9 +442,7 @@ UNIT
     # renamed with them, so the old unit files point at scripts that no longer
     # exist -- which is why they must be removed on the same run that installs
     # llm-a, llm-b and their proxies, not left for a later one.
-    for unit in think nothink embed2 chat-backend chat-backend-moe \
-             honcho-api honcho-deriver \
-             chat-backend-dense chat-backend2 chat-proxy chat-proxy2; do
+    for unit in "${RETIRED_SERVICES[@]}"; do
         systemctl disable --now "${unit}" 2>/dev/null || true
         [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
     done
@@ -585,20 +606,71 @@ elif is_mac; then
         _launchd_reset
     }
 
+    # The launchd twin of remove_unselected_units, and of the retired sweep
+    # below it. Both were systemd-only, so a Mac accumulated agents it had not
+    # asked for and kept agents whose launchers had been deleted -- and launchd
+    # keeps trying to start them.
+    #
+    # `svc_disable` from cross-platform.sh does the bootout, so the domain and
+    # the label spelling stay in one place.
+    remove_mac_service() {
+        local name="$1" plist
+        svc_disable "${name}"
+        plist="$(svc_plist_path "${name}")"
+        [[ -f "${plist}" ]] && rm -f "${plist}"
+        rm -f "${STACK_DIR}/scripts/launchd-wrapper-${name}.sh"
+        return 0
+    }
+    remove_unselected_mac_services() {
+        local component="$1"
+        shift
+        setup_has_component "${component}" && return 0
+        local name
+        for name in "$@"; do
+            remove_mac_service "${name}"
+        done
+    }
+
+    for name in "${RETIRED_SERVICES[@]}"; do
+        remove_mac_service "${name}"
+    done
+    if [[ -n "${LLM_STACK_SETUP_COMPONENTS:-}" ]]; then
+        remove_unselected_mac_services llm-a llm-a llm-a-proxy
+        remove_unselected_mac_services llm-b llm-b llm-b-proxy
+        remove_unselected_mac_services embedding embed
+        remove_unselected_mac_services reranker rerank
+        remove_unselected_mac_services task task
+        remove_unselected_mac_services ocr ocr
+        remove_unselected_mac_services glmocr-sdk glmocr-sdk
+        remove_unselected_mac_services transcribe transcript-backend
+    fi
+    [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] || remove_mac_service llama-router
+
     echo "Installing launchd services..."
 
     install_mac_service "llm-manager"        "LLM Stack Manager - web UI"                          "start-llm-manager.sh"
+    setup_has_component llm-a && \
     install_mac_service "llm-a" "LLM A - llama-server"                      "start-llm-a.sh"
+    setup_has_component llm-a && \
     install_mac_service "llm-a-proxy"         "LLM A Proxy - think/chat/code ports"                 "start-llm-a-proxy.sh" \
         "llm-a"
+    setup_has_component llm-b && \
     install_mac_service "llm-b"      "LLM B - llama-server"                               "start-llm-b.sh"
+    setup_has_component llm-b && \
     install_mac_service "llm-b-proxy"        "LLM B Proxy - think/chat/code ports"                 "start-llm-b-proxy.sh" \
         "llm-b"
+    setup_has_component embedding && \
     install_mac_service "embed"              "LLM Embedding Model - ${EMBED_ENGINE}"               "${EMBED_SCRIPT}"
+    setup_has_component reranker && \
     install_mac_service "rerank"             "LLM Reranker Model - llama-server"                   "start-rerank.sh"
+    setup_has_component task && \
     install_mac_service "task"               "LLM Task Model - llama-server"                       "start-task.sh"
+    setup_has_component ocr && \
     install_mac_service "ocr"                "LLM OCR GLM-OCR Backend - llama-server"              "start-ocr.sh"
-    install_mac_service "llama-router"       "LLM Model Router - on-demand auxiliary models"       "start-model-router.sh"
+    # No component of its own: the router is a mode the auxiliary slots run in,
+    # so it follows MODEL_ROUTER_ENABLED rather than a selection.
+    [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] && \
+        install_mac_service "llama-router"   "LLM Model Router - on-demand auxiliary models"       "start-model-router.sh"
     # Same reasoning as the systemd path: in router mode the SDK's upstream is
     # the router, and waiting on `ocr` would summon a model nothing manages.
     if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
@@ -608,10 +680,12 @@ elif is_mac; then
         _ocr_upstream="ocr"
         _embed_upstream="embed"
     fi
+    setup_has_component glmocr-sdk && \
     install_mac_service "glmocr-sdk"         "LLM OCR GLM-OCR SDK Parser"                          "start-glmocr-sdk.sh" \
         "${_ocr_upstream}"
     # No upstream: only the optional `router` engine talks to llama-router, and
     # the local runtimes need nothing at all. See the note in web/health.py.
+    setup_has_component transcribe && \
     install_mac_service "transcript-backend" "LLM Transcription - ${TRANSCRIPT_ENGINE}"             "${TRANSCRIPT_SCRIPT}"
 
     # Fix glmocr-sdk plist for on-failure restart
