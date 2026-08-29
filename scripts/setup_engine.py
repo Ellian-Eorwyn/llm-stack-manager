@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # preflight`) as well as imported by the manager, so the path is added here
 # rather than relying on the caller having done it.
 sys.path.insert(0, str(ROOT / "web"))
+import backends  # noqa: E402
 import platforms  # noqa: E402
 from platforms import _cuda  # noqa: E402
 
@@ -39,42 +40,46 @@ STATE_FILE = ROOT / "config" / "install-state.json"
 MODELS_DIR = ROOT / "models"
 LOG_DIR = ROOT / "logs" / "setup"
 
+# The wizard's name for a slot -> the slot. Every map below that mentions a
+# model component is really keyed by this, and each used to restate the
+# relationship in its own vocabulary.
+SLOT_BY_COMPONENT = {slot.component: slot for slot in backends.SLOTS.values()
+                     if slot.component}
+
 CORE_DEFAULTS = ["primary", "embedding", "task", "ocr", "glmocr-sdk", "searxng", "playwright"]
-OPTIONAL_COMPONENTS = ["secondary", "embedding2", "reranker", "honcho", "transcribe"]
+OPTIONAL_COMPONENTS = ["secondary", "reranker", "honcho", "transcribe"]
 ALL_COMPONENTS = CORE_DEFAULTS + OPTIONAL_COMPONENTS
-MODEL_COMPONENTS = ["primary", "secondary", "embedding", "embedding2", "task", "ocr", "reranker"]
+# Every component that names a model, which is every component that is a slot.
+MODEL_COMPONENTS = list(SLOT_BY_COMPONENT)
 COMPONENT_DEPENDENCIES = {
     "glmocr-sdk": ["ocr"],
     "primary": ["chat-proxy"],
     "secondary": ["chat-proxy2"],
     "honcho": ["primary", "embedding"],
 }
+# Component -> the units installing it brings up. The model half comes from the
+# registry; a proxy is not a slot, so it is named here.
 COMPONENT_SERVICES = {
-    "primary": ["chat-backend-dense", "chat-proxy"],
-    "secondary": ["chat-backend2", "chat-proxy2"],
-    "embedding": ["embed"],
-    "task": ["task"],
-    "ocr": ["ocr"],
+    component: [slot.name] + COMPONENT_DEPENDENCIES.get(component, [])
+    for component, slot in SLOT_BY_COMPONENT.items()
+} | {
     "glmocr-sdk": ["glmocr-sdk"],
-    "reranker": ["rerank"],
     "playwright": ["playwright-server"],
     "honcho": ["honcho-api", "honcho-deriver"],
     "transcribe": ["transcript-backend"],
 }
+
 COMPONENT_PORTS = {
     "primary": [8003, 8004, 8008], "secondary": [8103, 8104, 8108],
-    "embedding": [8005], "embedding2": [8011], "reranker": [8006],
+    "embedding": [8005], "reranker": [8006],
     "task": [8007], "ocr": [8009], "glmocr-sdk": [5002],
     "searxng": [80], "playwright": [80], "honcho": [8090],
     "transcribe": [8014],
 }
 MODEL_ENV_KEYS = {
-    "primary": ("CHAT_PRIMARY_MODEL_PATH", "CHAT_PRIMARY_MMPROJ_PATH"),
-    "secondary": ("CHAT2_MODEL_PATH", "CHAT2_MMPROJ_PATH"),
-    "embedding": ("EMBEDDING_MODEL_PATH", ""),
-    "task": ("TASK_MODEL_PATH", "TASK_MMPROJ_PATH"),
-    "ocr": ("OCR_MODEL_PATH", "OCR_MMPROJ_PATH"),
-    "reranker": ("RERANKER_MODEL_PATH", ""),
+    component: (slot.absolute(slot.model_keys)[0],
+                slot.absolute(slot.mmproj_keys)[0] if slot.mmproj_keys else "")
+    for component, slot in SLOT_BY_COMPONENT.items()
 }
 
 
@@ -349,7 +354,7 @@ def plan_gpu_placement(gpus: list[dict[str, Any]], models: dict[str, dict[str, A
         return {"ok": False, "assignments": {}, "required_mib": required, "usable_mib": total, "error": "Selected models exceed 90% of available aggregate VRAM"}
     assignments: dict[str, Any] = {}
     ordered = sorted(gpus, key=lambda gpu: (remaining[int(gpu["index"])], -int(gpu["index"])), reverse=True)
-    for component in ("primary", "secondary", "embedding", "embedding2", "task", "ocr", "reranker"):
+    for component in MODEL_COMPONENTS:
         model = models.get(component)
         if not model:
             continue
@@ -429,14 +434,7 @@ def probe_json(url: str, payload: dict[str, Any] | None = None, timeout: int = 1
 
 
 def placement_env(assignments: dict[str, Any]) -> dict[str, str]:
-    mapping = {
-        "primary": "CHAT_PRIMARY",
-        "secondary": "CHAT2",
-        "embedding": "EMBED",
-        "task": "TASK",
-        "ocr": "OCR",
-        "reranker": "RERANK",
-    }
+    mapping = {component: slot.prefix for component, slot in SLOT_BY_COMPONENT.items()}
     updates: dict[str, str] = {}
     for component, prefix in mapping.items():
         item = assignments.get(component)

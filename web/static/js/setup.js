@@ -6,7 +6,7 @@
 // -- setup wizard --
 const setupModelLabels = {
   primary: 'Primary backend', secondary: 'Secondary backend', embedding: 'Embedding',
-  embedding2: 'Embedding 2', task: 'Task', ocr: 'GLM-OCR model', reranker: 'Reranker'
+  task: 'Task', ocr: 'GLM-OCR model', reranker: 'Reranker'
 };
 
 async function initSetupWizard() {

@@ -34,6 +34,8 @@ exceptions.
 
 from collections import defaultdict
 
+import backends
+
 LLAMA_KV_CACHE_OPTIONS = ["q8_0", "f16", "f32", "bf16", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl"]
 
 # How weights are placed across GPUs. `row` is deliberately not offered: the
@@ -572,7 +574,6 @@ CONFIG_FIELDS = [
     {"section": "Embedding",   "key": "EMBED_JINJA",                "label": "Native Tool Calling",  "type": "select", "options": ["off", "on"]},
     {"section": "Embedding",   "key": "EMBED_REASONING_FORMAT",     "label": "Reasoning Format",     "type": "select", "options": ["none", "deepseek", "deepseek-legacy"]},
     {"section": "Embedding",   "key": "EMBED_FIT",                  "label": "Auto-Fit to VRAM",     "type": "select", "options": ["on", "off"]},
-    # Embedding 2
     # Reranker
     {"section": "Reranker",    "key": "RERANK_MODEL_NAME",          "label": "Model Name",           "type": "text",   "hint": "Advertised on /v1/models for the reranker endpoint"},
     {"section": "Reranker",    "key": "RERANKER_MODEL_PATH",        "label": "Model Path",           "type": "path"},
@@ -969,7 +970,8 @@ CONFIG_FIELDS = _rebuilt_config_fields
 
 # One backend is shared by the think/chat/code endpoints, so a change to a
 # shared setting reaches every unit that might be hosting it.
-SHARED_CHAT_BACKEND_RESTART = ["chat-backend-dense", "chat-backend2"]
+SHARED_CHAT_BACKEND_RESTART = [slot.name for slot in backends.SLOTS.values()
+                               if slot.group == "chat"]
 
 # Which services should be restarted after changing a given config key
 RESTART_HINTS = {

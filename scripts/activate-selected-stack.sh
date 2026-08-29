@@ -7,7 +7,9 @@ SELECTED=",${LLM_STACK_SELECTED_COMPONENTS:-primary,embedding,task,ocr,glmocr-sd
 
 has_component() { [[ "${SELECTED}" == *",$1,"* ]]; }
 
-declare -a ALL_UNITS=(chat-backend-dense chat-proxy chat-backend2 chat-proxy2 embed task ocr glmocr-sdk rerank llama-router transcript-backend playwright-server honcho-api honcho-deriver)
+# shellcheck source=scripts/stack-services.sh
+source "${STACK_DIR}/scripts/stack-services.sh"
+declare -a ALL_UNITS=("${STACK_SELECTABLE_UNITS[@]}")
 declare -a START_UNITS=()
 
 # In router mode the pooled models are the router's children, not units. Start
@@ -54,7 +56,6 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
     has_component primary && PORTS+=(8003 8004 8008)
     has_component secondary && PORTS+=(8103 8104 8108)
     has_component embedding && PORTS+=(8005)
-    has_component embedding2 && PORTS+=(8011)
     has_component reranker && PORTS+=(8006)
     has_component task && PORTS+=(8007)
     has_component ocr && PORTS+=(8009)

@@ -42,6 +42,7 @@ import setup_engine
 # Explicit rather than relying on the script directory, so importing app.py by
 # path (as the tests do) resolves sibling modules the same way systemd does.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import backends
 import budget
 import config_env
 import config_fields
@@ -101,15 +102,32 @@ TTS_MANAGED_SERVICES = []
 # Named, so `should_use_local_transcript_manager` can fall back to
 # scripts/manage-transcript-service.sh on a host with no systemd unit installed.
 TRANSCRIPT_MANAGED_SERVICE = "transcript-backend"
+def _slot_service(name: str) -> dict:
+    """One services-panel entry, from the slot registry.
+
+    The panel's vocabulary -- group, label, description, config section -- is
+    part of what a slot *is*, so it lives with the slot rather than being
+    restated here next to five other statements of the same relationship.
+    """
+    slot = backends.SLOTS[name]
+    entry = {"group": slot.group, "name": slot.name, "label": slot.label,
+             "desc": slot.desc, "ports": slot.ports_display}
+    if slot.config_section:
+        entry["config_section"] = slot.config_section
+    return entry
+
+
+# The order is the registry's, interleaved with the services that are not
+# slots. A proxy is not a servable position; it is a thing in front of one.
 SERVICES = [
-    {"group": "chat",      "name": "chat-backend-dense", "label": "Primary Backend", "desc": "Primary model backend", "ports": "8010 internal / llms:8010", "config_section": "Primary Backend"},
+    _slot_service("chat-backend-dense"),
     {"group": "chat",      "name": "chat-proxy",       "label": "Primary Proxy",   "desc": "Routes primary think/chat/code", "ports": "8003 / 8004 / 8008 / 8012"},
-    {"group": "chat",      "name": "chat-backend2",    "label": "Secondary Backend", "desc": "Secondary model backend",  "ports": "8020 internal / llms:8020", "config_section": "Secondary Backend"},
+    _slot_service("chat-backend2"),
     {"group": "chat",      "name": "chat-proxy2",      "label": "Secondary Proxy", "desc": "Routes secondary think/chat/code", "ports": "8103 / 8104 / 8108 / 8112"},
-    {"group": "auxiliary", "name": "embed",        "label": "Embedding",    "desc": "Embedding model",                   "ports": "8005", "config_section": "Embedding"},
-    {"group": "auxiliary", "name": "rerank",         "label": "Reranker",     "desc": "Reranker model",                    "ports": "8006", "config_section": "Reranker"},
-    {"group": "auxiliary", "name": "task",             "label": "Task",         "desc": "Small fast task model",             "ports": "8007", "config_section": "Task Model"},
-    {"group": "auxiliary", "name": "ocr",              "label": "OCR Model",    "desc": "GLM-OCR llama.cpp model backend",      "ports": "8009", "config_section": "OCR"},
+    _slot_service("embed"),
+    _slot_service("rerank"),
+    _slot_service("task"),
+    _slot_service("ocr"),
     {"group": "auxiliary", "name": "glmocr-sdk",       "label": "OCR SDK",      "desc": "Local GLM-OCR layout/PDF parser",       "ports": "5002", "config_section": "GLM-OCR SDK"},
     {"group": "auxiliary", "name": "llama-router",     "label": "Model Router", "desc": "Loads the auxiliary models on demand",  "ports": "8013", "config_section": "Model Router"},
     {"group": "auxiliary", "name": "transcript-backend", "label": "Transcription", "desc": "Speech-to-text: faster-whisper, NeMo, HF, router", "ports": "8014", "config_section": "Transcription"},
@@ -119,14 +137,7 @@ SERVICES = [
     {"group": "auxiliary", "name": "playwright-server", "label": "Playwright",   "desc": "Remote browser automation WebSocket server", "ports": "3001", "config_section": "Playwright"},
 ]
 
-LLAMACPP_MODEL_SERVICES = [
-    "chat-backend-dense",
-    "chat-backend2",
-    "embed",
-    "rerank",
-    "task",
-    "ocr",
-]
+LLAMACPP_MODEL_SERVICES = list(backends.SLOTS)
 LLAMACPP_PROXY_SERVICE = "chat-proxy"
 
 
@@ -161,14 +172,7 @@ def apply_router_restart_hints(restart_needed: set, env: dict) -> set:
 # Which env prefix each llama.cpp service is launched from. Only the chat
 # backends divide their context across slots, but the rest are listed so the
 # services panel can show a context for every model service it renders.
-SERVICE_ENV_PREFIXES = {
-    "chat-backend-dense": "CHAT_PRIMARY",
-    "chat-backend2": "CHAT2",
-    "embed": "EMBED",
-    "rerank": "RERANK",
-    "task": "TASK",
-    "ocr": "OCR",
-}
+SERVICE_ENV_PREFIXES = {slot.name: slot.prefix for slot in backends.SLOTS.values()}
 
 
 def backend_context_summary(env: dict | None = None) -> dict:

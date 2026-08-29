@@ -267,20 +267,20 @@ if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
         fi
     elif [[ "${SKIP_RESTART}" != "1" ]]; then
         source "${STACK_DIR}/scripts/cross-platform.sh"
+        # shellcheck source=scripts/stack-services.sh
+        source "${STACK_DIR}/scripts/stack-services.sh"
         if is_linux; then
             mapfile -t active < <(systemctl list-units --type=service --state=active --no-legend 'chat-*.service' 'embed.service' 'rerank.service' 'task.service' 'ocr.service' 'glmocr-sdk.service' 'transcript-backend.service' 'playwright-server.service' 'think.service' 'nothink.service' 'qwen-*' 'honcho-*.service' 'llm-manager.service' | awk '{print $1}' | sed 's/\.service$//')
         else
-            active=(llm-manager chat-backend-dense chat-proxy chat-backend2 chat-proxy2 embed rerank task ocr glmocr-sdk transcript-backend honcho-api honcho-deriver)
+            active=("${STACK_UPDATE_RESTART_SERVICES[@]}")
         fi
-        
+
         for svc in "${active[@]}"; do
-            case "${svc}" in
-                llm-manager|chat-backend-dense|chat-backend2|chat-proxy|chat-proxy2|embed|rerank|task|ocr|glmocr-sdk|transcript-backend|playwright-server|honcho-api|honcho-deriver)
-                    if is_mac || svc_is_active "${svc}"; then
-                        svc_restart "${svc}"
-                    fi
-                    ;;
-            esac
+            if stack_contains "${svc}" "${STACK_UPDATE_RESTART_SERVICES[@]}"; then
+                if is_mac || svc_is_active "${svc}"; then
+                    svc_restart "${svc}"
+                fi
+            fi
         done
     else
         echo "Skipping service restarts."

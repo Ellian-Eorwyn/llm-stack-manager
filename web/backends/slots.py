@@ -117,8 +117,17 @@ def _large_model_tail(kwargs: options.TemplateKwargs, template: options.Template
 
 
 SLOTS = {
+    # In the order the services panel renders them, which is also the order
+    # `telemetry.BACKEND_TARGETS` and `app.SERVICES` used to state separately.
     "chat-backend-dense": Slot(
         name="chat-backend-dense",
+        component="primary",
+        group="chat",
+        label="Primary Backend",
+        desc="Primary model backend",
+        config_section="Primary Backend",
+        ports_display="8010 internal / llms:8010",
+        probe_host_keys=("!CHAT_BACKEND_HOST",),
         prefix="CHAT_PRIMARY",
         # The slot was `CHAT_DENSE_*` before it was `CHAT_PRIMARY_*`, and the
         # bare `CHAT_*` names are the shared originals. Only the five keys
@@ -151,10 +160,17 @@ SLOTS = {
     ),
     "chat-backend2": Slot(
         name="chat-backend2",
+        component="secondary",
+        group="chat",
+        label="Secondary Backend",
+        desc="Secondary model backend",
+        config_section="Secondary Backend",
+        ports_display="8020 internal / llms:8020",
+        probe_host_keys=("!CHAT2_BACKEND_HOST",),
         prefix="CHAT2",
         model_keys=("!CHAT2_MODEL_PATH",),
         alias_default="chat-moe",
-        mmproj_keys=("MMPROJ_PATH",),
+        mmproj_keys=("!CHAT2_MMPROJ_PATH",),
         port_keys=("!CHAT2_BACKEND_PORT",),
         port_default="8020",
         host_keys=("!CHAT2_BACKEND_HOST",),
@@ -167,8 +183,58 @@ SLOTS = {
         budget_name="chat-secondary",
         preflight_fields=_LARGE_PREFLIGHT,
     ),
+    "embed": Slot(
+        name="embed",
+        component="embedding",
+        label="Embedding",
+        desc="Embedding model",
+        config_section="Embedding",
+        ports_display="8005",
+        probe_host_keys=("!EMBED_BACKEND_HOST",),
+        prefix="EMBED",
+        model_keys=("!EMBEDDING_MODEL_PATH",),
+        alias_default="embed",
+        port_default="8005",
+        # No mmproj: an embedding model has no projector, and the setup wizard
+        # has recorded that as an empty key since it was written.
+        mmproj_keys=(),
+        # The embedding slot has always defaulted its KV cache to f16 rather
+        # than the q8_0 the chat backends use.
+        defaults={"CACHE_TYPE_K": "f16", "CACHE_TYPE_V": "f16"},
+        omit=_AUX_OMIT,
+        literals=("--embedding", "--pooling", "mean"),
+        preflight_fields=_AUX_PREFLIGHT,
+        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj()),
+    ),
+    "rerank": Slot(
+        name="rerank",
+        component="reranker",
+        label="Reranker",
+        desc="Reranker model",
+        config_section="Reranker",
+        ports_display="8006",
+        probe_host_keys=("!RERANK_BACKEND_HOST",),
+        prefix="RERANK",
+        model_keys=("!RERANKER_MODEL_PATH",),
+        # Not "rerank": the router's INI section name overwrites the child's
+        # --alias, and callers send "rank". See docs/model-router.md.
+        alias_default="rank",
+        port_default="8006",
+        mmproj_keys=(),
+        defaults={"CACHE_TYPE_K": "f16", "CACHE_TYPE_V": "f16"},
+        omit=_AUX_OMIT,
+        literals=("--reranking",),
+        preflight_fields=_AUX_PREFLIGHT,
+        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj()),
+    ),
     "task": Slot(
         name="task",
+        component="task",
+        label="Task Model",
+        desc="Small fast task model",
+        config_section="Task Model",
+        ports_display="8007",
+        probe_host_keys=("!TASK_BACKEND_HOST",),
         prefix="TASK",
         model_keys=("!TASK_MODEL_PATH",),
         alias_default="task",
@@ -184,36 +250,14 @@ SLOTS = {
         custom_args_keys=("CUSTOM_ARGS_JSON",),
         preflight_fields=_LARGE_PREFLIGHT,
     ),
-    "embed": Slot(
-        name="embed",
-        prefix="EMBED",
-        model_keys=("!EMBEDDING_MODEL_PATH",),
-        alias_default="embed",
-        port_default="8005",
-        # The embedding slot has always defaulted its KV cache to f16 rather
-        # than the q8_0 the chat backends use.
-        defaults={"CACHE_TYPE_K": "f16", "CACHE_TYPE_V": "f16"},
-        omit=_AUX_OMIT,
-        literals=("--embedding", "--pooling", "mean"),
-        preflight_fields=_AUX_PREFLIGHT,
-        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj()),
-    ),
-    "rerank": Slot(
-        name="rerank",
-        prefix="RERANK",
-        model_keys=("!RERANKER_MODEL_PATH",),
-        # Not "rerank": the router's INI section name overwrites the child's
-        # --alias, and callers send "rank". See docs/model-router.md.
-        alias_default="rank",
-        port_default="8006",
-        defaults={"CACHE_TYPE_K": "f16", "CACHE_TYPE_V": "f16"},
-        omit=_AUX_OMIT,
-        literals=("--reranking",),
-        preflight_fields=_AUX_PREFLIGHT,
-        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj()),
-    ),
     "ocr": Slot(
         name="ocr",
+        component="ocr",
+        label="OCR Model",
+        desc="GLM-OCR llama.cpp model backend",
+        config_section="OCR",
+        ports_display="8009",
+        probe_host_keys=("!OCR_BACKEND_HOST",),
         prefix="OCR",
         model_keys=("!OCR_MODEL_PATH",),
         alias_default="ocr",
