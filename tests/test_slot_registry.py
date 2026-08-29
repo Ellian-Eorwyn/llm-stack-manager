@@ -159,19 +159,30 @@ class ShellAgreementTests(unittest.TestCase):
         self.assertEqual(self._array("STACK_MODEL_BACKENDS"), list(backends.SLOTS))
 
     def test_every_script_that_needs_the_list_sources_it(self):
-        """One remaining duplication, named rather than hidden.
+        """The flat service lists, sourced rather than copied.
 
-        `restore-active-stack.sh` and `activate-selected-stack.sh` still map
-        components to units themselves -- `has_component embedding && ... embed`
-        -- which is `setup_engine.COMPONENT_SERVICES` written in shell, twice.
-        Collapsing that needs Python on the install path and is a change of its
-        own; what is fixed here is the flat service lists, which is what the
-        rename actually touches.
+        `activate-selected-stack.sh` still maps components to units itself --
+        `has_component embedding && ... embed` -- which is
+        `setup_engine.COMPONENT_SERVICES` written out in shell. The boot path no
+        longer does: `restore-active-stack.sh` asks
+        `scripts/lib/boot-services.py`, which is the Python on the install path
+        that collapsing it needed. The remaining copy is named here rather than
+        hidden.
         """
         for name in ("restore-active-stack.sh", "activate-selected-stack.sh",
                      "llm-stack-manager", "../update.sh"):
             with self.subTest(name):
                 self.assertIn("stack-services.sh", (ROOT / "scripts" / name).read_text())
+
+    def test_the_boot_path_does_not_spell_out_the_component_map(self):
+        """The boot path is the one that runs unattended, so it is the one that
+        must not drift. It used to decide the boot set from an environment
+        variable `llm-stack-restore.service` never sets, whose unset branch
+        started every unit including a second large backend."""
+        script = (ROOT / "scripts" / "restore-active-stack.sh").read_text()
+        self.assertIn("boot-services.py", script)
+        for spelling in ("selected embedding", "selected secondary", "selected reranker"):
+            self.assertNotIn(spelling, script)
 
     def test_the_retired_units_are_named_as_retired_rather_than_as_current(self):
         retired = self._array("STACK_RETIRED_SERVICES")

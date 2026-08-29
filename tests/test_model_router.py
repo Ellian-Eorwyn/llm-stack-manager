@@ -192,6 +192,7 @@ class TaskSettingCoverageTests(unittest.TestCase):
         carried = set(renderer.VALUE_OPTIONS) | set(renderer.FLAG_OPTIONS) | {
             "MODEL_PATH", "MMPROJ_PATH", "MODEL_NAME", "CUSTOM_ARGS_JSON",
             "THINKING", "REASONING_EFFORT", "CHAT_TEMPLATE_ID",
+            "LOAD_ON_STARTUP",
         }
         declared = {
             field["key"][len("TASK_"):]
@@ -203,6 +204,20 @@ class TaskSettingCoverageTests(unittest.TestCase):
             if not suffix.startswith("SPEC_")
         }
         self.assertEqual(dropped, self.KNOWINGLY_DROPPED)
+
+    def test_load_on_startup_is_a_bool_not_an_on_off_flag(self):
+        """The router parses it as a bool and reads anything else as false.
+
+        Every other flag here passes through verbatim because llama.cpp accepts
+        `on`/`off` for them. Writing `on` for this one would be read as `off`
+        and the model would stay lazy while the UI claimed otherwise.
+        """
+        self.assertEqual(self._task(TASK_LOAD_ON_STARTUP="on")["load-on-startup"], "true")
+        self.assertEqual(self._task(TASK_LOAD_ON_STARTUP="off")["load-on-startup"], "false")
+
+    def test_a_member_nobody_configured_stays_lazy(self):
+        """Unset means false: an unconsidered model costs nothing until used."""
+        self.assertEqual(self._task()["load-on-startup"], "false")
 
     def test_thinking_rides_in_as_a_chat_template_kwarg(self):
         """Thinking is a template variable, not a llama.cpp flag."""
