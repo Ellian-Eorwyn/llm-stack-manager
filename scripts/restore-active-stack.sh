@@ -106,42 +106,32 @@ PYDEFAULT
     fi
 fi
 
-# A model the router pools is not started here: it is a child of llama-router
-# and loads on demand. Starting it would fight nginx for its port.
-router_owns() {
-    [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] || return 1
-    [[ ",${MODEL_ROUTER_MEMBERS:-EMBED,OCR,RERANK,TASK}," == *",$1,"* ]]
-}
-
-if [[ -n "${LLM_STACK_SELECTED_COMPONENTS:-}" ]]; then
-    SELECTED=",${LLM_STACK_SELECTED_COMPONENTS},"
-    selected() { [[ "${SELECTED}" == *",$1,"* ]]; }
-    DEFAULT_SERVICES=()
-    selected primary && DEFAULT_SERVICES+=("${DEFAULT_CHAT_BACKEND}" chat-proxy)
-    selected secondary && DEFAULT_SERVICES+=(chat-backend2 chat-proxy2)
-    [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] && DEFAULT_SERVICES+=(llama-router)
-    selected embedding && ! router_owns EMBED && DEFAULT_SERVICES+=(embed)
-    selected reranker && ! router_owns RERANK && DEFAULT_SERVICES+=(rerank)
-    selected task && ! router_owns TASK && DEFAULT_SERVICES+=(task)
-    selected ocr && ! router_owns OCR && DEFAULT_SERVICES+=(ocr)
-    selected glmocr-sdk && DEFAULT_SERVICES+=(glmocr-sdk)
-    selected playwright && DEFAULT_SERVICES+=(playwright-server)
-    selected honcho && DEFAULT_SERVICES+=(honcho-api honcho-deriver)
-    selected transcribe && [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]] && DEFAULT_SERVICES+=(transcript-backend)
-else
-    DEFAULT_SERVICES=("${DEFAULT_CHAT_BACKEND}" chat-proxy chat-backend2 chat-proxy2)
-    if [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]]; then
-        DEFAULT_SERVICES+=(llama-router)
-    else
-        DEFAULT_SERVICES+=(embed rerank task)
-    fi
-    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-        DEFAULT_SERVICES+=(honcho-api honcho-deriver)
-    fi
-    if [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]]; then
-        DEFAULT_SERVICES+=(transcript-backend)
-    fi
+# What to start, and on whose authority. `scripts/lib/boot-services.py` has the
+# rules; the short version is that config/service-expectations.json wins over
+# the component selection, and a unit an operator switched off is never started.
+#
+# This used to be an if/else on LLM_STACK_SELECTED_COMPONENTS where the else
+# branch started *everything* -- and llm-stack-restore.service sets no such
+# variable, so every boot took it. On this host that meant starting
+# chat-backend2, a second 27B, onto a GPU already holding the primary;
+# service-expectations.json had said `off` for months and nothing here read it.
+#
+# The component-to-unit map moved to setup_engine.COMPONENT_SERVICES rather than
+# staying spelled out below, which is the collapse tests/test_slot_registry.py
+# describes as "needs Python on the install path".
+# A read loop rather than `mapfile`: macOS ships bash 3.2, which has neither
+# `mapfile` nor `readarray`, and this script runs on both platforms.
+DEFAULT_SERVICES=()
+while IFS= read -r boot_unit; do
+    [[ -n "${boot_unit}" ]] && DEFAULT_SERVICES+=("${boot_unit}")
+done < <(python3 "${STACK_DIR}/scripts/lib/boot-services.py" "${DEFAULT_CHAT_BACKEND}" || true)
+if [[ ${#DEFAULT_SERVICES[@]} -eq 0 ]]; then
+    echo "Refusing to continue: boot-services.py named no services to start." >&2
+    echo "Nothing has been stopped. Check config/service-expectations.json and" >&2
+    echo "config/install-state.json, or pass LLM_STACK_SELECTED_COMPONENTS." >&2
+    exit 1
 fi
+echo "Services to start: ${DEFAULT_SERVICES[*]}"
 
 if ! svc_is_active llm-manager 2>/dev/null; then
     echo "  starting llm-manager..."

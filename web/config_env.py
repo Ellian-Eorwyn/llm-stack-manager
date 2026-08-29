@@ -333,6 +333,11 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("MODEL_ROUTER_MAX", "2")
     normalized.setdefault("MODEL_ROUTER_MEMBERS", "EMBED,OCR,RERANK,TASK")
     normalized.setdefault("MODEL_ROUTER_SLEEP_IDLE_SECONDS", "600")
+    # Off for every member: a model nobody has thought about should cost
+    # nothing until it is used. The operator turns this on for the one that is
+    # queried constantly, which is the case the router's laziness handles worst.
+    for _member in ("EMBED", "RERANK", "TASK", "OCR"):
+        normalized.setdefault(f"{_member}_LOAD_ON_STARTUP", "off")
     normalized.setdefault("MODEL_ROUTER_GPU_VISIBLE_DEVICES", "0,1")
     normalized.setdefault("SEARXNG_ENABLED", "on")
     normalized.setdefault("SEARXNG_URL_PATH", "/searxng")

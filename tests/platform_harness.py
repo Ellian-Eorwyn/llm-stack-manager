@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
 
+import core
 import platforms
 from platforms.darwin import DarwinPlatform
 from platforms.linux import LinuxPlatform
@@ -23,11 +24,28 @@ from platforms.linux import LinuxPlatform
 
 @contextmanager
 def as_platform(platform):
-    """Run the body with `platforms.active()` returning `platform`."""
+    """Run the body with `platforms.active()` returning `platform`.
+
+    `core.ttl_cache` windows are collapsed for the duration, because swapping
+    the adapter invalidates every cached platform-derived answer and those
+    caches are deliberately zero-argument -- there is no key for them to miss
+    on. `app.get_gpu_info` is the one that bit: a 2s window, and
+    `CrossPlatformTests` runs both directions in 0.4s, so the Linux spoke's
+    reading was still cached when the Darwin spoke asked. The Darwin adapter
+    was active and correct; it was simply never called.
+
+    That was invisible on both CI runners, which have no GPU: the leaked list
+    is empty there and an empty list asserts nothing. It fails on a host with
+    real GPUs, which is the machine this package exists to keep testable from
+    the other one.
+    """
     previous = platforms.set_active(platform)
+    previous_ttl = core.CACHE_TTL_SECONDS
+    core.CACHE_TTL_SECONDS = 0
     try:
         yield platform
     finally:
+        core.CACHE_TTL_SECONDS = previous_ttl
         platforms.set_active(previous)
 
 

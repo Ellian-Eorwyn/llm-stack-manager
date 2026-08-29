@@ -153,6 +153,18 @@ def _clean(value) -> str:
     return text
 
 
+def _bool_option(value) -> str:
+    """An `on`/`off` config value as the `true`/`false` the preset wants.
+
+    The rest of this file passes flags through verbatim because llama.cpp reads
+    `on` and `off` for them. `load-on-startup` is not one of those: the router
+    parses it as a bool and treats anything it does not recognise as false, so
+    an `on` written here would silently mean `off` -- the failure this converts
+    away from. Unset is false, which keeps a member nobody configured free.
+    """
+    return "true" if _clean(value).lower() in {"on", "true", "1", "yes"} else "false"
+
+
 def _usable(key: str, value: str) -> bool:
     """Whether a rendered value should be written at all.
 
@@ -356,8 +368,21 @@ def render_member(prefix: str, env: dict, warn=None) -> tuple[str, dict]:
             if key not in RESERVED_KEYS:
                 options[key] = value
 
-    # Nothing loads until a request asks for it. That is the whole point.
-    options["load-on-startup"] = "false"
+    # Nothing loads until a request asks for it. That is the whole point --
+    # with one exception, because "on demand" and "always available" are
+    # different requirements and a pool can hold both.
+    #
+    # An embedding model answering a retrieval path is asked for constantly and
+    # in small bursts, so it spends its life being loaded, idling out and being
+    # loaded again: on this host `embed` served 14,356 requests in a month and
+    # still paid a cold start whenever a gap exceeded the idle window. Loading
+    # it with the router costs the VRAM whether or not anyone asks, which is
+    # exactly the trade an operator should get to make per member rather than
+    # have made for them.
+    #
+    # Off by default: a member nobody has thought about should still cost
+    # nothing until it is used.
+    options["load-on-startup"] = _bool_option(env.get(f"{prefix}_LOAD_ON_STARTUP"))
 
     for key in options:
         if key in RESERVED_KEYS:
