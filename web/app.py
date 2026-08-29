@@ -46,6 +46,7 @@ import backends
 import budget
 import config_env
 import config_fields
+import control_api
 import core
 import deploy
 import health
@@ -55,6 +56,7 @@ import public_api
 import scheduling
 import telemetry
 
+from routes import control as control_routes
 from routes import graphiti as graphiti_routes
 from routes import models as model_routes
 from routes import public as public_routes
@@ -1382,39 +1384,54 @@ def api_service_expect(name):
     return jsonify(ok=True, name=name, expected=expected)
 
 
-@app.route('/api/service/<name>/<action>', methods=['POST'])
-def api_service_action(name, action):
+def perform_service_action(name: str, action: str) -> tuple[dict, int]:
+    """Start, stop or restart one service. The whole rule, in one place.
+
+    Separated from the route so a second listener can reach it. The control
+    API is a different Flask app with its own authentication, and importing
+    `app` from a `web/` module is forbidden -- `ModuleBoundaryTests` -- so what
+    it needs is a function to be handed rather than a route to call.
+
+    Returns (payload, status) rather than a Flask response for the same reason:
+    the caller decides how to render it.
+    """
     if action not in ('start', 'stop', 'restart'):
-        return jsonify(ok=False, error='Unknown action'), 400
+        return {"ok": False, "error": "Unknown action"}, 400
     if name not in {s['name'] for s in patch_service_labels()}:
-        return jsonify(ok=False, error='Unknown service'), 400
+        return {"ok": False, "error": "Unknown service"}, 400
     if name in router_pooled_units(config_env.read_env()):
         # Starting it would fight nginx for the port and put a second copy of
         # the model on the GPU. Say so rather than half-succeeding.
-        return jsonify(
-            ok=False,
-            error=(f"{name} is held by the model router, which loads it on demand. "
-                   f"Use the Model Router controls, or turn MODEL_ROUTER_ENABLED off "
-                   f"to run it as its own service again."),
-        ), 409
+        return {
+            "ok": False,
+            "error": (f"{name} is held by the model router, which loads it on demand. "
+                      f"Use the Model Router controls, or turn MODEL_ROUTER_ENABLED off "
+                      f"to run it as its own service again."),
+        }, 409
     if is_searxng_service(name):
         ok, output = run_searxng_manager(action)
         record_service_expectation(name, action, ok)
-        return jsonify(ok=ok, output=output)
+        return {"ok": ok, "output": output}, 200
     if should_use_local_transcript_manager(name):
         ok, output = run_transcript_manager(action)
         record_service_expectation(name, action, ok)
-        return jsonify(ok=ok, output=output)
+        return {"ok": ok, "output": output}, 200
     if should_use_local_tts_manager(name):
         ok, output = run_tts_manager(name, action)
         record_service_expectation(name, action, ok)
-        return jsonify(ok=ok, output=output)
+        return {"ok": ok, "output": output}, 200
     try:
         rc, output = core.ServiceManager.action(action, name, timeout=30)
         record_service_expectation(name, action, rc == 0)
-        return jsonify(ok=(rc == 0), output=output)
+        return {"ok": rc == 0, "output": output}, 200
     except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
+        return {"ok": False, "error": str(e)}, 500
+
+
+@app.route('/api/service/<name>/<action>', methods=['POST'])
+def api_service_action(name, action):
+    payload, status = perform_service_action(name, action)
+    return jsonify(payload), status
 
 
 @app.route('/api/searxng/status')
@@ -2344,8 +2361,9 @@ def api_tts_test():
 
 
 
-@app.route('/api/saved-configs', methods=['GET'])
-def api_saved_configs_list():
+def list_saved_configs() -> list[dict]:
+    """The saved profiles, newest name first. Extracted so the control listener
+    can offer the same list it offers the local page."""
     configs = []
     default_name = get_default_saved_config_name()
     for f in sorted(core.SAVED_CONFIGS_DIR.glob('*.json')):
@@ -2364,7 +2382,12 @@ def api_saved_configs_list():
             })
         except Exception:
             pass
-    return jsonify(configs)
+    return configs
+
+
+@app.route('/api/saved-configs', methods=['GET'])
+def api_saved_configs_list():
+    return jsonify(list_saved_configs())
 
 
 @app.route('/api/saved-configs', methods=['POST'])
@@ -2669,37 +2692,52 @@ def api_config_preflight():
     return jsonify(preflight_config(config_env.apply_code_chat_mirrors(config_env.filter_config_updates(updates))))
 
 
-@app.route('/api/config', methods=['POST'])
-def api_config_save():
-    updates = request.json
+def perform_config_save(updates, forced: bool = False) -> tuple[dict, int]:
+    """Filter, mirror, preflight, write, and report what needs restarting.
+
+    Extracted from the route so the control listener can reach it without
+    importing `app`. `ignored_keys` is new and load-bearing for that caller: a
+    remote hub may send a key this host does not know, and
+    `allowed_config_keys` drops it silently, which would otherwise be a 200
+    with nothing changed.
+    """
     if not isinstance(updates, dict):
-        return jsonify(ok=False, error='Expected JSON object'), 400
+        return {"ok": False, "error": "Expected JSON object"}, 400
     filtered = config_env.filter_config_updates(updates)
     filtered = config_env.apply_code_chat_mirrors(filtered)
+    ignored = sorted(set(updates) - set(filtered))
 
-    # Refuse configurations the budget model says cannot allocate. `?force=1`
+    # Refuse configurations the budget model says cannot allocate. `forced`
     # overrides, because the model is a prediction and the operator is the one
     # holding the hardware — but the refusal is the default so the failure
     # surfaces here rather than in a restart loop.
     preflight = preflight_config(filtered)
-    forced = str(request.args.get('force', '')).lower() in {'1', 'true', 'yes', 'on'}
     if not preflight['ok'] and not forced:
-        return jsonify(
-            ok=False,
-            error='; '.join(issue['text'] for issue in preflight['errors']),
-            preflight=preflight,
-        ), 409
+        return {
+            "ok": False,
+            "error": '; '.join(issue['text'] for issue in preflight['errors']),
+            "preflight": preflight,
+            "ignored_keys": ignored,
+        }, 409
 
     try:
         config_env.update_env_values(filtered)
     except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
+        return {"ok": False, "error": str(e)}, 500
     restart_needed = set()
     for key in filtered:
         restart_needed.update(RESTART_HINTS.get(key, []))
     restart_needed = apply_router_restart_hints(restart_needed, config_env.read_env())
-    return jsonify(ok=True, restart_needed=sorted(restart_needed),
-                   preflight=preflight, forced=forced and not preflight['ok'])
+    return {"ok": True, "restart_needed": sorted(restart_needed),
+            "preflight": preflight, "forced": forced and not preflight['ok'],
+            "ignored_keys": ignored}, 200
+
+
+@app.route('/api/config', methods=['POST'])
+def api_config_save():
+    forced = str(request.args.get('force', '')).lower() in {'1', 'true', 'yes', 'on'}
+    payload, status = perform_config_save(request.json, forced)
+    return jsonify(payload), status
 
 
 
@@ -2792,6 +2830,21 @@ STATE_API_PROVIDERS = public_api.Providers(
 STATE_API_BROADCASTER = public_routes.configure(STATE_API_PROVIDERS)
 
 
+# The control listener's own bundle, same lambda rule and the same reason.
+CONTROL_API_PROVIDERS = control_api.ControlProviders(
+    read_env=lambda: config_env.read_env(),
+    save_config=lambda updates, forced: perform_config_save(updates, forced),
+    preflight=lambda updates: preflight_config(updates),
+    service_action=lambda name, action: perform_service_action(name, action),
+    services_table=lambda env: patch_service_labels(env),
+    service_status=lambda name: get_service_status(name),
+    saved_configs=lambda: list_saved_configs(),
+    apply_saved_config=lambda name, launch: apply_saved_config(name, launch),
+)
+
+control_routes.configure(CONTROL_API_PROVIDERS)
+
+
 def create_state_api_app() -> Flask:
     """The second listener: the read-only blueprint and nothing else.
 
@@ -2808,6 +2861,61 @@ def create_state_api_app() -> Flask:
     state_app.config['PUBLIC_API_ENFORCE_TOKEN'] = True
     state_app.register_blueprint(public_routes.bp)
     return state_app
+
+
+def create_control_api_app() -> Flask:
+    """The third listener: the control blueprint and nothing else.
+
+    Same argument as `create_state_api_app`, applied the other way round. The
+    read-only app cannot serve a write because it never learned the route; this
+    one cannot serve the whole stack's state because it never learned that one.
+    Each app is small enough that its route list is the security review.
+
+    Registered on the manager app too? No. `/api/v1/*` is, because the local
+    page uses it; `/api/control/v1/*` would only duplicate routes that already
+    exist there unauthenticated, and duplicating them is how one of the copies
+    ends up with different rules.
+    """
+    control_app = Flask(__name__, static_folder=None)
+    control_app.config['CONTROL_API_ENFORCE_TOKEN'] = True
+    control_app.register_blueprint(control_routes.bp)
+    return control_app
+
+
+def start_control_api(settings: dict) -> None:
+    """Serve the control API on its own port, on a daemon thread.
+
+    Off unless asked for, and refuses a non-loopback bind with no token. The
+    read-only API warns in that situation and binds anyway, which is defensible
+    for telemetry; there is no reading of it that is defensible for a port that
+    can stop a backend.
+    """
+    if not settings.get('enabled'):
+        return
+
+    refusal = control_routes.refuses_to_bind(settings)
+    if refusal:
+        print(f'[llm-control] {refusal} Not listening.', flush=True)
+        return
+
+    from werkzeug.serving import make_server
+
+    host, port = settings['host'], settings['port']
+    try:
+        server = make_server(host, port, create_control_api_app(), threaded=True)
+    # Same guard as the state API, and for the same reason: werkzeug calls
+    # sys.exit(1) on a port collision, which must not take the manager down.
+    except (OSError, SystemExit) as exc:
+        detail = exc if isinstance(exc, OSError) else 'address already in use'
+        print(f'[llm-control] Could not bind {host}:{port} ({detail}); '
+              f'the manager is unaffected and the control API is not listening.', flush=True)
+        return
+
+    threading.Thread(target=server.serve_forever, name='llm-control', daemon=True).start()
+    print(f'[llm-control] Control API on http://{host}:{port}/api/control/v1/schema', flush=True)
+    if not settings.get('token'):
+        print('[llm-control] LLM_CONTROL_TOKEN is unset; every request will be refused.',
+              flush=True)
 
 
 def start_state_api(settings: dict) -> None:
@@ -2851,6 +2959,7 @@ def start_state_api(settings: dict) -> None:
 if __name__ == '__main__':
     apply_default_saved_config_on_startup()
     start_state_api(public_routes.api_settings())
+    start_control_api(control_routes.control_settings())
     port = int(os.environ.get('LLM_MANAGER_PORT', 8080))
     host = os.environ.get('LLM_MANAGER_HOST', '0.0.0.0')
     print(f'[llm-manager] Serving on http://{host}:{port}', flush=True)

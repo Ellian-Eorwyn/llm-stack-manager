@@ -373,6 +373,14 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("LLM_API_STREAM_INTERVAL", "2")
     normalized.setdefault("LLM_API_WEBHOOK_URL", "")
     normalized.setdefault("LLM_API_WEBHOOK_EVENTS", "service_state,alert")
+    # Control API. Off, and loopback if it is turned on: this is the port that
+    # can stop a backend and rewrite this file, so nothing about it should be a
+    # thing an upgrade decided. It refuses to bind off-box without a token.
+    normalized.setdefault("LLM_CONTROL_ENABLED", "off")
+    normalized.setdefault("LLM_CONTROL_HOST", "127.0.0.1")
+    normalized.setdefault("LLM_CONTROL_PORT", "8079")
+    normalized.setdefault("LLM_CONTROL_TOKEN", "")
+    normalized.setdefault("LLM_CONTROL_ALLOW_SECRETS", "off")
     # Transcription sidecar. Off by default and bound to loopback for the same
     # reason as the state API: an upgrade should not start putting audio on the
     # network on someone's behalf.

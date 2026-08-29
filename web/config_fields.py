@@ -276,6 +276,7 @@ CORE_CONFIG_SECTIONS = {
     "Apple Silicon (MLX)",
     "Ports",
     "State API",
+    "Control API",
 }
 
 CODE_TO_CHAT_MIRRORS = {
@@ -795,6 +796,14 @@ CONFIG_FIELDS = [
     {"section": "State API",   "key": "LLM_API_STREAM_INTERVAL",    "label": "Stream Interval",      "type": "number", "hint": "Seconds between event-stream collections (1-60). One collector serves every connected client"},
     {"section": "State API",   "key": "LLM_API_WEBHOOK_URL",        "label": "Webhook URL",          "type": "text",   "hint": "Optional: POST service-state and alert transitions here instead of polling"},
     {"section": "State API",   "key": "LLM_API_WEBHOOK_EVENTS",     "label": "Webhook Events",       "type": "text",   "hint": "Comma-separated: service_state, alert"},
+    # The write half, on its own port and its own credential. Two tokens rather
+    # than one because reading the stack's state and stopping its backends are
+    # different blast radii and must be independently rotatable.
+    {"section": "Control API", "key": "LLM_CONTROL_ENABLED",        "label": "Enable Control API",   "type": "select", "options": ["off", "on"], "hint": "Lets another machine edit this host's configuration and start or stop its services. Off unless you want that. Takes effect when the manager restarts"},
+    {"section": "Control API", "key": "LLM_CONTROL_HOST",           "label": "Listen Host",          "type": "text",   "hint": "127.0.0.1 keeps it on this box; a Tailscale IP exposes it to the tailnet. It refuses to bind off-box with no token set"},
+    {"section": "Control API", "key": "LLM_CONTROL_PORT",           "label": "Port",                 "type": "number", "hint": "Separate from both the manager and the state API. Takes effect when the manager restarts"},
+    {"section": "Control API", "key": "LLM_CONTROL_TOKEN",          "label": "Access Token",         "type": "text",   "hint": "Required. Every request must send Authorization: Bearer <token>; blank means every request is refused. Use a different value from the State API token"},
+    {"section": "Control API", "key": "LLM_CONTROL_ALLOW_SECRETS",  "label": "Allow Writing Secrets", "type": "select", "options": ["off", "on"], "hint": "Whether a remote controller may set API keys and tokens on this host. Secrets are never readable back either way"},
     # pi-forge integration. Slot scheduling is coordinated through lease files
     # in pi-forge's own agent directory; the manager reads them to verify the
     # contract, and only writes there when explicitly allowed to.
