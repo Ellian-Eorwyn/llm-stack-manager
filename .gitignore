@@ -54,6 +54,14 @@ __pycache__/
 # Kept empty on purpose: it is LLAMA_CACHE for the router, pointed away from the
 # real one so that only the preset decides which models are routable.
 /config/model-router-cache/
+# The launchd plists and wrapper scripts install.sh generates on macOS, one per
+# installed service. Per-install state like the env file beside them -- and
+# leaving them untracked made every macOS install permanently dirty, which is
+# the exact condition update.sh refuses to run under. The installer's own output
+# broke the update command the installer's own output recommends.
+/scripts/launchd-wrapper-*.sh
+/config/launchd/
+
 # Which services this box is meant to be running. Recorded by the manager as
 # they are started and stopped, so it is per-install state, not configuration.
 /config/service-expectations.json
