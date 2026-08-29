@@ -76,8 +76,6 @@ resolve_engine_script() {
 
 EMBED_SCRIPT="$(resolve_engine_script embed "${EMBED_ENGINE}" "start-embed.sh" "start-embed-mlx.sh")"
 TRANSCRIPT_SCRIPT="$(resolve_engine_script transcription "${TRANSCRIPT_ENGINE}" "start-transcribe.sh" "start-parakeet-mlx.sh")"
-HONCHO_ENV_TEMPLATE="${CONFIG_DIR}/honcho.env.example"
-HONCHO_ENV_FILE="${CONFIG_DIR}/honcho.env"
 SERVICE_USER="$(cp_stat_user "${STACK_DIR}")"
 SERVICE_GROUP="$(cp_stat_group "${STACK_DIR}")"
 
@@ -101,36 +99,6 @@ else
     echo "Keeping existing local config: ${CONFIG_FILE}"
 fi
 
-merge_honcho_config_defaults() {
-    python3 - "${EXAMPLE_CONFIG}" "${CONFIG_FILE}" "${STACK_DIR}" "${SERVICE_USER}" <<'PYMERGEHONCHO'
-import re
-import sys
-from pathlib import Path
-
-example = Path(sys.argv[1])
-config = Path(sys.argv[2])
-stack_dir = sys.argv[3]
-service_user = sys.argv[4]
-content = config.read_text(encoding="utf-8")
-existing = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)=", content, re.MULTILINE))
-missing = []
-for line in example.read_text(encoding="utf-8").splitlines():
-    if not line.startswith("HONCHO_") or "=" not in line:
-        continue
-    key = line.split("=", 1)[0]
-    if key in existing:
-        continue
-    rendered = line.replace("@STACK_DIR@", stack_dir).replace("@SERVICE_USER@", service_user)
-    missing.append(rendered)
-if missing:
-    if content and not content.endswith("\n"):
-        content += "\n"
-    content += "\n# Local Honcho memory service defaults added by install.sh\n"
-    content += "\n".join(missing) + "\n"
-    config.write_text(content, encoding="utf-8")
-PYMERGEHONCHO
-}
-merge_honcho_config_defaults
 
 merge_config_defaults() {
     python3 - "${EXAMPLE_CONFIG}" "${CONFIG_FILE}" "${STACK_DIR}" "${SERVICE_USER}" <<'PYMERGEDEFAULTS'
@@ -258,54 +226,11 @@ UNIT
     exit 0
 fi
 
-create_honcho_env() {
-    if [[ -f "${HONCHO_ENV_FILE}" ]]; then
-        echo "Keeping existing local Honcho env: ${HONCHO_ENV_FILE}"
-        chmod 600 "${HONCHO_ENV_FILE}"
-        return
-    fi
-    if [[ ! -f "${HONCHO_ENV_TEMPLATE}" ]]; then
-        echo "Missing Honcho env template: ${HONCHO_ENV_TEMPLATE}" >&2
-        exit 1
-    fi
-    local db_password
-    db_password="$(python3 - <<'PYHONCHOPASS'
-import secrets
-print(secrets.token_hex(24))
-PYHONCHOPASS
-)"
-    echo "Creating local Honcho env: ${HONCHO_ENV_FILE}"
-    sed \
-      -e "s|@HONCHO_DB_PASSWORD@|${db_password}|g" \
-      -e "s|@HONCHO_LLM_MODEL@|${HONCHO_LLM_MODEL}|g" \
-      -e "s|@HONCHO_LLM_BASE_URL@|${HONCHO_LLM_BASE_URL}|g" \
-      -e "s|@HONCHO_EMBED_MODEL@|${HONCHO_EMBED_MODEL}|g" \
-      -e "s|@HONCHO_EMBED_BASE_URL@|${HONCHO_EMBED_BASE_URL}|g" \
-      -e "s|@HONCHO_EMBED_VECTOR_DIMENSIONS@|${HONCHO_EMBED_VECTOR_DIMENSIONS}|g" \
-      "${HONCHO_ENV_TEMPLATE}" > "${HONCHO_ENV_FILE}"
-    chmod 600 "${HONCHO_ENV_FILE}"
-}
-
-if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-    create_honcho_env
-fi
-
-chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${STACK_DIR}"
-
-if [[ "${HONCHO_ENABLED:-off}" == "on" && "${HONCHO_INSTALL_DATASTORES:-on}" == "on" ]]; then
-    echo "Installing/configuring local Honcho PostgreSQL/pgvector and Redis..."
-    SERVICE_USER="${SERVICE_USER}" bash "${STACK_DIR}/scripts/install-honcho-system-deps.sh"
-fi
-
 if [[ "${LLM_STACK_SKIP_DEP_UPDATE:-0}" == "1" ]]; then
     echo "Skipping dependency update because LLM_STACK_SKIP_DEP_UPDATE=1."
 else
     echo "Installing/updating dependencies from dependencies.json..."
-    if ! sudo -u "${SERVICE_USER}" env HONCHO_ENABLED="${HONCHO_ENABLED:-off}" "${STACK_DIR}/scripts/install-dependencies.py" --update; then
-        if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-            echo "Dependency update failed while Honcho is enabled." >&2
-            exit 1
-        fi
+    if ! sudo -u "${SERVICE_USER}" "${STACK_DIR}/scripts/install-dependencies.py" --update; then
         if [[ -x "${LLAMA_SERVER_BIN:-${STACK_DIR}/deps/llama.cpp/build/bin/llama-server}" ]]; then
             echo "Dependency update failed, but an existing llama-server binary is present; continuing with systemd unit installation." >&2
         else
@@ -458,7 +383,6 @@ UNIT
         remove_unselected_units ocr ocr
         remove_unselected_units glmocr-sdk glmocr-sdk
         remove_unselected_units playwright playwright-server
-        remove_unselected_units honcho honcho-api honcho-deriver
         remove_unselected_units transcribe transcript-backend
     fi
 
@@ -467,8 +391,12 @@ UNIT
     # a unit whose launcher no longer exists, and find out at the next restart.
     #
     # think/nothink were labelled Legacy and were never in the UI's service
-    # table. embed2 was a second embedding slot nothing used.
-    for unit in think nothink embed2 chat-backend chat-backend-moe; do
+    # table. embed2 was a second embedding slot nothing used. The two honcho
+    # units ran a local memory service this stack no longer ships -- and they
+    # were `enabled`, so systemd would start them at boot against launchers that
+    # are now deleted.
+    for unit in think nothink embed2 chat-backend chat-backend-moe \
+             honcho-api honcho-deriver; do
         systemctl disable --now "${unit}" 2>/dev/null || true
         [[ -f "/etc/systemd/system/${unit}.service" ]] && unlink "/etc/systemd/system/${unit}.service"
     done
@@ -527,10 +455,6 @@ UNIT
         chmod 644 /etc/systemd/system/playwright-server.service
         echo "  installed: playwright-server.service"
     fi
-    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-        install_unit "honcho-api"     "Local Honcho Memory API"                         "start-honcho-api.sh"        120
-        install_unit "honcho-deriver" "Local Honcho Memory Deriver"                     "start-honcho-deriver.sh"    120
-    fi
 
     [[ -f /etc/systemd/system/chat-proxy.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend-dense.service|" /etc/systemd/system/chat-proxy.service
     [[ -f /etc/systemd/system/chat-proxy2.service ]] && cp_sed_inplace "s|^After=network.target$|After=network.target chat-backend2.service|" /etc/systemd/system/chat-proxy2.service
@@ -563,19 +487,10 @@ UNIT
     if [[ -f /etc/systemd/system/llama-router.service ]]; then
         cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/llama-router.service
     fi
-    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-        cp_sed_inplace "s|^After=network.target$|After=network.target postgresql.service redis-server.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}|" /etc/systemd/system/honcho-api.service
-        cp_sed_inplace "/^After=/a Wants=postgresql.service redis-server.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}" /etc/systemd/system/honcho-api.service
-        cp_sed_inplace "s|^After=network.target$|After=network.target honcho-api.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}|" /etc/systemd/system/honcho-deriver.service
-        cp_sed_inplace "/^After=/a Wants=honcho-api.service chat-proxy.service ${EMBED_UPSTREAM_UNITS}" /etc/systemd/system/honcho-deriver.service
-    fi
 
     systemctl daemon-reload
 
     DEFAULT_BOOT_SERVICES=(llm-manager llm-stack-restore)
-    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-        DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
-    fi
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         DEFAULT_BOOT_SERVICES+=(playwright-server)
     fi
@@ -673,12 +588,6 @@ elif is_mac; then
     # No upstream: only the optional `router` engine talks to llama-router, and
     # the local runtimes need nothing at all. See the note in web/health.py.
     install_mac_service "transcript-backend" "LLM Transcription - ${TRANSCRIPT_ENGINE}"             "${TRANSCRIPT_SCRIPT}"
-    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-        install_mac_service "honcho-api"     "Local Honcho Memory API"                             "start-honcho-api.sh" \
-            "chat-proxy ${_embed_upstream}"
-        install_mac_service "honcho-deriver" "Local Honcho Memory Deriver"                         "start-honcho-deriver.sh" \
-            "honcho-api chat-proxy ${_embed_upstream}"
-    fi
 
     # Fix glmocr-sdk plist for on-failure restart
     _glmocr_plist="$(svc_plist_path "glmocr-sdk")"
@@ -700,9 +609,6 @@ elif is_mac; then
 
     # Enable default services, disable non-default
     DEFAULT_BOOT_SERVICES=(llm-manager chat-backend-dense chat-proxy embed rerank task)
-    if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-        DEFAULT_BOOT_SERVICES+=(honcho-api honcho-deriver)
-    fi
     NON_DEFAULT_SERVICES=(ocr glmocr-sdk)
     for svc in "${NON_DEFAULT_SERVICES[@]}"; do
         svc_disable "${svc}" 2>/dev/null || true
@@ -710,10 +616,6 @@ elif is_mac; then
     for svc in "${DEFAULT_BOOT_SERVICES[@]}"; do
         svc_enable "${svc}"
     done
-fi
-
-if [[ "${HONCHO_ENABLED:-off}" == "on" && "${HONCHO_CONFIGURE_HERMES:-on}" == "on" && -d "${STACK_DIR}/hermes" ]]; then
-    SERVICE_USER="${SERVICE_USER}" SERVICE_GROUP="${SERVICE_GROUP}" bash "${STACK_DIR}/scripts/configure-hermes-honcho.sh" || true
 fi
 
 if [[ "${EUID}" -eq 0 && -d /usr/local/bin ]]; then

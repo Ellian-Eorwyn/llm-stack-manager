@@ -35,8 +35,8 @@ Three properties made this worth adopting over a proxy of our own:
 
 **Requests already carry the routing key.** The router dispatches on the `model`
 field in the request body, and every caller in this stack already sends the
-right name — `llm-chat-proxy.py` forces `model = "embed"` on embeddings,
-`config/glmocr-sdk.json` sends `"ocr"`, `config/honcho.env` sends `embed`.
+right name — `llm-chat-proxy.py` forces `model = "embed"` on embeddings and
+`config/glmocr-sdk.json` sends `"ocr"`.
 Nothing had to change about what anyone sends.
 
 **Concurrency is handled.** The GLM-OCR SDK fans a document out to 16 workers
@@ -55,7 +55,7 @@ One unit, `llama-router`, running `llama-server` in router mode against a preset
 rendered from the config keys that already existed:
 
 ```
-chat-proxy, honcho ──▶ :8005 ─┐
+chat-proxy         ──▶ :8005 ─┐
 rerank clients      ──▶ :8006 ─┼─ nginx ─▶ 127.0.0.1:8013  llama-router
 task clients        ──▶ :8007 ─┤                                │
 glmocr-sdk, Flask   ──▶ :8009 ─┘                    [embed] [ocr] [rank] [task]
@@ -154,14 +154,15 @@ and `ocr` together in whatever is free.
 There is no way to express "2 GB of models" to it. Size the cap against measured
 free VRAM, and use `1` for strict one-at-a-time.
 
-The other live risk is Honcho. `config/honcho.env` points its embeddings at
-`127.0.0.1:8005` with `EMBED_MESSAGES=true`, so its deriver embeds every message
-as background work. With Honcho running, that is a continuous unattended load
-trigger that will evict OCR seconds after it loads. The way out is to keep
-Honcho's embedding model outside the pool — a dedicated `embed` unit with
-`EMBED` left out of `MODEL_ROUTER_MEMBERS` — so its continuous background load
-never touches the pooled models. (This used to recommend pointing Honcho at a
-second embedding slot on 8011; that slot has been retired.)
+The other live risk is any *continuous unattended* embedding load. A client
+that embeds in the background — indexing a corpus, deriving memory from every
+message — keeps triggering `embed`, which will evict OCR seconds after it loads
+and leave both models thrashing. Two ways out: keep that client's embedding
+model outside the pool, by leaving `EMBED` out of `MODEL_ROUTER_MEMBERS` and
+running a dedicated `embed` unit, or set `EMBED_LOAD_ON_STARTUP=on` with a cap
+of at least 2 so the embedding model is resident rather than repeatedly
+reloaded. The second is cheaper when embeddings dominate the traffic, which they
+usually do.
 
 ## 8. Adding a member
 

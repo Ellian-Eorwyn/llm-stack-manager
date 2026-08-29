@@ -169,8 +169,5 @@ echo "  http://localhost:8005/v1  - embeddings"
 echo "  http://localhost:8006/v1  - reranker"
 echo "  http://localhost:8007/v1  - task model"
 echo "  http://localhost:8009/v1  - OCR (start ocr service when needed)"
-if [[ "${HONCHO_ENABLED:-off}" == "on" ]]; then
-    echo "  ${HONCHO_URL:-http://localhost:${HONCHO_PORT}}      - Honcho memory"
-fi
 echo ""
 echo "Active default chat backend: ${DEFAULT_CHAT_BACKEND}"

@@ -17,20 +17,6 @@
         "-DCMAKE_BUILD_TYPE=Release"
       ],
       "require_gpu": true
-    },
-    {
-      "name": "honcho",
-      "type": "git-uv",
-      "repo": "https://github.com/plastic-labs/honcho.git",
-      "ref": "main",
-      "path": "deps/honcho",
-      "uv_args": [
-        "sync",
-        "--frozen",
-        "--no-group",
-        "dev"
-      ],
-      "enabled_env": "HONCHO_ENABLED"
     }
   ]
 }

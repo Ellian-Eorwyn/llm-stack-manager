@@ -19,8 +19,8 @@ So health is assembled from four inputs rather than one:
 
   * the systemd unit state, now including `failed` (see `ServiceManager.state`);
   * a readiness probe against the port the service actually serves — `/props`
-    for llama.cpp backends, `/v1/models` for the proxies, `/health` for the SDK
-    and Honcho, a TCP connect for Playwright;
+    for llama.cpp backends, `/v1/models` for the proxies, `/health` for the
+    SDK, a TCP connect for Playwright;
   * the upstreams it declares, so a service whose dependency is down reports
     `degraded` instead of `active`;
   * an expectation, recorded when the operator starts or stops it, so an
@@ -107,9 +107,8 @@ def _llama_probes() -> dict[str, dict]:
 
 
 # What "ready" means for each service. A service with no entry here is judged on
-# its unit state and upstreams alone — `honcho-deriver` is a worker with no
-# listening socket, and `searxng` is already a composite of uwsgi, nginx and a
-# socket file reported through its own manager.
+# its unit state and upstreams alone — `searxng` is a composite of uwsgi, nginx
+# and a socket file already reported through its own manager.
 SERVICE_PROBES = _llama_probes() | {
     "chat-proxy": {
         "kind": "http", "path": "/v1/models",
@@ -123,10 +122,6 @@ SERVICE_PROBES = _llama_probes() | {
         "kind": "http", "path": "/health",
         "host_key": "GLMOCR_SDK_HOST", "port_key": "GLMOCR_SDK_PORT", "default_port": "5002",
         "expect_field": ("status", "ok"),
-    },
-    "honcho-api": {
-        "kind": "http", "path": "/health",
-        "host_key": "HONCHO_HOST", "port_key": "HONCHO_PORT", "default_port": "8090",
     },
     "playwright-server": {
         "kind": "tcp",
@@ -164,8 +159,6 @@ SERVICE_DEPENDENCIES = {
     "chat-proxy": [["chat-backend-dense"]],
     "chat-proxy2": [["chat-backend2"]],
     "glmocr-sdk": [["ocr"]],
-    "honcho-api": [["chat-proxy"], ["embed"]],
-    "honcho-deriver": [["honcho-api"]],
 }
 
 # What those upstreams become when `llama-router` owns the models instead. The
@@ -177,7 +170,6 @@ SERVICE_DEPENDENCIES = {
 # `setup_engine.COMPONENT_DEPENDENCIES`. Router mode is a runtime choice.
 ROUTER_DEPENDENCY_OVERRIDES = {
     "glmocr-sdk": [["llama-router"]],
-    "honcho-api": [["chat-proxy"], ["llama-router", "embed"]],
 }
 
 # `transcript-backend` deliberately appears in neither map. Its local engines —
@@ -205,8 +197,6 @@ ENABLED_FLAGS = {
     "glmocr-sdk": "GLMOCR_SDK_ENABLED",
     "searxng": "SEARXNG_ENABLED",
     "playwright-server": "PLAYWRIGHT_ENABLED",
-    "honcho-api": "HONCHO_ENABLED",
-    "honcho-deriver": "HONCHO_ENABLED",
     "transcript-backend": "TRANSCRIPT_ENABLED",
 }
 

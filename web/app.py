@@ -145,8 +145,6 @@ SERVICES = [
     {"group": "auxiliary", "name": "glmocr-sdk",       "label": "OCR SDK",      "desc": "Local GLM-OCR layout/PDF parser",       "ports": "5002", "config_section": "GLM-OCR SDK"},
     {"group": "auxiliary", "name": "llama-router",     "label": "Model Router", "desc": "Loads the auxiliary models on demand",  "ports": "8013", "config_section": "Model Router"},
     {"group": "auxiliary", "name": "transcript-backend", "label": "Transcription", "desc": "Speech-to-text: faster-whisper, NeMo, HF, router", "ports": "8014", "config_section": "Transcription"},
-    {"group": "auxiliary", "name": "honcho-api",       "label": "Honcho API",   "desc": "Local Honcho memory API",           "ports": "8090"},
-    {"group": "auxiliary", "name": "honcho-deriver",   "label": "Honcho Worker", "desc": "Local Honcho background deriver",   "ports": "worker"},
     {"group": "auxiliary", "name": "searxng",          "label": "SearXNG",      "desc": "Local metasearch engine via uWSGI/nginx", "ports": "/searxng", "config_section": "SearXNG"},
     {"group": "auxiliary", "name": "playwright-server", "label": "Playwright",   "desc": "Remote browser automation WebSocket server", "ports": "3001", "config_section": "Playwright"},
 ]

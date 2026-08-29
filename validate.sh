@@ -73,7 +73,7 @@ skip() {
 echo "============================================================"
 echo " LLM Stack Core Endpoint Validation"
 echo " Config: ${CONFIG}"
-echo " Ports: think=${THINK_PORT} nothink=${NOTHINK_PORT} code=${CODE_PORT} embed=${EMBED_PORT} rerank=${RERANK_PORT} task=${TASK_PORT} honcho=${HONCHO_PORT:-off}"
+echo " Ports: think=${THINK_PORT} nothink=${NOTHINK_PORT} code=${CODE_PORT} embed=${EMBED_PORT} rerank=${RERANK_PORT} task=${TASK_PORT}"
 echo "============================================================"
 echo ""
 
@@ -181,23 +181,6 @@ if [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]] && should_check transcript-backend
     check "Transcription reports its engines" "${TRANSCRIPT_ENGINES_RESP}" "${TRANSCRIPT_ACTIVE_ENGINE:-faster-whisper}"
 else
     skip "Transcription sidecar"
-fi
-
-if [[ "${HONCHO_ENABLED:-off}" == "on" ]] && should_check honcho-api; then
-    echo ""
-    echo "--- Honcho endpoint (port ${HONCHO_PORT}) ---"
-    HONCHO_RESP=$(curl -sf "${HONCHO_URL:-${BASE}:${HONCHO_PORT}}/health" 2>&1 || true)
-    check "Honcho health endpoint responds" "${HONCHO_RESP}" '"status"'
-
-    if [[ -f "${HONCHO_ENV_FILE:-${STACK_DIR}/config/honcho.env}" ]]; then
-        check "Honcho env file exists" "ok" "ok"
-    else
-        check "Honcho env file exists" "missing" "ok"
-    fi
-
-    if [[ -f "${HOME}/.hermes/honcho.json" ]]; then
-        check "Hermes Honcho config points local" "$(sed -n '1,80p' "${HOME}/.hermes/honcho.json" 2>/dev/null || true)" "127.0.0.1"
-    fi
 fi
 
 echo ""

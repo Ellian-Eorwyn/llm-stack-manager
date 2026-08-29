@@ -22,8 +22,8 @@ collapsed into `inactive`. There was a `failed` pill in the CSS that nothing
 could ever produce for a systemd service.
 
 **Half the stack is off at any time and nothing said whether that was meant.**
-`ocr`, `rerank`, `task`, `chat-backend2`, `honcho-api` and
-`honcho-deriver` were all inactive, rendered identically to a service that had
+`ocr`, `rerank`, `task` and `chat-backend2` were all inactive, rendered
+identically to a service that had
 just died.
 
 ## 2. What replaced it
@@ -91,7 +91,7 @@ Three plausible sources were checked live and all three were wrong:
 | Candidate | Why not |
 | --- | --- |
 | `systemctl is-enabled` | reads `disabled` for `chat-backend-dense` and `chat-proxy` while they are running |
-| `*_ENABLED` env flags | read `on` for `glmocr-sdk`, `searxng` and `honcho` while those are stopped — they mean "configured", not "should be up" |
+| `*_ENABLED` env flags | read `on` for `glmocr-sdk` and `searxng` while those are stopped — they mean "configured", not "should be up" |
 | `setup_engine` component selection | `config/install-state.json` does not exist, so it falls back to `CORE_DEFAULTS` |
 
 So the manager records it: a successful start or restart from the UI records
@@ -125,7 +125,7 @@ count per poll.
 It used to fail on any service that was off, which made a clean run mean
 "everything is installed" rather than "everything that should be running works".
 It now reads the same expectation file and skips what is deliberately down,
-generalising the `HONCHO_ENABLED` special case it already had. It also probes
+generalising the one `*_ENABLED` special case it already had. It also probes
 the backend on `CHAT_BACKEND_PORT` directly — checking only the proxy ports
 meant a backend that had died behind a live proxy read as a proxy fault — and
 warns when the OCR SDK is up without its backend.

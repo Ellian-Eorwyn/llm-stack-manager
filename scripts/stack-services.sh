@@ -39,12 +39,19 @@ STACK_SUPPORT_SERVICES=(
 # Units this stack no longer installs, kept by name because a host that predates
 # their retirement still has them and they must be stopped rather than left
 # running against a launcher that no longer exists.
+#
+# honcho-api and honcho-deriver joined them when the local memory service was
+# dropped. They are the reason this list is not merely cosmetic: both were
+# `enabled`, so systemd would have started them at every boot independently of
+# any of this stack's own scripts, against launchers that no longer exist.
 STACK_RETIRED_SERVICES=(
   think
   nothink
   embed2
   chat-backend
   chat-backend-moe
+  honcho-api
+  honcho-deriver
 )
 
 STACK_CORE_SERVICES=(
@@ -54,8 +61,6 @@ STACK_CORE_SERVICES=(
   llama-router
   glmocr-sdk
   playwright-server
-  honcho-api
-  honcho-deriver
 )
 
 STACK_LEGACY_CORE_SERVICES=(
@@ -93,8 +98,6 @@ STACK_STOPPABLE_SERVICES=(
   llama-router
   glmocr-sdk
   transcript-backend
-  honcho-api
-  honcho-deriver
   "${STACK_LEGACY_CORE_SERVICES[@]}"
 )
 
@@ -106,8 +109,6 @@ STACK_SELECTABLE_UNITS=(
   llama-router
   transcript-backend
   playwright-server
-  honcho-api
-  honcho-deriver
 )
 
 # What `update.sh` restarts after a code update. Everything the manager owns
@@ -120,8 +121,6 @@ STACK_UPDATE_RESTART_SERVICES=(
   glmocr-sdk
   transcript-backend
   playwright-server
-  honcho-api
-  honcho-deriver
 )
 
 # True when $1 is one of the remaining arguments. bash 3.2 has no associative

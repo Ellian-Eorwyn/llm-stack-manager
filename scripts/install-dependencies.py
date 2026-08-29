@@ -254,6 +254,11 @@ def install_dependency(dep: dict, *, update: bool, force: bool, jobs: int) -> No
 
     print(f"\n== {name} ==", flush=True)
     path = install_git_checkout(dep, update=update, force=force)
+    # `git-uv` and `enabled_env` have no user in the shipped manifest since the
+    # local memory service was dropped -- llama.cpp is the only dependency, and
+    # it is unconditional. Both are kept as the manifest's extension points
+    # rather than deleted along with their one caller; named here so the next
+    # person knows they are untested by anything this repo installs.
     if dep_type == "git-cmake":
         build_cmake(dep, jobs)
     elif dep_type == "git-uv":

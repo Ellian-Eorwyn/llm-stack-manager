@@ -30,7 +30,6 @@ has_component ocr && ! router_owns OCR && START_UNITS+=(ocr)
 has_component glmocr-sdk && START_UNITS+=(glmocr-sdk)
 has_component transcribe && [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]] && START_UNITS+=(transcript-backend)
 has_component playwright && START_UNITS+=(playwright-server)
-has_component honcho && START_UNITS+=(honcho-api honcho-deriver)
 
 for unit in "${ALL_UNITS[@]}"; do
   systemctl disable --now "${unit}" 2>/dev/null || true

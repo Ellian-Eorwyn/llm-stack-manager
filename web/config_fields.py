@@ -253,6 +253,17 @@ DEPRECATED_ENV_KEY_NOTES = {
         for _legacy in LEGACY_ENV_KEY_MAP
         if _legacy.startswith("WHISPERKIT_")
     },
+    **{
+        _key: "configured the local Honcho memory service, which this stack no longer runs"
+        for _key in (
+            "HONCHO_ENABLED", "HONCHO_HOST", "HONCHO_PORT", "HONCHO_URL",
+            "HONCHO_WORKSPACE", "HONCHO_USER_PEER", "HONCHO_AI_PEER",
+            "HONCHO_INSTALL_DATASTORES", "HONCHO_CONFIGURE_HERMES",
+            "HONCHO_LLM_BASE_URL", "HONCHO_LLM_MODEL", "HONCHO_EMBED_BASE_URL",
+            "HONCHO_EMBED_MODEL", "HONCHO_EMBED_VECTOR_DIMENSIONS",
+            "HONCHO_DIR", "HONCHO_ENV_FILE",
+        )
+    },
 }
 DEFAULT_DEPRECATION_NOTE = "named for the model architecture a slot happened to hold"
 
@@ -682,21 +693,6 @@ CONFIG_FIELDS = [
     {"section": "GLM-OCR SDK", "key": "GLMOCR_PROMPT_TABLE",       "label": "Table Prompt",         "type": "text"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_PROMPT_FORMULA",     "label": "Formula Prompt",       "type": "text"},
     {"section": "GLM-OCR SDK", "key": "GLMOCR_ADVANCED_CONFIG_JSON", "label": "Advanced SDK Config", "type": "text", "hint": "JSON object deep-merged into the generated SDK config"},
-    # Honcho
-    {"section": "Honcho",     "key": "HONCHO_ENABLED",                 "label": "Enabled",              "type": "select", "options": ["on", "off"]},
-    {"section": "Honcho",     "key": "HONCHO_HOST",                    "label": "Listen Host",          "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_PORT",                    "label": "Port",                 "type": "number"},
-    {"section": "Honcho",     "key": "HONCHO_URL",                     "label": "Base URL",             "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_WORKSPACE",               "label": "Workspace",            "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_USER_PEER",               "label": "User Peer",            "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_INSTALL_DATASTORES",        "label": "Manage Data Stores",    "type": "select", "options": ["on", "off"]},
-    {"section": "Honcho",     "key": "HONCHO_CONFIGURE_HERMES",          "label": "Configure Hermes",     "type": "select", "options": ["on", "off"]},
-    {"section": "Honcho",     "key": "HONCHO_AI_PEER",                 "label": "AI Peer",              "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_LLM_BASE_URL",            "label": "LLM Base URL",         "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_LLM_MODEL",               "label": "LLM Model",            "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_EMBED_BASE_URL",          "label": "Embedding Base URL",   "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_EMBED_MODEL",             "label": "Embedding Model",      "type": "text"},
-    {"section": "Honcho",     "key": "HONCHO_EMBED_VECTOR_DIMENSIONS", "label": "Embedding Dimensions", "type": "number"},
     # Graphiti
     {"section": "Graphiti",    "key": "GRAPHITI_PUBLIC_URL",        "label": "Public URL",           "type": "text",   "hint": "URL used by external tools (OpenWebUI, OpenClaw, etc.)"},
     {"section": "Graphiti",    "key": "GRAPHITI_HOST",              "label": "Listen Host",          "type": "text"},
@@ -1269,20 +1265,6 @@ RESTART_HINTS = {
     "RERANK_JINJA":              ["rerank"],
     "RERANK_REASONING_FORMAT":   ["rerank"],
     "RERANK_FIT":                ["rerank"],
-    "HONCHO_ENABLED": ["honcho-api", "honcho-deriver"],
-    "HONCHO_INSTALL_DATASTORES": ["honcho-api", "honcho-deriver"],
-    "HONCHO_CONFIGURE_HERMES": ["honcho-api", "honcho-deriver"],
-    "HONCHO_HOST": ["honcho-api", "honcho-deriver"],
-    "HONCHO_PORT": ["honcho-api", "honcho-deriver"],
-    "HONCHO_URL": ["honcho-api", "honcho-deriver"],
-    "HONCHO_WORKSPACE": ["honcho-api", "honcho-deriver"],
-    "HONCHO_USER_PEER": ["honcho-api", "honcho-deriver"],
-    "HONCHO_AI_PEER": ["honcho-api", "honcho-deriver"],
-    "HONCHO_LLM_BASE_URL": ["honcho-api", "honcho-deriver"],
-    "HONCHO_LLM_MODEL": ["honcho-api", "honcho-deriver"],
-    "HONCHO_EMBED_BASE_URL": ["honcho-api", "honcho-deriver"],
-    "HONCHO_EMBED_MODEL": ["honcho-api", "honcho-deriver"],
-    "HONCHO_EMBED_VECTOR_DIMENSIONS": ["honcho-api", "honcho-deriver"],
     "GRAPHITI_PUBLIC_URL":       ["graphiti"],
     "GRAPHITI_HOST":             ["graphiti"],
     "GRAPHITI_PORT":             ["graphiti"],
