@@ -241,6 +241,79 @@ class FleetUiTests(unittest.TestCase):
         self.assertIn("FLEET_PROXIED.includes(path)", self.fleet)
         self.assertNotIn("startsWith('/api/')", self.fleet)
 
+    def test_the_two_proxied_paths_that_carry_a_name_are_anchored(self):
+        """`/api/service/<n>/<a>` and `/api/saved-configs/<n>/apply` cannot be
+        exact strings, so they are patterns -- and a pattern that is not
+        anchored at both ends is a prefix match wearing a disguise.
+
+        `/api/saved-configs/<name>/patch` and `/default` are local-only: the
+        control API does not implement them, so a loose rule would rewrite them
+        onto hub routes that do not exist.
+        """
+        for rule in re.findall(r"^\s*(/\^.*\$/),\s*$", self.fleet, re.M):
+            with self.subTest(rule):
+                self.assertTrue(rule.startswith("/^") and rule.endswith("$/"), rule)
+        self.assertIn("FLEET_PROXIED_PATTERNS", self.fleet)
+        self.assertNotIn("saved-configs/[^/]+$", self.fleet)
+
+    def test_the_write_half_is_gated_on_the_hubs_own_answer(self):
+        """`controllable` folds in the version check, which needs a round trip.
+        The registry only knows that control was *requested*, so a page that
+        read `control` would offer an editable form the hub then refuses."""
+        self.assertIn("controllable", self.fleet)
+        self.assertIn("fleetControllable", self.fleet)
+
+    def test_a_tab_is_local_only_unless_it_says_otherwise(self):
+        """`data-fleet-control` is additive, so the default for a new tab stays
+        "acts on this machine" rather than "proxy it and hope"."""
+        self.assertIn("data-fleet-control", self.template)
+        self.assertIn("hasAttribute('data-fleet-control')", self.fleet)
+        marked = re.findall(r'data-tab="(\w+)"[^>]*data-fleet-control', self.template)
+        self.assertEqual(marked, ["config"])
+
+    def test_a_dropped_key_is_reported_as_a_failure(self):
+        """`allowed_config_keys` unions in the *target's* env file, so a hub one
+        version ahead can have a setting silently discarded and still be told
+        the save worked."""
+        scheduling = (STATIC / "js" / "scheduling.js").read_text()
+        self.assertIn("ignored_keys", scheduling)
+        # Before the pre-flight override, not after: forcing overrides a
+        # prediction, and a dropped key is not one.
+        self.assertLess(scheduling.index("d.ignored_keys"),
+                        scheduling.index("Save it anyway?"))
+
+    def test_a_remote_secret_is_never_posted_back_as_an_empty_string(self):
+        """`masked_config` reports a secret as set and never as itself, so its
+        value arrives null. Left in an enabled input, the next section save
+        would write an empty string over a live credential."""
+        config = (STATIC / "js" / "config.js").read_text()
+        self.assertIn("data-remote-skip", config)
+        scheduling = (STATIC / "js" / "scheduling.js").read_text()
+        self.assertIn("closest('[data-remote-skip]')", scheduling)
+
+    def test_switching_back_to_this_machine_clears_the_other_ones_fields(self):
+        config = (STATIC / "js" / "config.js").read_text()
+        self.assertIn("clearRemoteConfigForm", config)
+        self.assertIn("cfg-remote-extra", config)
+
+    def test_a_reshaped_control_can_be_put_back(self):
+        """Replacing a control is destructive and this page is never re-served,
+        so a peer that declares a field differently would otherwise leave its
+        widget behind for every host selected afterwards, including this one."""
+        config = (STATIC / "js" / "config.js").read_text()
+        self.assertIn("cfgOriginalControls", config)
+        self.assertIn("restoreReshapedFields", config)
+        # Called on the way out *and* before reconciling against the next host.
+        self.assertGreaterEqual(config.count("restoreReshapedFields()"), 2)
+
+    def test_a_field_the_peer_shapes_differently_is_rebuilt_from_its_own_words(self):
+        """Two hosts can share a key set and still disagree about a field's type
+        or its options -- which changes `fields_digest` and neither key set can
+        see. Rendering the local widget would offer choices the target rejects."""
+        config = (STATIC / "js" / "config.js").read_text()
+        self.assertIn("sameShapeAsDeclared", config)
+        self.assertIn("fields_digest", (STATIC / ".." / "control_api.py").read_text())
+
     def test_the_selection_does_not_outlive_the_tab(self):
         """A remote selection that survives a restart, or that can be
         bookmarked and shared, is how someone edits the wrong machine believing

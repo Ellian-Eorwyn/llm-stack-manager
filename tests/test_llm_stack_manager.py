@@ -1478,7 +1478,21 @@ class RouteInventoryTests(unittest.TestCase):
         # unauthenticated port would let anything that can reach 8077 issue
         # authenticated requests to every machine in the fleet.
         ("/api/fleet", ("GET",), "api_fleet"),
+        # The write half. Each mirrors the local path it stands in for so the
+        # page's own call sites can be rewritten rather than duplicated, which
+        # is why `service` here is singular where the control API says
+        # `services`.
+        ("/api/fleet/<host_id>/config", ("GET",), "api_fleet_config"),
+        ("/api/fleet/<host_id>/config", ("POST",), "api_fleet_config_save"),
+        ("/api/fleet/<host_id>/config/fields", ("GET",), "api_fleet_config_fields"),
+        ("/api/fleet/<host_id>/config/preflight", ("POST",), "api_fleet_config_preflight"),
         ("/api/fleet/<host_id>/logs", ("GET",), "api_fleet_logs"),
+        ("/api/fleet/<host_id>/saved-configs", ("GET",), "api_fleet_saved_configs"),
+        ("/api/fleet/<host_id>/saved-configs/<name>/apply", ("POST",),
+         "api_fleet_saved_config_apply"),
+        ("/api/fleet/<host_id>/service/<name>/<action>", ("POST",),
+         "api_fleet_service_action"),
+        ("/api/fleet/<host_id>/services", ("GET",), "api_fleet_services"),
         ("/api/fleet/<host_id>/snapshot", ("GET",), "api_fleet_snapshot"),
         ("/api/fleet/<host_id>/status", ("GET",), "api_fleet_status"),
         ("/api/fleet/hosts", ("GET",), "api_fleet_hosts_list"),

@@ -586,6 +586,11 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   gap: 14px;
   margin-bottom: 20px;
 }
+.cfg-remote-note { border-left: 3px solid var(--accent); }
+.cfg-remote-note .cfg-remote-list { margin: 6px 0 0 18px; padding: 0; }
+.cfg-remote-note .cfg-remote-list li { margin: 2px 0; }
+.cfg-remote-bespoke { font-size: 12px; color: var(--muted); padding: 7px 0; }
+.cfg-panel.cfg-remote-extra { border: 1px dashed var(--border); }
 .config-note {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1005,7 +1010,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     <button class="tab-btn" data-tab="searxng" data-local-only="1"><span class="nav-icon">X</span><span class="nav-label">SearXNG</span></button>
     <button class="tab-btn" data-tab="playwright" data-local-only="1"><span class="nav-icon">P</span><span class="nav-label">Playwright</span></button>
     <button class="tab-btn" data-tab="transcribe" data-local-only="1"><span class="nav-icon">T</span><span class="nav-label">Transcription</span></button>
-    <button class="tab-btn" data-tab="config" data-local-only="1"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
+    <button class="tab-btn" data-tab="config" data-local-only="1" data-fleet-control="1"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
     <button class="tab-btn" data-tab="logs" data-local-only="1"><span class="nav-icon">L</span><span class="nav-label">Logs</span></button>
   </div>
   <div class="side-nav-group side-nav-secondary" id="config-side-nav">
@@ -1707,6 +1712,9 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       <strong>How To Use This Page</strong>
       <p>Each section saves independently. Primary Backend and Secondary Backend each have their own proxy and model-routed aggregate endpoint.</p>
     </div>
+    <!-- What this form is, when it is not this machine's. Written by
+         `renderRemoteSchemaNote`; empty and hidden on the local page. -->
+    <div class="config-note cfg-remote-note" id="cfg-remote-note" hidden></div>
   </div>
 
   {# Not every shadowed key has a field to sit under — the CHAT_SECONDARY_*
