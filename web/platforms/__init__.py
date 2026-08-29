@@ -12,6 +12,7 @@ Nothing in this package may import `app`.
 
 from __future__ import annotations
 
+import os
 import sys
 
 from . import base
@@ -23,8 +24,22 @@ Platform = base.Platform
 _ACTIVE: base.Platform | None = None
 
 
+#: The same override `scripts/lib/backend-preflight.sh` reads, and it has to be
+#: the same one. The shell half of the launcher vets placement against
+#: `${LLM_STACK_PLATFORM:-$(uname -s)}` while the Python half decides whether a
+#: `--device` name belongs to this build; if only one of them honoured it, a
+#: launcher run under the override would produce a command line half of which
+#: believed it was on a different machine. It also lets either platform's code
+#: path be exercised on either runner from the shell side, which is what
+#: `platform_harness` does from the Python side.
+PLATFORM_ENV_KEY = "LLM_STACK_PLATFORM"
+
+
 def detect() -> base.Platform:
     """A fresh adapter for this host, without touching the cached one."""
+    named = (os.environ.get(PLATFORM_ENV_KEY) or "").strip().lower()
+    if named:
+        return DarwinPlatform() if named == "darwin" else LinuxPlatform()
     if sys.platform == "darwin":
         return DarwinPlatform()
     return LinuxPlatform()

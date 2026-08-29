@@ -24,6 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "web"))
 import backends  # noqa: E402
 from backends import llamacpp  # noqa: E402
 from backends.slots import SLOTS  # noqa: E402
+from backends.spec import Flag, Slot, Toggle, lookup  # noqa: E402
 
 
 def flags(argv: list[str]) -> dict:
@@ -187,6 +188,141 @@ class EngineSelectionTests(unittest.TestCase):
     def test_asking_mlx_for_a_slot_it_cannot_serve_says_so(self):
         with as_darwin(), self.assertRaises(SystemExit):
             backends.build_command("rerank", dict(BASE, RERANK_ENGINE="mlx"))
+
+
+class PrefixChainTests(unittest.TestCase):
+    """A slot may answer to more than one prefix.
+
+    The primary chat slot resolves `CHAT_PRIMARY_X` and then `CHAT_X` for forty
+    keys. Writing forty two-entry chains out would be honest but unreadable, so
+    the slot carries the legacy prefix instead and every relative key is tried
+    under each in turn.
+
+    Five keys need more than that -- the ones that were once spelled
+    `CHAT_DENSE_*` -- and they get an explicit chain rather than a third prefix
+    that would silently start honouring `CHAT_DENSE_TEMP`, a key nothing in the
+    tree declares.
+    """
+
+    SLOT = Slot(name="demo", prefix="DEMO_ONE", legacy_prefixes=("DEMO",),
+                model_keys=("!DEMO_MODEL_PATH",), alias_default="demo",
+                port_default="9000")
+
+    def test_the_slots_own_prefix_wins(self):
+        self.assertEqual(
+            lookup({"DEMO_ONE_TEMP": "0.5", "DEMO_TEMP": "1.0"}, ("TEMP",), self.SLOT.prefixes),
+            "0.5")
+
+    def test_the_legacy_prefix_is_read_behind_it(self):
+        self.assertEqual(lookup({"DEMO_TEMP": "1.0"}, ("TEMP",), self.SLOT.prefixes), "1.0")
+
+    def test_an_absolute_key_is_not_prefixed_at_all(self):
+        self.assertEqual(lookup({"LISTEN_HOST": "0.0.0.0"}, ("!LISTEN_HOST",),
+                                self.SLOT.prefixes), "0.0.0.0")
+
+    def test_nothing_set_is_none_rather_than_empty(self):
+        # None and "" are different answers: "" is a value someone chose.
+        self.assertIsNone(lookup({}, ("TEMP",), self.SLOT.prefixes))
+
+    def test_a_single_prefix_slot_is_unchanged(self):
+        self.assertEqual(SLOTS["embed"].prefixes, ("EMBED",))
+
+
+class ClearedMeansClearedTests(unittest.TestCase):
+    """`${X:-d}` and `${X-d}` are two different settings.
+
+    The launchers use the first for required values, so an empty one lands on a
+    working default, and the second for the optional paths and knobs, so
+    clearing the new key means cleared. Reading the second as the first is why
+    `--fit-ctx` kept being passed alongside `--fit off` after it had been
+    cleared in the UI -- and a prefix chain would reintroduce it under two key
+    names instead of one.
+    """
+
+    PREFIXES = ("DEMO_ONE", "DEMO")
+
+    def test_an_emptied_key_stops_the_search_when_empty_is_set(self):
+        self.assertEqual(
+            lookup({"DEMO_ONE_FIT_CTX": "", "DEMO_FIT_CTX": "8192"},
+                   ("FIT_CTX",), self.PREFIXES, empty_is_set=True),
+            "")
+
+    def test_an_emptied_key_falls_through_when_it_is_not(self):
+        self.assertEqual(
+            lookup({"DEMO_ONE_FIT_CTX": "", "DEMO_FIT_CTX": "8192"},
+                   ("FIT_CTX",), self.PREFIXES),
+            "8192")
+
+    def test_an_absent_key_falls_through_either_way(self):
+        for empty_is_set in (True, False):
+            with self.subTest(empty_is_set=empty_is_set):
+                self.assertEqual(
+                    lookup({"DEMO_FIT_CTX": "8192"}, ("FIT_CTX",), self.PREFIXES,
+                           empty_is_set=empty_is_set),
+                    "8192")
+
+    def test_a_cleared_flag_is_omitted_rather_than_passed_empty(self):
+        flag = Flag("--fit-ctx", ("FIT_CTX",), empty_is_set=True)
+        self.assertEqual(flag.resolve({"DEMO_ONE_FIT_CTX": ""}, self.PREFIXES), [])
+
+    def test_a_toggle_reads_the_legacy_prefix(self):
+        toggle = Toggle("--metrics", "METRICS", when="on", default="off")
+        self.assertEqual(toggle.resolve({"DEMO_METRICS": "on"}, self.PREFIXES), ["--metrics"])
+        self.assertEqual(toggle.resolve({"DEMO_ONE_METRICS": "off", "DEMO_METRICS": "on"},
+                                        self.PREFIXES), [])
+
+
+class SlotKeyOverrideTests(unittest.TestCase):
+    """Ports, aliases and mmproj paths do not all follow the prefix.
+
+    The chat slots bind `CHAT_BACKEND_PORT`, not `CHAT_PRIMARY_PORT`, and a
+    registry that derived the key from the prefix would move both backends to a
+    port nothing else in the stack talks to.
+    """
+
+    def _slot(self, **kwargs):
+        return Slot(name="demo", prefix="DEMO", model_keys=("!DEMO_MODEL_PATH",),
+                    alias_default="demo", port_default="9000", **kwargs)
+
+    def test_a_slot_may_name_the_port_key_itself(self):
+        slot = self._slot(port_keys=("!OTHER_BACKEND_PORT",))
+        with as_linux():
+            argv = llamacpp.build(slot, dict(BASE, OTHER_BACKEND_PORT="8010"))
+        self.assertEqual(flags(argv)["--port"], "8010")
+
+    def test_the_alias_resolves_through_a_chain_before_its_default(self):
+        slot = self._slot(alias_keys=("MODEL_NAME", "!LEGACY_ALIAS"))
+        with as_linux():
+            self.assertEqual(flags(llamacpp.build(slot, dict(BASE)))["--alias"], "demo")
+            self.assertEqual(
+                flags(llamacpp.build(slot, dict(BASE, LEGACY_ALIAS="old")))["--alias"], "old")
+            self.assertEqual(
+                flags(llamacpp.build(slot, dict(BASE, LEGACY_ALIAS="old",
+                                                DEMO_MODEL_NAME="new")))["--alias"], "new")
+
+    def test_a_key_chain_overrides_the_shared_one_for_this_slot_only(self):
+        # The five keys once spelled CHAT_DENSE_* are the reason this exists,
+        # and they are why the chain is written absolute: a relative key is
+        # tried under every prefix before the next entry is reached, so mixing
+        # the two forms would put the legacy prefix ahead of the middle key.
+        slot = self._slot(legacy_prefixes=("SHARED",),
+                          key_chains={"CTX_SIZE": ("!DEMO_CTX_SIZE", "!MIDDLE_CTX_SIZE",
+                                                   "!SHARED_CTX_SIZE")})
+        with as_linux():
+            f = flags(llamacpp.build(slot, dict(BASE, MIDDLE_CTX_SIZE="4096",
+                                                SHARED_CTX_SIZE="8192")))
+        self.assertEqual(f["--ctx-size"], "4096")
+        # And only for this slot: the shared COMMON_FLAGS entry is untouched,
+        # so no other slot starts reading the key this one was given.
+        with as_linux():
+            f = flags(llamacpp.build(SLOTS["embed"], dict(BASE, MIDDLE_CTX_SIZE="4096")))
+        self.assertNotEqual(f.get("--ctx-size"), "4096")
+
+    def test_a_slot_default_still_applies_under_an_overridden_chain(self):
+        slot = self._slot(defaults={"CTX_SIZE": "2048"},
+                          key_chains={"CTX_SIZE": ("!ONLY_CTX_SIZE",)})
+        with as_linux():
+            self.assertEqual(flags(llamacpp.build(slot, dict(BASE)))["--ctx-size"], "2048")
 
 
 if __name__ == "__main__":

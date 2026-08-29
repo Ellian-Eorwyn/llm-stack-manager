@@ -657,29 +657,24 @@ class MetricsFlagTests(unittest.TestCase):
         self.assertEqual(manager.RESTART_HINTS["EMBED_METRICS"], ["embed"])
         self.assertEqual(manager.RESTART_HINTS["TASK_METRICS"], ["task"])
 
-    def test_launchers_still_written_in_shell_gate_the_flag_on_the_env_key(self):
-        root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
-        for script, prefix in [
-            ("start-chat-backend2.sh", "CHAT2"),
-            ("start-chat-backend-dense.sh", "CHAT"),
-            ("start-task.sh", "TASK"),
-        ]:
-            text = (root / script).read_text()
-            self.assertIn(f'"${{{prefix}_METRICS:-on}}" == "on" ]] && OPTS+=(--metrics)', text, script)
+    def test_every_slot_gates_the_flag_on_its_own_env_key(self):
+        """Asserted as behaviour rather than as source text.
 
-    def test_consolidated_slots_gate_the_flag_on_the_env_key(self):
-        """The same guarantee for the slots that moved to the registry.
-
-        Asserted as behaviour rather than as source text: the gate is a Toggle
-        in web/backends/slots.py now, and grepping the shell for it would pass
-        for a launcher that never reaches its exec.
+        Half of this used to grep the launchers for the line that emitted
+        `--metrics`. There are no such lines left -- the gate is a Toggle in
+        `web/backends/slots.py` -- and a grep would in any case have passed for
+        a launcher that never reached its exec, which is the failure the
+        launcher harness exists because of.
         """
         env = {"LLAMA_SERVER_BIN": "/bin/llama-server", "LISTEN_HOST": "127.0.0.1",
                "EMBEDDING_MODEL_PATH": "/m.gguf", "RERANKER_MODEL_PATH": "/m.gguf",
-               "OCR_MODEL_PATH": "/m.gguf"}
+               "OCR_MODEL_PATH": "/m.gguf", "CHAT_PRIMARY_MODEL_PATH": "/m.gguf",
+               "CHAT2_MODEL_PATH": "/m.gguf", "TASK_MODEL_PATH": "/m.gguf"}
         with platform_harness.as_linux():
             import backends
-            for slot, prefix in (("embed", "EMBED"), ("rerank", "RERANK"), ("ocr", "OCR")):
+            for slot, prefix in (("embed", "EMBED"), ("rerank", "RERANK"), ("ocr", "OCR"),
+                                 ("chat-backend-dense", "CHAT_PRIMARY"),
+                                 ("chat-backend2", "CHAT2"), ("task", "TASK")):
                 with self.subTest(slot):
                     self.assertIn("--metrics", backends.build_command(slot, dict(env)))
                     self.assertNotIn("--metrics", backends.build_command(
@@ -688,32 +683,29 @@ class MetricsFlagTests(unittest.TestCase):
     def test_mtp_runs_without_a_draft_model(self):
         """Most MTP GGUFs carry their own blk.N.nextn.* head, and llama.cpp
         builds the MTP draft context against the *target* model when no draft
-        is given — the `else if (spec_mtp)` branch of
+        is given -- the `else if (spec_mtp)` branch of
         common_speculative_init_result. Demanding a draft path for draft-mtp
         would exit 1 on precisely the models that need no sidecar.
         """
-        root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
-        for script in [
-            "start-chat-backend2.sh",
-            "start-chat-backend-dense.sh",
-            "start-task.sh",
-        ]:
-            text = (root / script).read_text()
-            gate = next(
-                line for line in text.splitlines()
-                if 'SPEC_METHOD}" == "draft-simple"' in line
-            )
-            self.assertNotIn('"draft-mtp"', gate, script)
+        import backends
+        self.assertNotIn("draft-mtp", backends.speculative.NEEDS_DRAFT_MODEL)
+        args, _said = backends.speculative.build({"X_SPEC_METHOD": "draft-mtp"}, ("X",))
+        self.assertIn("--spec-type", args)
+        self.assertNotIn("--spec-draft-model", args)
 
     def test_thinking_level_reaches_every_chat_launcher(self):
-        root = pathlib.Path(__file__).resolve().parents[1] / "scripts"
-        for script, prefix in [
-            ("start-chat-backend2.sh", "CHAT2"),
-            ("start-chat-backend-dense.sh", "CHAT"),
-        ]:
-            text = (root / script).read_text()
-            self.assertIn(f'"${{{prefix}_REASONING_EFFORT:-}}"', text, script)
-            self.assertIn("add_chat_template_kwargs_opt", text, script)
+        env = {"LLAMA_SERVER_BIN": "/bin/llama-server", "LISTEN_HOST": "127.0.0.1",
+               "CHAT_PRIMARY_MODEL_PATH": "/m.gguf", "CHAT2_MODEL_PATH": "/m.gguf",
+               "TASK_MODEL_PATH": "/m.gguf", "TASK_THINKING": "on"}
+        with platform_harness.as_linux():
+            import backends
+            for slot, prefix in (("chat-backend-dense", "CHAT_PRIMARY"),
+                                 ("chat-backend2", "CHAT2"), ("task", "TASK")):
+                with self.subTest(slot):
+                    argv = backends.build_command(
+                        slot, dict(env, **{f"{prefix}_REASONING_EFFORT": "medium"}))
+                    kwargs = argv[argv.index("--chat-template-kwargs") + 1]
+                    self.assertIn('"reasoning_effort": "medium"', kwargs)
 
     def test_metrics_toggle_is_a_recognised_config_key(self):
         filtered = config_env.filter_config_updates({"CHAT_PRIMARY_METRICS": "off"}, env={})

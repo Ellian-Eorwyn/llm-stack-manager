@@ -4,22 +4,18 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 
 import platforms
 
+from .options import Context
 from .slots import COMMON_FLAGS, COMMON_TOGGLES
-from .spec import Slot
+from .spec import Slot, lookup
 
 
-def _first(env: dict, keys: tuple[str, ...], prefix: str) -> str:
-    for key in keys:
-        name = key[1:] if key.startswith("!") else f"{prefix}_{key}"
-        value = env.get(name)
-        if value not in (None, ""):
-            return str(value)
-    return ""
+def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...],
+           empty_is_set: bool = False) -> str:
+    return lookup(env, keys, prefixes, empty_is_set) or ""
 
 
 def placement_args(slot: Slot, env: dict) -> list[str]:
@@ -50,14 +46,15 @@ def placement_args(slot: Slot, env: dict) -> list[str]:
     if platforms.active().unified_memory:
         return ["--split-mode", "none"]
 
-    mode = str(env.get(f"{slot.prefix}_SPLIT_MODE") or "layer").strip() or "layer"
+    prefixes = slot.prefixes
+    mode = _first(env, ("SPLIT_MODE",), prefixes).strip() or "layer"
     args = ["--split-mode", mode]
-    main_gpu = str(env.get(f"{slot.prefix}_MAIN_GPU") or "").strip()
+    main_gpu = _first(env, ("MAIN_GPU",), prefixes).strip()
     if main_gpu:
         args += ["--main-gpu", main_gpu]
     tensor_split = even_tensor_split(
-        str(env.get(f"{slot.prefix}_TENSOR_SPLIT") or "").strip(),
-        str(env.get(f"{slot.prefix}_GPU_VISIBLE_DEVICES") or "").strip())
+        _first(env, ("TENSOR_SPLIT",), prefixes).strip(),
+        _first(env, ("GPU_VISIBLE_DEVICES",), prefixes).strip())
     # An empty ratio is omitted, never passed as "": llama.cpp reads
     # `--tensor-split ""` as an explicit empty split and refuses it.
     if tensor_split:
@@ -82,16 +79,16 @@ def even_tensor_split(ratio: str, visible_devices: str) -> str:
     return ",".join(["1"] * max(count, 1))
 
 
-def custom_args(env: dict, key: str) -> list[str]:
+def custom_args(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> list[str]:
     """Operator-supplied extra arguments, shell-split.
 
     A JSON list of strings, each split with `shlex` so one entry may carry
     several arguments. Anything unparseable yields nothing rather than raising:
     a malformed custom-args field must not stop a backend from starting.
     """
-    if not key:
+    if not keys:
         return []
-    raw = env.get(key) or ""
+    raw = lookup(env, keys, prefixes) or ""
     if not raw or raw == "[]":
         return []
     try:
@@ -105,25 +102,30 @@ def custom_args(env: dict, key: str) -> list[str]:
     return out
 
 
-def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
-    """The full argv, binary first."""
-    prefix = slot.prefix
+def build(slot: Slot, env: dict, extra: list[str] | None = None,
+          said: list[str] | None = None) -> list[str]:
+    """The full argv, binary first.
+
+    `said` collects what the launcher would have echoed -- an ignored device, a
+    `--fit-ctx` that auto-fit makes inert. It is a list to append to rather
+    than a return value because the argv is what every caller wants and the
+    messages are what one caller wants.
+    """
+    prefixes = slot.prefixes
     argv = [str(env.get("LLAMA_SERVER_BIN") or "llama-server")]
 
-    model = _first(env, slot.model_keys, prefix)
-    argv += ["--model", model]
-    argv += ["--alias", str(env.get(f"{prefix}_MODEL_NAME") or slot.alias_default)]
-    argv += ["--host", _first(env, slot.host_keys, prefix) or "127.0.0.1"]
-    argv += ["--port", str(env.get(f"{prefix}_PORT") or slot.port_default)]
+    argv += ["--model", _first(env, slot.model_keys, prefixes)]
+    argv += ["--alias", _first(env, slot.alias_keys, prefixes) or slot.alias_default]
+    argv += ["--host", _first(env, slot.host_keys, prefixes) or "127.0.0.1"]
+    argv += ["--port", _first(env, slot.port_keys, prefixes) or slot.port_default]
 
     for flag in COMMON_FLAGS:
         if flag.name in slot.omit:
             continue
         suffix = flag.keys[0]
-        override = slot.defaults.get(suffix)
-        resolved = (flag if override is None else
-                    type(flag)(flag.name, flag.keys, override)).resolve(env, prefix)
-        argv += resolved
+        keys = slot.key_chains.get(suffix, flag.keys)
+        default = slot.defaults.get(suffix, flag.default)
+        argv += type(flag)(flag.name, keys, default, flag.empty_is_set).resolve(env, prefixes)
         # Placement sits between --n-gpu-layers and --batch-size, where the
         # launchers spliced SPLIT_OPTS.
         if flag.name == "--n-gpu-layers":
@@ -131,13 +133,18 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
 
     argv += list(slot.literals)
 
-    for toggle in COMMON_TOGGLES + slot.extra_toggles:
-        argv += toggle.resolve(env, prefix)
+    # The operator's own arguments come last on the command line, but they are
+    # parsed first: several of the tail's decisions are "unless they already
+    # passed this themselves".
+    custom = custom_args(env, slot.custom_args_keys, prefixes)
+    ctx = Context(slot=slot, custom=tuple(custom),
+                  stack_dir=str(env.get("STACK_DIR") or ""), said=said or [])
 
-    mmproj = str(env.get(f"{prefix}_MMPROJ_PATH") or "").strip()
-    if mmproj and os.path.isfile(mmproj):
-        argv += ["--mmproj", mmproj]
+    for toggle in COMMON_TOGGLES:
+        argv += toggle.resolve(env, prefixes, ctx)
+    for option in slot.tail:
+        argv += option.resolve(env, prefixes, ctx)
 
-    argv += custom_args(env, slot.custom_args_key)
+    argv += custom
     argv += list(extra or [])
     return argv

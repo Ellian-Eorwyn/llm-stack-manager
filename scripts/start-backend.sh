@@ -45,35 +45,19 @@ source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
 PREFIX="[${SLOT}]"
 PYTHON="${LLM_STACK_PYTHON:-python3}"
 
-# Ask the registry for this slot's identity. Doing it here keeps the prefix and
-# the model path in one place rather than restating them per slot in shell.
-slot_field() {
-    STACK_DIR="${STACK_DIR}" "${PYTHON}" - "$1" <<'PY' 2>/dev/null || true
-import os, sys
-sys.path.insert(0, os.path.join(os.environ["STACK_DIR"], "web"))
-from backends.slots import SLOTS
-slot = SLOTS.get(os.environ.get("LLM_BACKEND_SLOT", ""))
-if slot:
-    print(getattr(slot, sys.argv[1], "") or "")
-PY
-}
+# Ask the registry for this slot's identity, its placement settings and the
+# settings its memory-fit report carries. One reader for all of them: the
+# expansions this replaces read a single prefix, and the primary chat slot has
+# two -- so they would have resolved placement and the report differently from
+# the command they describe.
 export LLM_BACKEND_SLOT="${SLOT}"
-
-SLOT_PREFIX="$(slot_field prefix)"
-if [[ -z "${SLOT_PREFIX}" ]]; then
+eval "$(STACK_DIR="${STACK_DIR}" "${PYTHON}" "${STACK_DIR}/scripts/lib/slot-facts.py" \
+        "${SLOT}" 2>/dev/null)" || true
+if [[ -z "${FACT_PREFIX:-}" ]]; then
     echo "${PREFIX} unknown slot; see web/backends/slots.py" >&2
     exit 2
 fi
-
-# The engine decides whether placement vetting applies at all: it is a
-# llama.cpp concept, and the MLX servers take neither a split mode nor a device.
-# Mirrors Slot.engine(): the key is {PREFIX}_ENGINE unless a slot names its
-# own. Derived rather than asked for, so the shell and the registry cannot
-# disagree about which setting selects the engine.
-ENGINE_KEY="$(slot_field engine_key)"
-[[ -z "${ENGINE_KEY}" ]] && ENGINE_KEY="${SLOT_PREFIX}_ENGINE"
-ENGINE="$(eval "printf '%s' \"\${${ENGINE_KEY}:-llamacpp}\"")"
-[[ -z "${ENGINE}" ]] && ENGINE="llamacpp"
+ENGINE="${FACT_ENGINE}"
 
 if [[ "${ENGINE}" == "llamacpp" ]]; then
     LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
@@ -81,44 +65,38 @@ if [[ "${ENGINE}" == "llamacpp" ]]; then
     export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"
 
     # Inert on a Metal build, and left in place for the CUDA hosts that need it.
-    visible="$(eval "printf '%s' \"\${${SLOT_PREFIX}_GPU_VISIBLE_DEVICES:-}\"")"
-    [[ -n "${visible}" ]] && export CUDA_VISIBLE_DEVICES="${visible}"
+    [[ -n "${FACT_VISIBLE}" ]] && export CUDA_VISIBLE_DEVICES="${FACT_VISIBLE}"
 
-    model_path="$(STACK_DIR="${STACK_DIR}" "${PYTHON}" - <<'PY'
-import os, sys
-sys.path.insert(0, os.path.join(os.environ["STACK_DIR"], "web"))
-from backends.llamacpp import _first
-from backends.slots import SLOTS
-slot = SLOTS[os.environ["LLM_BACKEND_SLOT"]]
-print(_first(os.environ, slot.model_keys, slot.prefix))
-PY
-)"
-    split_mode="$(eval "printf '%s' \"\${${SLOT_PREFIX}_SPLIT_MODE:-layer}\"")"
-    tensor_split="$(eval "printf '%s' \"\${${SLOT_PREFIX}_TENSOR_SPLIT:-}\"")"
-    main_gpu="$(eval "printf '%s' \"\${${SLOT_PREFIX}_MAIN_GPU:-}\"")"
-    flash_attn="$(eval "printf '%s' \"\${${SLOT_PREFIX}_FLASH_ATTN:-on}\"")"
-
+    tensor_split="${FACT_TENSOR_SPLIT}"
     if [[ "${tensor_split}" == "auto" || -z "${tensor_split}" ]]; then
         tensor_split="$(auto_tensor_split "${tensor_split}" "${CUDA_VISIBLE_DEVICES:-}")"
     fi
 
-    resolve_split_opts "${PREFIX}" "${split_mode}" "${model_path}" \
-        "${tensor_split}" "${main_gpu}" "${flash_attn}"
+    resolve_split_opts "${PREFIX}" "${FACT_SPLIT_MODE}" "${FACT_MODEL}" \
+        "${tensor_split}" "${FACT_MAIN_GPU}" "${FACT_FLASH_ATTN}"
     export LLM_BACKEND_PLACEMENT_JSON="$(
         printf '%s\n' ${SPLIT_OPTS[@]+"${SPLIT_OPTS[@]}"} \
         | "${PYTHON}" -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))'
     )"
 
-    # The values come from what this launcher resolved, not from a second
-    # reading of the env file: re-deriving settings independently is precisely
-    # how --fit-ctx stayed live after it had been cleared in the UI.
-    mmproj_path="$(eval "printf '%s' \"\${${SLOT_PREFIX}_MMPROJ_PATH:-}\"")"
-    preflight_report "${PREFIX}" "${SLOT}" "${model_path}" "${mmproj_path}" \
-        ctx_size="$(eval "printf '%s' \"\${${SLOT_PREFIX}_CTX_SIZE:-}\"")" \
-        parallel="$(eval "printf '%s' \"\${${SLOT_PREFIX}_N_PARALLEL:-1}\"")" \
-        cache_type_k="$(eval "printf '%s' \"\${${SLOT_PREFIX}_CACHE_TYPE_K:-}\"")" \
-        cache_type_v="$(eval "printf '%s' \"\${${SLOT_PREFIX}_CACHE_TYPE_V:-}\"")" \
-        tensor_split="${tensor_split}" || true
+    # Whether --swa-full would do anything is a fact about the GGUF, which only
+    # budget.py can read, so it is answered here and handed to the builder the
+    # same way placement is. Unknown counts as supported: a helper must never
+    # stop a backend from starting.
+    export LLM_BACKEND_SWA_FULL=off
+    if [[ "${FACT_SWA_FULL}" == "on" ]] && model_supports_swa "${FACT_MODEL}"; then
+        export LLM_BACKEND_SWA_FULL=on
+    fi
+
+    # The report describes the process about to start, so its settings come
+    # from what was resolved here rather than from a second reading of the env
+    # file -- re-deriving them independently is precisely how --fit-ctx stayed
+    # live after it had been cleared in the UI.
+    devices="$(awk -F, '{print NF}' <<< "${CUDA_VISIBLE_DEVICES:-}")"
+    eval "$(STACK_DIR="${STACK_DIR}" "${PYTHON}" "${STACK_DIR}/scripts/lib/slot-facts.py" \
+            "${SLOT}" --tensor-split "${tensor_split}" --devices "${devices}" 2>/dev/null)" || true
+    preflight_report "${PREFIX}" "${FACT_BUDGET_NAME}" "${FACT_MODEL}" "${FACT_MMPROJ}" \
+        ${FACT_PREFLIGHT[@]+"${FACT_PREFLIGHT[@]}"} || true
 fi
 
 echo "${PREFIX} engine: ${ENGINE}"
