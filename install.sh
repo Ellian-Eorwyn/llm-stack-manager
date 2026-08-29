@@ -108,7 +108,16 @@ TRANSCRIPT_SCRIPT="$(resolve_engine_script transcription "${TRANSCRIPT_ENGINE}" 
 SERVICE_USER="$(cp_stat_user "${STACK_DIR}")"
 SERVICE_GROUP="$(cp_stat_group "${STACK_DIR}")"
 
-if [[ "${EUID}" -ne 0 ]]; then
+# Root is a Linux requirement, and a macOS one only in the system domain.
+#
+# The default launchd domain is `user`, where everything this installer writes
+# -- the plists in ~/Library/LaunchAgents, the wrapper scripts, the config, the
+# venv -- is already owned by the operator. Demanding sudo there is not merely
+# unnecessary: it puts root-owned plists in a user LaunchAgents directory, and
+# launchctl refuses to bootstrap those. Every `chown` on that path targets the
+# operator's own uid and is `|| true`.
+if [[ "${EUID}" -ne 0 ]] && \
+   { is_linux || [[ "${LLM_LAUNCHD_DOMAIN:-user}" == "system" ]]; }; then
     echo "Run with sudo: sudo bash ${STACK_DIR}/install.sh" >&2
     exit 1
 fi
