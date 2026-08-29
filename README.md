@@ -1,6 +1,8 @@
 # LLM Stack Manager
 
-UI-guided local LLM stack installation and operation for Ubuntu 24.04 x86-64 systems with NVIDIA GPUs.
+UI-guided local LLM stack installation and operation for Ubuntu 24.04 x86-64 systems with NVIDIA GPUs, and for Apple Silicon via MLX and Metal.
+
+**Picking this up mid-flight?** [`docs/handoff.md`](docs/handoff.md) is the current state, what is next, and the gotchas that cost real time. It is kept current rather than added to.
 
 > **Trusted LAN only:** the manager is intentionally unauthenticated and runs with privileges needed to install packages and control services. Never expose port 8077 to the public internet or configure router port forwarding for it.
 
