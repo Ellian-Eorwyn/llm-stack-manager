@@ -1382,39 +1382,54 @@ def api_service_expect(name):
     return jsonify(ok=True, name=name, expected=expected)
 
 
-@app.route('/api/service/<name>/<action>', methods=['POST'])
-def api_service_action(name, action):
+def perform_service_action(name: str, action: str) -> tuple[dict, int]:
+    """Start, stop or restart one service. The whole rule, in one place.
+
+    Separated from the route so a second listener can reach it. The control
+    API is a different Flask app with its own authentication, and importing
+    `app` from a `web/` module is forbidden -- `ModuleBoundaryTests` -- so what
+    it needs is a function to be handed rather than a route to call.
+
+    Returns (payload, status) rather than a Flask response for the same reason:
+    the caller decides how to render it.
+    """
     if action not in ('start', 'stop', 'restart'):
-        return jsonify(ok=False, error='Unknown action'), 400
+        return {"ok": False, "error": "Unknown action"}, 400
     if name not in {s['name'] for s in patch_service_labels()}:
-        return jsonify(ok=False, error='Unknown service'), 400
+        return {"ok": False, "error": "Unknown service"}, 400
     if name in router_pooled_units(config_env.read_env()):
         # Starting it would fight nginx for the port and put a second copy of
         # the model on the GPU. Say so rather than half-succeeding.
-        return jsonify(
-            ok=False,
-            error=(f"{name} is held by the model router, which loads it on demand. "
-                   f"Use the Model Router controls, or turn MODEL_ROUTER_ENABLED off "
-                   f"to run it as its own service again."),
-        ), 409
+        return {
+            "ok": False,
+            "error": (f"{name} is held by the model router, which loads it on demand. "
+                      f"Use the Model Router controls, or turn MODEL_ROUTER_ENABLED off "
+                      f"to run it as its own service again."),
+        }, 409
     if is_searxng_service(name):
         ok, output = run_searxng_manager(action)
         record_service_expectation(name, action, ok)
-        return jsonify(ok=ok, output=output)
+        return {"ok": ok, "output": output}, 200
     if should_use_local_transcript_manager(name):
         ok, output = run_transcript_manager(action)
         record_service_expectation(name, action, ok)
-        return jsonify(ok=ok, output=output)
+        return {"ok": ok, "output": output}, 200
     if should_use_local_tts_manager(name):
         ok, output = run_tts_manager(name, action)
         record_service_expectation(name, action, ok)
-        return jsonify(ok=ok, output=output)
+        return {"ok": ok, "output": output}, 200
     try:
         rc, output = core.ServiceManager.action(action, name, timeout=30)
         record_service_expectation(name, action, rc == 0)
-        return jsonify(ok=(rc == 0), output=output)
+        return {"ok": rc == 0, "output": output}, 200
     except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
+        return {"ok": False, "error": str(e)}, 500
+
+
+@app.route('/api/service/<name>/<action>', methods=['POST'])
+def api_service_action(name, action):
+    payload, status = perform_service_action(name, action)
+    return jsonify(payload), status
 
 
 @app.route('/api/searxng/status')
@@ -2669,37 +2684,52 @@ def api_config_preflight():
     return jsonify(preflight_config(config_env.apply_code_chat_mirrors(config_env.filter_config_updates(updates))))
 
 
-@app.route('/api/config', methods=['POST'])
-def api_config_save():
-    updates = request.json
+def perform_config_save(updates, forced: bool = False) -> tuple[dict, int]:
+    """Filter, mirror, preflight, write, and report what needs restarting.
+
+    Extracted from the route so the control listener can reach it without
+    importing `app`. `ignored_keys` is new and load-bearing for that caller: a
+    remote hub may send a key this host does not know, and
+    `allowed_config_keys` drops it silently, which would otherwise be a 200
+    with nothing changed.
+    """
     if not isinstance(updates, dict):
-        return jsonify(ok=False, error='Expected JSON object'), 400
+        return {"ok": False, "error": "Expected JSON object"}, 400
     filtered = config_env.filter_config_updates(updates)
     filtered = config_env.apply_code_chat_mirrors(filtered)
+    ignored = sorted(set(updates) - set(filtered))
 
-    # Refuse configurations the budget model says cannot allocate. `?force=1`
+    # Refuse configurations the budget model says cannot allocate. `forced`
     # overrides, because the model is a prediction and the operator is the one
     # holding the hardware — but the refusal is the default so the failure
     # surfaces here rather than in a restart loop.
     preflight = preflight_config(filtered)
-    forced = str(request.args.get('force', '')).lower() in {'1', 'true', 'yes', 'on'}
     if not preflight['ok'] and not forced:
-        return jsonify(
-            ok=False,
-            error='; '.join(issue['text'] for issue in preflight['errors']),
-            preflight=preflight,
-        ), 409
+        return {
+            "ok": False,
+            "error": '; '.join(issue['text'] for issue in preflight['errors']),
+            "preflight": preflight,
+            "ignored_keys": ignored,
+        }, 409
 
     try:
         config_env.update_env_values(filtered)
     except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
+        return {"ok": False, "error": str(e)}, 500
     restart_needed = set()
     for key in filtered:
         restart_needed.update(RESTART_HINTS.get(key, []))
     restart_needed = apply_router_restart_hints(restart_needed, config_env.read_env())
-    return jsonify(ok=True, restart_needed=sorted(restart_needed),
-                   preflight=preflight, forced=forced and not preflight['ok'])
+    return {"ok": True, "restart_needed": sorted(restart_needed),
+            "preflight": preflight, "forced": forced and not preflight['ok'],
+            "ignored_keys": ignored}, 200
+
+
+@app.route('/api/config', methods=['POST'])
+def api_config_save():
+    forced = str(request.args.get('force', '')).lower() in {'1', 'true', 'yes', 'on'}
+    payload, status = perform_config_save(request.json, forced)
+    return jsonify(payload), status
 
 
 
