@@ -248,6 +248,25 @@ def _register_prefix_renames() -> None:
 NEW_ENV_KEY_LEGACY_ALIASES = defaultdict(list)
 
 
+def legacy_names_for(key: str) -> tuple[str, ...]:
+    """Every older spelling of `key`, declared or merely implied by a rename.
+
+    `NEW_ENV_KEY_LEGACY_ALIASES` only knows keys some field declares, and the
+    example config carries settings that no field does -- `LLM_B_TEMP` among
+    them. A caller asking "has this host got an older name for this setting"
+    needs the prefix rule too, or it concludes the setting is absent and writes
+    a default over a live value.
+    """
+    names = list(NEW_ENV_KEY_LEGACY_ALIASES.get(key, ()))
+    for old_prefix, new_prefix in _RENAMED_SLOT_PREFIXES:
+        if not key.startswith(new_prefix):
+            continue
+        candidate = old_prefix + key[len(new_prefix):]
+        if candidate not in names and candidate not in _PREFIX_RENAME_EXEMPT:
+            names.append(candidate)
+    return tuple(names)
+
+
 def _rebuild_legacy_aliases() -> None:
     NEW_ENV_KEY_LEGACY_ALIASES.clear()
     for legacy_key, new_key in LEGACY_ENV_KEY_MAP.items():

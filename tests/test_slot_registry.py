@@ -244,6 +244,47 @@ class SlotRenameTests(unittest.TestCase):
         self.assertIn("CHAT_PRIMARY_CTX_SIZE", slot.key_chains["CTX_SIZE"][1])
 
 
+class ExampleMergeTests(unittest.TestCase):
+    """`install.sh` appends example defaults for keys a config lacks.
+
+    A rename inverts the direction that guard has to cover, and getting it wrong
+    is not a missing setting -- it is a *shadowed* one. `normalize_env_keys`
+    backfills a canonical key from its legacy twin only when the canonical is
+    absent, so writing an example default there silently replaces whatever the
+    operator had. On the llm-a/llm-b rename it appended 65 keys over a working
+    config and pointed the primary backend at a model file that does not exist.
+    """
+
+    def setUp(self):
+        import config_fields
+        self.fields = config_fields
+        self.example = (ROOT / "config" / "llm-stack.env.example").read_text()
+
+    def _example_keys(self):
+        return [line.split("=", 1)[0] for line in self.example.splitlines()
+                if line and not line.startswith("#") and "=" in line]
+
+    def test_every_renamed_example_key_knows_its_old_spelling(self):
+        """The check `install.sh` makes. A key here with no older name is one
+        that would be appended over a config still using the old one."""
+        for key in self._example_keys():
+            if not key.startswith(("LLM_A_", "LLM_B_")):
+                continue
+            with self.subTest(key):
+                self.assertTrue(self.fields.legacy_names_for(key),
+                                f"{key} would be written over its pre-rename twin")
+
+    def test_the_helper_covers_keys_no_field_declares(self):
+        """`LLM_B_TEMP` is in the example and in no field list, so the declared
+        alias map alone does not see it -- which is exactly the gap that let six
+        keys through after the first attempt at this fix."""
+        self.assertIn("CHAT2_TEMP", self.fields.legacy_names_for("LLM_B_TEMP"))
+        self.assertIn("CHAT_PRIMARY_TEMP", self.fields.legacy_names_for("LLM_A_TEMP"))
+
+    def test_the_frozen_port_keys_are_not_treated_as_renamed(self):
+        self.assertEqual(self.fields.legacy_names_for("CHAT2_BACKEND_PORT"), ())
+
+
 class OneSourceTests(unittest.TestCase):
     """Nothing may state the relationship a second time."""
 
