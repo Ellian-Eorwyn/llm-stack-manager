@@ -2,6 +2,8 @@
 /config/llm-stack.env
 /config/honcho.env
 /config/custom-models.json
+# Peer addresses and their credentials. Per-install state, never committed.
+/config/fleet.json
 /config/custom-model-arg-presets.json
 /config/saved/
 /config/chat-templates/

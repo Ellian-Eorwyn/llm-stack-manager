@@ -381,6 +381,10 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("LLM_CONTROL_PORT", "8079")
     normalized.setdefault("LLM_CONTROL_TOKEN", "")
     normalized.setdefault("LLM_CONTROL_ALLOW_SECRETS", "off")
+    # How often this manager polls the other machines in config/fleet.json.
+    # Matches the browser's own 5-second poll; there is nothing to be gained by
+    # collecting faster than the page renders.
+    normalized.setdefault("LLM_FLEET_POLL_SECONDS", "5")
     # Transcription sidecar. Off by default and bound to loopback for the same
     # reason as the state API: an upgrade should not start putting audio on the
     # network on someone's behalf.

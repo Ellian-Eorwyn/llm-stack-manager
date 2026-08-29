@@ -56,6 +56,11 @@ SAVED_CONFIGS_DIR  = STACK_DIR / "config" / "saved"
 DEFAULT_SAVED_CONFIG_FILE = STACK_DIR / "config" / "default-saved-config"
 CHAT_TEMPLATES_DIR = STACK_DIR / "config" / "chat-templates"
 CHAT_TEMPLATES_META_FILE = CHAT_TEMPLATES_DIR / "templates.json"
+# The fleet's peer list. A JSON registry beside the env file, like the custom
+# models and the TTS backends, because an entry has nine fields including two
+# credentials and `KEY=value` would mean either numbered keys or a packed
+# delimiter string -- both worse, and neither editable from the UI.
+FLEET_FILE         = STACK_DIR / "config" / "fleet.json"
 TTS_CONFIG_FILE    = STACK_DIR / "config" / "tts-backends.json"
 TTS_STATE_FILE     = STACK_DIR / "config" / "tts-state.json"
 LOGS_DIR           = STACK_DIR / "logs"
