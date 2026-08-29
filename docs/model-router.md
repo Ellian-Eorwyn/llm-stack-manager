@@ -164,6 +164,35 @@ of at least 2 so the embedding model is resident rather than repeatedly
 reloaded. The second is cheaper when embeddings dominate the traffic, which they
 usually do.
 
+## 7b. What residency the pinned llama.cpp actually offers
+
+Checked in the pinned build rather than assumed, because a control that does
+nothing is worse than a documented limitation.
+
+**There is no per-member residency.** `tools/server/server-models.cpp` picks its
+eviction victim by pure LRU on `last_used`, skipping only models that are
+mid-request or still coming up. There is no pin, no priority and no exemption:
+a model loaded at startup is evicted exactly like one loaded on demand.
+
+So `<MEMBER>_LOAD_ON_STARTUP` means *warm at boot*, not *stays warm*. On a pool
+whose `MODEL_ROUTER_MAX` is smaller than the number of members in use, the model
+you marked eager is still the one evicted if it happens to be least recently
+used. The way to keep a model genuinely resident is to take it out of the pool —
+leave it out of `MODEL_ROUTER_MEMBERS` and run its own unit — which is the same
+answer section 7 gives for a continuous background load.
+
+**Two settings that are each reasonable can stop the router booting.** It throws
+rather than degrading:
+
+```
+number of models to load on startup (4) exceeds models_max (2)
+```
+
+`render-models-ini.py` catches that first and turns off the excess with a
+warning naming the keys, because the router's own message names numbers and an
+operator would have to work back from them. Members keep their
+`MODEL_ROUTER_MEMBERS` order, so the ones dropped are the ones furthest down it.
+
 ## 8. Adding a member
 
 Three tables are keyed by the same env prefix and must agree, or the panel and

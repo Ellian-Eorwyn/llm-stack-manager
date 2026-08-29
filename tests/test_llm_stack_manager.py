@@ -949,7 +949,12 @@ class ConfigFieldRenderingTests(unittest.TestCase):
         html = self._render(platform_harness.as_darwin)
         _fields, omitted = config_fields.applicable_fields(
             platform_harness.DarwinPlatform().inert_config_capabilities)
-        self.assertEqual(len(omitted), 27)
+        # 29 since EMBED and RERANK gained the `_MAIN_GPU` control they were
+        # missing: one Metal device means no index to choose, so a Mac is not
+        # offered them either. `_DEVICE` is deliberately not withheld -- it is
+        # the one placement key a Metal build still reads, and the launcher
+        # drops an unusable value with a message rather than failing.
+        self.assertEqual(len(omitted), 29)
         for key in omitted:
             with self.subTest(key):
                 self.assertNotIn(f'"cfg-{key}"', html)

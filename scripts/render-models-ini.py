@@ -391,6 +391,37 @@ def render_member(prefix: str, env: dict, warn=None) -> tuple[str, dict]:
     return name, options
 
 
+def _cap_startup_loads(rendered, env, warn) -> None:
+    """Keep `load-on-startup` within `models_max`, loudly.
+
+    The router throws on startup rather than starting without them --
+    `server-models.cpp`: "number of models to load on startup (N) exceeds
+    models_max (M)". Two settings that are individually reasonable therefore
+    combine into a router that will not come up at all, and the failure names
+    numbers rather than the keys an operator would go and change.
+
+    So the excess is turned off here and said out loud. Refusing to render would
+    reproduce the outage this exists to prevent, and a helper must never stop a
+    backend from starting; the members keep their order, so the ones dropped are
+    the ones furthest down `MODEL_ROUTER_MEMBERS`.
+    """
+    try:
+        limit = int(_clean(env.get("MODEL_ROUTER_MAX")) or "2")
+    except ValueError:
+        return
+    if limit <= 0:
+        return
+    eager = [entry for entry in rendered if entry[2].get("load-on-startup") == "true"]
+    if len(eager) <= limit:
+        return
+    for prefix, name, options in eager[limit:]:
+        options["load-on-startup"] = "false"
+        warn(f"{prefix}: load-on-startup turned off — {len(eager)} members ask to "
+             f"load at startup but MODEL_ROUTER_MAX is {limit}, and the router "
+             f"refuses to start when more are asked for than it may hold. Raise "
+             f"MODEL_ROUTER_MAX or clear {prefix}_LOAD_ON_STARTUP.")
+
+
 def render(env: dict, members=None, warn=None) -> str:
     """The full preset file.
 
@@ -417,6 +448,7 @@ def render(env: dict, members=None, warn=None) -> str:
     ]
 
     seen = {}
+    rendered = []
     for prefix in members:
         try:
             name, options = render_member(prefix, env, warn)
@@ -427,12 +459,17 @@ def render(env: dict, members=None, warn=None) -> str:
             warn(f"skipping {prefix}: model name {name!r} already used by {seen[name]}")
             continue
         seen[name] = prefix
-        lines.append("")
-        lines.append(f"[{name}]")
-        lines.extend(f"{key} = {value}" for key, value in options.items())
+        rendered.append((prefix, name, options))
 
     if not seen:
         raise RenderError("no model router members could be rendered")
+
+    _cap_startup_loads(rendered, env, warn)
+
+    for _prefix, name, options in rendered:
+        lines.append("")
+        lines.append(f"[{name}]")
+        lines.extend(f"{key} = {value}" for key, value in options.items())
 
     return "\n".join(lines) + "\n"
 

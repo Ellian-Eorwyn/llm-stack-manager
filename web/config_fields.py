@@ -52,7 +52,10 @@ LLAMA_SPLIT_MODE_OPTIONS = ["none", "layer", "tensor"]
 LLAMA_SPLIT_MODE_HINT = (
     "none=whole model on one GPU; layer=split by layers, the dependable "
     "multi-GPU choice; tensor=experimental tensor+KV parallelism, not "
-    "available for hybrid-attention models such as Qwen3.5/3.8"
+    "available for hybrid-attention models such as Qwen3.5/3.8. "
+    "tensor spreads every tensor across the visible devices and therefore "
+    "discards Main GPU and Device \u2014 those controls are inert while it is "
+    "selected, which is silent unless something says so."
 )
 LLAMA_MAIN_GPU_HINT = (
     "GPU index (within visible devices) for split-mode=none. Not used by "
@@ -817,7 +820,7 @@ CONFIG_FIELDS = [
     {"section": "Model Router", "key": "MODEL_ROUTER_MAX",           "label": "Models Resident",      "type": "number", "hint": "How many models may be loaded at once. A count, not a memory budget — the router evicts least-recently-used, but does not know how large the survivors are. Use 1 for strict one-at-a-time."},
     {"section": "Model Router", "key": "MODEL_ROUTER_MEMBERS",       "label": "Pooled Models",        "type": "text",   "hint": "Comma-separated env prefixes to pool, e.g. EMBED,OCR,RERANK,TASK"},
     {"section": "Model Router", "key": "MODEL_ROUTER_SLEEP_IDLE_SECONDS", "label": "Idle Unload (s)", "type": "number", "hint": "Unload a resident model's weights and KV after this much idleness; the next request reloads it. -1 disables."},
-    {"section": "Model Router", "key": "MODEL_ROUTER_GPU_VISIBLE_DEVICES", "label": "GPU Devices",    "type": "text",   "hint": "CUDA_VISIBLE_DEVICES for the router. Every pooled model inherits it, so per-model placement uses real device indices in Main GPU / Tensor Split."},
+    {"section": "Model Router", "key": "MODEL_ROUTER_GPU_VISIBLE_DEVICES", "label": "GPUs The Router May Use", "type": "text",   "hint": "The superset of devices the router and every model it pools may touch \u2014 not a per-model choice. CUDA_VISIBLE_DEVICES is process-level and the router spawns its own children, so it cannot be set per member; place individual models with their own Main GPU / Device / Tensor Split, which use real indices within this set."},
     # The pooled audio model, served on the router's own /v1/audio/transcriptions
     # and reached by the transcription sidecar's `router` engine. Configured
     # here rather than under Transcription because it is a router child: it is
@@ -931,6 +934,51 @@ CONFIG_FIELDS = [
 ]
 
 
+#: The placement controls every llama.cpp member takes, and the section each one
+#: is filed under. A table rather than a per-member copy, and rather than
+#: `_clone_chat_backend_field`, whose `secondary` branch is dead code that would
+#: emit `CHAT_SECONDARY_*` where the rest of the tree says `LLM_B_*`.
+#:
+#: `render-models-ini.py` already maps MAIN_GPU and DEVICE per member. The
+#: config surface did not: EMBED and RERANK had neither field, and ASR had
+#: MAIN_GPU without DEVICE -- so the router could place those models and nobody
+#: could say where. Three gaps in one table, which is how a table earns its keep.
+MEMBER_PLACEMENT_SECTIONS = {
+    "EMBED": ("Embedding", "Embedding"),
+    "RERANK": ("Reranker", "Reranker"),
+    "ASR": ("Model Router", "Audio"),
+}
+
+
+def _member_placement_fields() -> list[dict]:
+    """The `_MAIN_GPU` and `_DEVICE` controls members were missing.
+
+    Only the two suffixes that were absent. TENSOR_SPLIT and SPLIT_MODE are
+    already declared per member with their own hints, and moving them here would
+    reorder the config page for no gain.
+    """
+    fields = []
+    for prefix, (section, label) in MEMBER_PLACEMENT_SECTIONS.items():
+        existing = {f.get("key") for f in CONFIG_FIELDS}
+        for suffix, kind, hint in (
+            ("MAIN_GPU", "number",
+             "Which GPU index holds this model. Ignored when Split Mode is "
+             "`tensor`, which spreads every tensor across the devices instead."),
+            ("DEVICE", "text",
+             "Explicit llama.cpp device list, e.g. CUDA0,CUDA1. Overrides Main "
+             "GPU; leave empty to let Main GPU and Tensor Split decide."),
+        ):
+            key = f"{prefix}_{suffix}"
+            if key in existing:
+                continue
+            fields.append({
+                "section": section, "key": key,
+                "label": f"{label} {'Main GPU' if suffix == 'MAIN_GPU' else 'Device'}",
+                "type": kind, "hint": hint,
+            })
+    return fields
+
+
 def _transcription_engine_fields() -> list[dict]:
     """One identical block of config per engine, keyed on its env prefix.
 
@@ -973,6 +1021,7 @@ def _transcription_engine_fields() -> list[dict]:
     return fields
 
 
+CONFIG_FIELDS.extend(_member_placement_fields())
 CONFIG_FIELDS.extend(_transcription_engine_fields())
 
 CHAT_BACKEND_IDENTITY_KEYS = {
@@ -1284,6 +1333,8 @@ RESTART_HINTS = {
     "EMBED_THREADS":             ["embed"],
     "EMBED_THREADS_BATCH":       ["embed"],
     "EMBED_N_GPU_LAYERS":        ["embed"],
+    "EMBED_MAIN_GPU":            ["embed"],
+    "EMBED_DEVICE":              ["embed"],
     "EMBED_TENSOR_SPLIT":        ["embed"],
     "EMBED_SPLIT_MODE":          ["embed"],
     "EMBED_FLASH_ATTN":          ["embed"],
@@ -1310,6 +1361,8 @@ RESTART_HINTS = {
     "RERANK_THREADS":            ["rerank"],
     "RERANK_THREADS_BATCH":      ["rerank"],
     "RERANK_N_GPU_LAYERS":       ["rerank"],
+    "RERANK_MAIN_GPU":           ["rerank"],
+    "RERANK_DEVICE":             ["rerank"],
     "RERANK_TENSOR_SPLIT":       ["rerank"],
     "RERANK_SPLIT_MODE":         ["rerank"],
     "RERANK_FLASH_ATTN":         ["rerank"],

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -369,6 +370,58 @@ class PooledUnitTests(unittest.TestCase):
         a member the renderer serves but telemetry does not know about would be
         reported as stopped-on-purpose while the router was serving it."""
         self.assertEqual(set(renderer.MEMBERS), set(telemetry.ROUTER_MEMBER_UNITS))
+
+    def test_more_eager_members_than_the_router_may_hold_are_capped(self):
+        """The router throws rather than degrading -- "number of models to load
+        on startup (4) exceeds models_max (2)" -- so two individually reasonable
+        settings combine into a router that will not come up."""
+        env = dict(BASE_ENV, MODEL_ROUTER_MAX="2",
+                   EMBED_LOAD_ON_STARTUP="on", OCR_LOAD_ON_STARTUP="on",
+                   RERANK_LOAD_ON_STARTUP="on", TASK_LOAD_ON_STARTUP="on")
+        warnings = []
+        sections = _sections(renderer.render(env, warn=warnings.append))
+        eager = [name for name, opts in sections.items()
+                 if opts.get("load-on-startup") == "true"]
+        self.assertEqual(len(eager), 2)
+        self.assertTrue(any("MODEL_ROUTER_MAX" in w for w in warnings))
+
+    def test_the_cap_keeps_the_members_in_the_order_they_were_listed(self):
+        env = dict(BASE_ENV, MODEL_ROUTER_MEMBERS="TASK,EMBED,OCR", MODEL_ROUTER_MAX="1",
+                   EMBED_LOAD_ON_STARTUP="on", OCR_LOAD_ON_STARTUP="on",
+                   TASK_LOAD_ON_STARTUP="on")
+        sections = _sections(renderer.render(env, warn=lambda _m: None))
+        eager = [name for name, opts in sections.items()
+                 if opts.get("load-on-startup") == "true"]
+        self.assertEqual(eager, ["task"])
+
+    def test_a_pool_within_its_limit_is_left_alone(self):
+        env = dict(BASE_ENV, MODEL_ROUTER_MAX="2", EMBED_LOAD_ON_STARTUP="on")
+        sections = _sections(renderer.render(env, warn=lambda _m: None))
+        self.assertEqual(sections["embed"]["load-on-startup"], "true")
+
+    def test_the_nginx_member_table_agrees_with_the_renderer(self):
+        """The third member table, and the one that had no test.
+
+        `install-model-router-nginx.sh` fronts each member's public port onto
+        the router. A member the renderer serves but this table omits keeps
+        answering on the router's own port and nowhere a caller looks; a member
+        here that the renderer does not serve gets an nginx block pointing at a
+        model the router will refuse.
+
+        ASR is the deliberate exception -- its only caller is the transcription
+        sidecar, which posts to the router directly, so a public shim would be a
+        second door to the same room.
+        """
+        script = (pathlib.Path(__file__).resolve().parents[1]
+                  / "scripts" / "install-model-router-nginx.sh").read_text()
+        block = re.search(r"declare -A MEMBER_PORTS=\((.*?)\n\)", script, re.S)
+        self.assertIsNotNone(block, "MEMBER_PORTS changed shape")
+        named = set(re.findall(r"^\s*\[(\w+)\]=", block.group(1), re.M))
+        self.assertEqual(named, set(renderer.MEMBERS))
+        portless = {m for m in named
+                    if re.search(rf"^\s*\[{m}\]=\"\$\{{\w+:-\}}\"", block.group(1), re.M)
+                    and m == "ASR"}
+        self.assertEqual(portless, {"ASR"})
 
     def test_the_audio_model_is_pooled_only_when_asked_for(self):
         """ASR is opt-in: being in MEMBERS is not the same as being in the pool."""

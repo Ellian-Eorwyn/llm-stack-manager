@@ -295,6 +295,7 @@ async function loadRemoteConfigForm() {
   renderRemoteSchemaNote(schema, hidden, extras, sameShape, reshaped);
   initConfigArgEditors();
   initPerSlotHints();
+  initSplitModeInertness();
 }
 
 // -- config --
@@ -367,6 +368,7 @@ async function loadConfig() {
     initCacheAwareScheduling();
     refreshAllCacheAwareScheduling();
     initPerSlotHints();
+    initSplitModeInertness();
     syncQuickGpuPlacementSelects();
     refreshShadowedAliasHints();
   } catch (e) { toast('Could not load config: ' + e, 'err'); }
@@ -570,6 +572,42 @@ function refreshPerSlotHints() {
     const divisor = Number.isFinite(slots) && slots > 0 ? slots : 1;
     hint.innerHTML = `llama.cpp divides this across slots: <strong>${Math.floor(total / divisor).toLocaleString('en-US')}</strong> tokens per slot × ${divisor}. A request larger than the per-slot figure is rejected.`;
   });
+}
+
+// `split-mode = tensor` spreads every tensor across the visible devices, so
+// Main GPU and Device stop meaning anything -- llama.cpp does not complain, it
+// just places the model somewhere else than the page claims. Saying so beside
+// the controls beats a hint nobody re-reads after the first time.
+function refreshSplitModeInertness() {
+  document.querySelectorAll('select[id$="_SPLIT_MODE"]').forEach(select => {
+    const prefix = select.id.replace(/^cfg-/, '').replace(/_SPLIT_MODE$/, '');
+    const inert = select.value === 'tensor';
+    ['MAIN_GPU', 'DEVICE'].forEach(suffix => {
+      const wrap = document.querySelector(`[data-cfg-key="${prefix}_${suffix}"]`);
+      if (!wrap) return;
+      wrap.classList.toggle('is-inert', inert);
+      let note = wrap.querySelector('[data-split-mode-note]');
+      if (inert && !note) {
+        note = document.createElement('div');
+        note.className = 'hint';
+        note.setAttribute('data-split-mode-note', '1');
+        note.textContent = 'Ignored while Split Mode is tensor — every tensor is '
+          + 'spread across the visible devices, so there is no placement to choose.';
+        wrap.appendChild(note);
+      } else if (!inert && note) {
+        note.remove();
+      }
+    });
+  });
+}
+
+function initSplitModeInertness() {
+  document.querySelectorAll('select[id$="_SPLIT_MODE"]').forEach(select => {
+    if (select.dataset.splitModeWired) return;
+    select.dataset.splitModeWired = '1';
+    select.addEventListener('change', refreshSplitModeInertness);
+  });
+  refreshSplitModeInertness();
 }
 
 function initPerSlotHints() {
