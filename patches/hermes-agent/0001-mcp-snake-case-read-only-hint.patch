@@ -1,0 +1,30 @@
+diff --git a/tools/mcp_tool.py b/tools/mcp_tool.py
+index ffcdff532..d51fc9e66 100644
+--- a/tools/mcp_tool.py
++++ b/tools/mcp_tool.py
+@@ -4637,11 +4637,20 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
+     annotations = getattr(mcp_tool, "annotations", None)
+     if annotations is None:
+         return False
+-    if isinstance(annotations, dict):
+-        hint = annotations.get("readOnlyHint")
+-    else:
+-        hint = getattr(annotations, "readOnlyHint", None)
+-    return hint is True
++    # The MCP wire format is camelCase, but the Python SDK exposes the same
++    # field snake_cased on its model objects. Checking only readOnlyHint makes
++    # a genuinely read-only Python server look write-capable, which silently
++    # over-gates it. Accept either spelling; still require an exact True.
++    for camel, snake in (("readOnlyHint", "read_only_hint"),):
++        if isinstance(annotations, dict):
++            hint = annotations.get(camel, annotations.get(snake))
++        else:
++            hint = getattr(annotations, camel, None)
++            if hint is None:
++                hint = getattr(annotations, snake, None)
++        if hint is True:
++            return True
++    return False
+ 
+ 
+ def _record_tool_trust_metadata(
