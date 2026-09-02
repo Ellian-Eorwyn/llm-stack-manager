@@ -248,6 +248,100 @@ class TemplateFile:
         return ["--chat-template-file", path]
 
 
+def lora_pairs(paths_raw: str, scales_raw: str, stack_dir: str):
+    """Pair adapter paths with their scales, resolving each path.
+
+    Shared with `scripts/render-models-ini.py`: a pooled model reaches
+    llama.cpp through a preset file rather than an argv, but the pairing and
+    the refusals are the same, and two copies of them would drift.
+
+    Yields `(resolved_path, scale, problem)`. `problem` is None when the pair
+    is usable and a sentence explaining the refusal otherwise -- the caller
+    decides whether that becomes a launcher note or a preset warning.
+    """
+    paths = [p.strip() for p in (paths_raw or "").split(",") if p.strip()]
+    scales = [s.strip() for s in (scales_raw or "").split(",")]
+    for index, path in enumerate(paths):
+        resolved = path if os.path.isabs(path) else os.path.join(
+            stack_dir or ".", "models", "loras", path)
+        if not os.path.isfile(resolved):
+            yield resolved, "", f"Ignoring LoRA adapter '{path}': no such file at {resolved}."
+            continue
+        # `--lora-scaled` splits on the last colon, so a path containing one
+        # would be read as part of the scale.
+        if ":" in resolved:
+            yield resolved, "", (f"Ignoring LoRA adapter '{path}': --lora-scaled cannot "
+                                 f"express a path containing a colon.")
+            continue
+        raw = scales[index].strip() if index < len(scales) else ""
+        try:
+            scale = "%g" % float(raw) if raw else "1.0"
+        except ValueError:
+            yield resolved, "1.0", (f"Ignoring LoRA scale '{raw}' for '{path}': not a "
+                                    f"number. Using 1.0.")
+            continue
+        yield resolved, scale, None
+
+
+@dataclass(frozen=True)
+class Lora:
+    """The `--lora-scaled` block, plus `--lora-init-without-apply`.
+
+    A LoRA adapter is applied at runtime rather than merged into the weights,
+    so one 17 GB base serves every fine-tune of it and swapping between them
+    costs nothing -- `POST /lora-adapters` changes a scale without a reload.
+    That is the whole reason this is a launch flag at all: what gets *loaded*
+    is fixed at exec, what is *applied* is not.
+
+    Preload-unapplied is emitted as `:0` on each adapter, **not** by relying on
+    `--lora-init-without-apply` alone. The server README says adapters loaded
+    with that flag "start at scale 0.0", and in llama-server they do not:
+    `common.cpp` only skips the one-time `common_set_adapter_lora` at startup,
+    while `server-context.cpp` assigns `slot.lora = params_base.lora_adapters`
+    for every task and re-applies it per batch -- so the first request restores
+    each adapter's configured scale. Measured on build b10434: launched with the
+    flag and `:1.0`, the very first completion came back in the adapter's voice.
+    A configured `:0` is what actually holds.
+
+    The flag is still passed, because skipping the startup application is real
+    and harmless; it is just not sufficient on its own.
+
+    This matters because adapters *stack*. A slot with two fine-tunes listed
+    would otherwise serve both blended together on its first request.
+
+    A path that names no file is dropped with a note rather than passed through:
+    llama-server exits on a missing adapter, which would arrive as a restart
+    loop instead of an error.
+    """
+
+    path_keys: tuple[str, ...] = ("LORA_PATHS",)
+    scale_keys: tuple[str, ...] = ("LORA_SCALES",)
+    init_keys: tuple[str, ...] = ("LORA_INIT_WITHOUT_APPLY",)
+
+    def resolve(self, env, prefixes, ctx=None):
+        if ctx and ctx.custom_has("--lora", "--lora-scaled"):
+            return []
+        raw = (lookup(env, self.path_keys, prefixes, empty_is_set=True) or "").strip()
+        if not raw:
+            return []
+        stack = (ctx.stack_dir if ctx else "") or str(env.get("STACK_DIR") or ".")
+        scales_raw = lookup(env, self.scale_keys, prefixes, empty_is_set=True) or ""
+
+        unapplied = (lookup(env, self.init_keys, prefixes) or "on").strip() == "on"
+
+        args: list[str] = []
+        for resolved, scale, problem in lora_pairs(raw, scales_raw, stack):
+            if problem and ctx:
+                ctx.say(problem)
+            if not scale:
+                continue
+            args += ["--lora-scaled", f"{resolved}:{'0' if unapplied else scale}"]
+
+        if args and unapplied:
+            args.append("--lora-init-without-apply")
+        return args
+
+
 @dataclass(frozen=True)
 class Speculative:
     """The `--spec-*` block. See `backends/speculative.py`."""

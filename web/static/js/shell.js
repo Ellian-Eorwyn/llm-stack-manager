@@ -11,6 +11,7 @@ let logSrc     = null;
 let cfgDirty   = {};
 let cfgCurrent = {};
 let ggufFiles  = [];
+let loraAdapters = [];
 let customModels = [];
 let activeModel = null;
 let ttsOverview = null;

@@ -468,6 +468,46 @@ function ggufSelectChanged(sel, targetId) {
   }
 }
 
+// -- LoRA adapters --
+// Adapters are stored as a comma-separated list in one field, because a backend
+// can hold several at once. The dropdown therefore appends rather than replaces,
+// and re-picking an adapter already in the list is a no-op instead of a duplicate
+// that llama-server would load twice.
+async function loadLoraAdapters() {
+  try {
+    const d = await fetchJSON('/api/lora-adapters');
+    loraAdapters = (d && d.adapters) || [];
+    populateLoraSelects();
+  } catch (e) { console.error('Failed to load LoRA adapters:', e); }
+}
+
+function populateLoraSelects() {
+  document.querySelectorAll('.lora-path-select').forEach(sel => {
+    while (sel.options.length > 1) sel.remove(1);
+    loraAdapters.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.relative;
+      opt.textContent = a.ok
+        ? `${a.relative} (${a.size_mb} MB)`
+        : `${a.relative} — unusable: ${a.error}`;
+      opt.disabled = !a.ok;
+      sel.appendChild(opt);
+    });
+    sel.selectedIndex = 0;
+  });
+}
+
+function loraSelectChanged(sel, targetId) {
+  const input = document.getElementById(targetId);
+  if (!input || !sel.value) return;
+  const current = input.value.split(',').map(v => v.trim()).filter(Boolean);
+  if (!current.includes(sel.value)) {
+    current.push(sel.value);
+    input.value = current.join(',');
+  }
+  sel.selectedIndex = 0;  // back to "-- Add adapter --", ready for the next one
+}
+
 function transcriptModelSelectChanged(sel, targetId) {
   const input = document.getElementById(targetId);
   if (input) input.value = sel.value;

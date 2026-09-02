@@ -45,7 +45,11 @@ function restoreReshapedFields() {
 // useless. The rest are bespoke -- a template manager, a custom-argument
 // editor, a transcription model list -- and every one of them is backed by a
 // local-only endpoint, so they say where to go instead of pretending.
-const CFG_GENERIC_TYPES = new Set(['text', 'number', 'select', 'path']);
+// `adapter_path` is here because its remote form is honestly a text input: a hub
+// cannot enumerate a peer's models/loras/, and the field's value is a plain
+// comma-separated list, so a free-text box edits it correctly rather than
+// refusing with "edit this on the host itself".
+const CFG_GENERIC_TYPES = new Set(['text', 'number', 'select', 'path', 'adapter_path']);
 
 // Whether the control on the page is the one the peer's declaration describes.
 // Compared against the DOM rather than against a second copy of this host's
@@ -315,6 +319,7 @@ async function loadConfig() {
   clearRemoteConfigForm();
   try {
     if (!ggufFiles.length) await loadGgufFiles();
+    if (!loraAdapters.length) await loadLoraAdapters();
     if (!chatTemplates.length) await loadChatTemplates();
     if (!Object.keys(transcriptionCapabilities).length) await loadTranscriptionCapabilities();
     // Driven by the engine registry rather than a hardcoded pair, so adding an

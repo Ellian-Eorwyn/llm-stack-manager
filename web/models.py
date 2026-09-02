@@ -44,6 +44,7 @@ from urllib.parse import quote, unquote, urlparse
 
 import jinja2
 
+import budget
 import config_env
 import core
 import setup_engine
@@ -158,6 +159,8 @@ def list_gguf_files() -> list:
         for f in sorted(core.MODELS_DIR.rglob("*.gguf")):
             if f.name.startswith('.'):
                 continue  # skip macOS resource forks and hidden files
+            if LORAS_SUBDIR in f.relative_to(core.MODELS_DIR).parts:
+                continue  # adapters have their own picker; they are not models
             files.append({
                 "path": str(f),
                 "name": f.name,
@@ -166,6 +169,87 @@ def list_gguf_files() -> list:
                 "is_mmproj": is_mmproj_gguf(f.name, f.stat().st_size),
             })
     return files
+
+
+#: Adapters live in their own directory so the base-model pickers do not have to
+#: tell a 40 MB LoRA apart from a 17 GB model by its name.
+LORAS_SUBDIR = "loras"
+
+
+def loras_dir():
+    return core.MODELS_DIR / LORAS_SUBDIR
+
+
+def list_lora_adapters() -> list:
+    """Return the LoRA adapter GGUFs under models/loras/.
+
+    An adapter is identified by its metadata -- `general.type` is "adapter" and
+    `adapter.type` is "lora" -- not by its filename. A converted adapter is an
+    ordinary .gguf and nothing in its name distinguishes it from a base model,
+    so a name heuristic would offer the operator a 17 GB model as an adapter and
+    llama-server would refuse it after exec.
+
+    A file that cannot be read is listed with `ok: False` and the reason rather
+    than dropped: a failed conversion sitting in the directory is something the
+    operator needs to see, not something to hide.
+    """
+    adapters = []
+    directory = loras_dir()
+    if not directory.is_dir():
+        return adapters
+    for path in sorted(directory.rglob("*.gguf")):
+        if path.name.startswith("."):
+            continue
+        entry = {
+            "path": str(path),
+            "name": path.name,
+            "relative": str(path.relative_to(directory)),
+            "size_mb": round(path.stat().st_size / (1024**2), 1),
+            "ok": False,
+            "error": "",
+            "base_arch": "",
+            "alpha": None,
+        }
+        try:
+            metadata = budget.read_gguf_metadata(path)
+        except Exception as exc:
+            entry["error"] = str(exc)
+            adapters.append(entry)
+            continue
+        if str(metadata.get("general.type", "")).lower() != "adapter":
+            entry["error"] = "not an adapter (general.type is %r)" % metadata.get("general.type", "")
+        elif str(metadata.get("adapter.type", "")).lower() != "lora":
+            entry["error"] = "unsupported adapter type %r" % metadata.get("adapter.type", "")
+        else:
+            entry["ok"] = True
+            entry["base_arch"] = str(metadata.get("general.architecture", ""))
+            entry["alpha"] = metadata.get("adapter.lora.alpha")
+        adapters.append(entry)
+    return adapters
+
+
+def configured_lora_scales(env: dict, slot_name: str) -> dict:
+    """Adapter path -> the scale configured for it, for one slot.
+
+    Keyed by the path llama-server reports, which is the path the launcher
+    passed it, so the two line up without re-deriving either.
+
+    Needed because "preload unapplied" boots every adapter at 0: the live scale
+    then says nothing about how strongly the operator wanted it applied, and
+    switching one on from the UI has to raise it to something.
+    """
+    import backends  # local: web/backends imports platforms, which app.py owns
+
+    slot = backends.SLOTS.get(slot_name)
+    if slot is None:
+        return {}
+    prefixes = slot.prefixes
+    paths = backends.spec.lookup(env, ("LORA_PATHS",), prefixes, empty_is_set=True) or ""
+    scales = backends.spec.lookup(env, ("LORA_SCALES",), prefixes, empty_is_set=True) or ""
+    return {resolved: float(scale)
+            for resolved, scale, problem in backends.options.lora_pairs(
+                paths, scales, str(core.STACK_DIR))
+            if scale and not problem}
 
 
 def is_mmproj_gguf(filename: str, size_bytes: int | None = None) -> bool:

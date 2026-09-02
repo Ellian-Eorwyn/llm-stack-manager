@@ -189,6 +189,13 @@ def _usable(key: str, value: str) -> bool:
     return " ;" not in value and " #" not in value
 
 
+def _lora_pairs(paths_raw: str, scales_raw: str):
+    """`backends.options.lora_pairs`, bound to this stack's directory."""
+    sys.path.insert(0, str(STACK_DIR / "web"))
+    from backends.options import lora_pairs  # noqa: PLC0415
+    return lora_pairs(paths_raw, scales_raw, str(STACK_DIR))
+
+
 def _model_is_hybrid(model_path: str):
     """True/False when the model's architecture is known, None when it is not.
 
@@ -323,6 +330,29 @@ def render_member(prefix: str, env: dict, warn=None) -> tuple[str, dict]:
         value = _clean(env.get(f"{prefix}_{suffix}"))
         if value:
             options[key] = value
+
+    # LoRA adapters. Two env keys become one option because llama.cpp takes
+    # `--lora-scaled` as a comma-separated FNAME:SCALE list, so the pairing has
+    # to happen here rather than passing either key through verbatim. The
+    # pairing itself is `backends.options.lora_pairs`, shared with the launcher
+    # so a pooled model and a standalone unit refuse the same things.
+    lora_paths = _clean(env.get(f"{prefix}_LORA_PATHS"))
+    if lora_paths:
+        # Preload-unapplied is `:0`, not the flag alone -- see the note on
+        # `backends.options.Lora`. llama-server re-applies each task's lora set
+        # from the configured scales, so only a configured 0 actually holds.
+        unapplied = (_clean(env.get(f"{prefix}_LORA_INIT_WITHOUT_APPLY")) or "on") == "on"
+        pairs = []
+        for resolved, scale, problem in _lora_pairs(
+                lora_paths, _clean(env.get(f"{prefix}_LORA_SCALES"))):
+            if problem:
+                warn(f"{prefix.lower()}: {problem}")
+            if scale:
+                pairs.append(f"{resolved}:{'0' if unapplied else scale}")
+        if pairs:
+            options["lora-scaled"] = ",".join(pairs)
+            if unapplied:
+                options["lora-init-without-apply"] = "true"
 
     # `--fit-ctx` only means anything to a server that is auto-fitting, and
     # `add_fit_ctx_opt` in scripts/lib/backend-preflight.sh drops it otherwise.

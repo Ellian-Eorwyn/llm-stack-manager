@@ -137,8 +137,12 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None,
     # parsed first: several of the tail's decisions are "unless they already
     # passed this themselves".
     custom = custom_args(env, slot.custom_args_keys, prefixes)
+    # `said if said is not None` rather than `said or []`: every caller passes a
+    # fresh empty list, and an empty list is falsy, so `or` swapped it for a new
+    # one and dropped every message the options wrote into it.
     ctx = Context(slot=slot, custom=tuple(custom),
-                  stack_dir=str(env.get("STACK_DIR") or ""), said=said or [])
+                  stack_dir=str(env.get("STACK_DIR") or ""),
+                  said=said if said is not None else [])
 
     for toggle in COMMON_TOGGLES:
         argv += toggle.resolve(env, prefixes, ctx)

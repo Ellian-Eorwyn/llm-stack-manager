@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -327,3 +328,150 @@ class SlotKeyOverrideTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoraAdapterTests(unittest.TestCase):
+    """`--lora-scaled`, which is how a fine-tune reaches a running backend.
+
+    The adapter is applied on top of the base model rather than merged into it,
+    so what these assert is the loading half: which files the launcher hands to
+    llama-server, and at what starting scale. Which of them is actually applied
+    is changed later over HTTP and is not a launch flag at all.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.stack = pathlib.Path(self.tmp.name)
+        (self.stack / "models" / "loras").mkdir(parents=True)
+        for name in ("voice.gguf", "other.gguf"):
+            (self.stack / "models" / "loras" / name).write_bytes(b"GGUF")
+        self.addCleanup(self.tmp.cleanup)
+
+    def build(self, slot="llm-a", **env):
+        said = ["-"]  # non-empty: an empty list is falsy and used to be dropped
+        argv = backends.build_command(
+            slot, dict(BASE, STACK_DIR=str(self.stack),
+                       LLM_A_MODEL_PATH="/models/a.gguf",
+                       LLM_B_MODEL_PATH="/models/b.gguf",
+                       TASK_MODEL_PATH="/models/t.gguf", **env),
+            said=said)
+        return argv, said[1:]
+
+    def lora_args(self, argv):
+        return [a for i, a in enumerate(argv)
+                if a.startswith("--lora") or (i and argv[i - 1] == "--lora-scaled")]
+
+    def test_no_adapters_emits_no_flags(self):
+        """A slot nobody configured must run exactly the command it always did."""
+        with as_linux():
+            argv, _ = self.build()
+        self.assertEqual(self.lora_args(argv), [])
+
+    def test_a_bare_name_resolves_under_models_loras(self):
+        with as_linux():
+            argv, _ = self.build(LLM_A_LORA_PATHS="voice.gguf")
+        self.assertEqual(self.lora_args(argv), [
+            "--lora-scaled", f"{self.stack}/models/loras/voice.gguf:0",
+            "--lora-init-without-apply",
+        ])
+
+    def test_preload_unapplied_boots_at_zero_rather_than_trusting_the_flag(self):
+        """`--lora-init-without-apply` is not sufficient on its own.
+
+        The server README says adapters loaded with it "start at scale 0.0".
+        In llama-server they do not: `common.cpp` only skips the one-time
+        `common_set_adapter_lora` at startup, and `server-context.cpp` then does
+        `slot.lora = params_base.lora_adapters` for every task and re-applies it
+        per batch, restoring each adapter's configured scale on the first
+        request. Measured on build b10434. `:0` is what actually holds.
+        """
+        with as_linux():
+            argv, _ = self.build(LLM_A_LORA_PATHS="voice.gguf",
+                                 LLM_A_LORA_SCALES="0.8")
+        self.assertIn(f"{self.stack}/models/loras/voice.gguf:0", argv)
+        self.assertNotIn(f"{self.stack}/models/loras/voice.gguf:0.8", argv)
+
+    def test_scales_pair_positionally_and_missing_ones_default_to_one(self):
+        """With preloading off, the configured scales are what the slot boots at."""
+        with as_linux():
+            argv, _ = self.build(LLM_A_LORA_PATHS="voice.gguf,other.gguf",
+                                 LLM_A_LORA_SCALES="0.8",
+                                 LLM_A_LORA_INIT_WITHOUT_APPLY="off")
+        self.assertEqual(self.lora_args(argv), [
+            "--lora-scaled", f"{self.stack}/models/loras/voice.gguf:0.8",
+            "--lora-scaled", f"{self.stack}/models/loras/other.gguf:1.0",
+        ])
+
+    def test_init_without_apply_can_be_turned_off(self):
+        """Off means every adapter applies from startup, and they stack."""
+        with as_linux():
+            argv, _ = self.build(LLM_A_LORA_PATHS="voice.gguf",
+                                 LLM_A_LORA_INIT_WITHOUT_APPLY="off")
+        self.assertNotIn("--lora-init-without-apply", argv)
+        self.assertIn("--lora-scaled", argv)
+
+    def test_a_missing_adapter_is_dropped_with_a_reason(self):
+        """llama-server exits on a missing adapter, which reads as a crash loop."""
+        with as_linux():
+            argv, said = self.build(LLM_A_LORA_PATHS="ghost.gguf")
+        self.assertEqual(self.lora_args(argv), [])
+        self.assertTrue(any("ghost.gguf" in m for m in said), said)
+
+    def test_a_scale_that_is_not_a_number_falls_back_to_one(self):
+        with as_linux():
+            argv, said = self.build(LLM_A_LORA_PATHS="voice.gguf",
+                                    LLM_A_LORA_SCALES="loud")
+        # The bad scale still resolves to 1.0; preloading then boots it at 0.
+        self.assertIn(f"{self.stack}/models/loras/voice.gguf:0", argv)
+        self.assertTrue(any("loud" in m for m in said), said)
+
+    def test_a_path_with_a_colon_is_refused_rather_than_mangled(self):
+        """`--lora-scaled` splits on the last colon; a path holding one lies."""
+        odd = self.stack / "models" / "loras" / "a:b.gguf"
+        odd.write_bytes(b"GGUF")
+        with as_linux():
+            argv, said = self.build(LLM_A_LORA_PATHS="a:b.gguf")
+        self.assertEqual(self.lora_args(argv), [])
+        self.assertTrue(any("colon" in m for m in said), said)
+
+    def test_the_operators_own_lora_flag_wins(self):
+        with as_linux():
+            argv, _ = self.build(LLM_A_LORA_PATHS="voice.gguf",
+                                 LLM_A_CUSTOM_ARGS_JSON='["--lora", "/x.gguf"]')
+        self.assertNotIn("--lora-scaled", argv)
+        self.assertEqual(argv[-2:], ["--lora", "/x.gguf"])
+
+    def test_every_adapter_capable_slot_reads_its_own_prefix(self):
+        for slot, key in (("llm-a", "LLM_A_LORA_PATHS"),
+                          ("llm-b", "LLM_B_LORA_PATHS"),
+                          ("task", "TASK_LORA_PATHS")):
+            with self.subTest(slot=slot), as_linux():
+                argv, _ = self.build(slot, **{key: "voice.gguf"})
+            self.assertIn(f"{self.stack}/models/loras/voice.gguf:0", argv)
+
+    def test_llm_a_inherits_the_legacy_chat_prefix(self):
+        """`LLM_A_*` falls back through `CHAT_PRIMARY_*` to `CHAT_*`, as the
+        rest of the slot's settings do."""
+        with as_linux():
+            argv, _ = self.build(CHAT_LORA_PATHS="voice.gguf")
+        self.assertIn(f"{self.stack}/models/loras/voice.gguf:0", argv)
+
+
+class SaidPropagationTests(unittest.TestCase):
+    """The messages an option writes have to reach the caller's list.
+
+    `said or []` swapped the caller's empty list for a fresh one, and every
+    caller passes an empty list -- so nothing an option said had ever been
+    printed by `scripts/lib/build-backend-command.py`.
+    """
+
+    def test_messages_reach_an_empty_list_the_caller_passed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            said = []
+            with as_linux():
+                backends.build_command(
+                    "llm-a",
+                    dict(BASE, STACK_DIR=tmp, LLM_A_MODEL_PATH="/models/a.gguf",
+                         LLM_A_LORA_PATHS="ghost.gguf"),
+                    said=said)
+            self.assertTrue(any("ghost.gguf" in m for m in said), said)

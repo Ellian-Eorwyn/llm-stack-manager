@@ -24,6 +24,7 @@ Note that `/props` reports context *per slot*, which is `--ctx-size` divided by
 
 import functools
 import json
+import os
 import re
 import subprocess
 import threading
@@ -616,6 +617,42 @@ def probe_props(base_url: str) -> dict | None:
         "modalities": data.get("modalities"),
         "is_sleeping": data.get("is_sleeping"),
     }
+
+
+def base_url_for_slot(env: dict, slot_name: str) -> str | None:
+    """Where a slot's llama-server answers, or None if the slot has no port.
+
+    Same port map `resolve_targets` uses, reached without a service-status
+    callback: the LoRA endpoints act on one named slot rather than sweeping all
+    of them, and whether the unit is active is what the request itself finds out.
+    """
+    slot = backends.SLOTS.get(slot_name)
+    if slot is None:
+        return None
+    port = (env.get(slot.port_key) or slot.port_default or "").strip()
+    if not port:
+        return None
+    host = (env.get(slot.probe_host_key) or "127.0.0.1").strip() or "127.0.0.1"
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
+def probe_lora_adapters(base_url: str) -> list[dict] | None:
+    """The adapters this backend loaded, with the scale each is applied at.
+
+    A backend started without `--lora` answers with an empty list, which is a
+    configuration state and not a failure; None means the backend could not be
+    reached at all.
+    """
+    data = _http_json(f"{base_url}/lora-adapters")
+    if not isinstance(data, list):
+        return None
+    return [{"id": entry.get("id"),
+             "path": entry.get("path"),
+             "name": os.path.basename(str(entry.get("path") or "")),
+             "scale": entry.get("scale")}
+            for entry in data if isinstance(entry, dict)]
 
 
 def probe_slots(base_url: str) -> list[dict] | None:

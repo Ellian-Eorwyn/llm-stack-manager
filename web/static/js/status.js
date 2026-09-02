@@ -34,6 +34,7 @@ async function poll() {
   try { await pollActiveModel(); } catch {}
   try { await pollModelRouter(); } catch {}
   try { await loadTtsOverview(true); } catch {}
+  try { await refreshLoraPanels(); } catch {}
 }
 
 // -- model router --

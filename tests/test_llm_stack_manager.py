@@ -1533,6 +1533,8 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/config/deprecations/migrate", ("POST",), "api_config_deprecations_migrate"),
         ("/api/config/preflight", ("POST",), "api_config_preflight"),
         ("/api/custom-model-arg-presets/match", ("POST",), "api_custom_model_arg_preset_match"),
+        ("/api/backends/<slot>/lora", ("GET",), "api_backend_lora"),
+        ("/api/backends/<slot>/lora", ("POST",), "api_backend_lora_set"),
         ("/api/custom-models", ("GET",), "api_custom_models_list"),
         ("/api/custom-models", ("POST",), "api_custom_models_add"),
         ("/api/custom-models/<model_id>", ("DELETE",), "api_custom_models_delete"),
@@ -1540,6 +1542,7 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/deploy/check", ("POST",), "api_deploy_check"),
         ("/api/deploy/status", ("GET",), "api_deploy_status"),
         ("/api/gguf-files", ("GET",), "api_gguf_files"),
+        ("/api/lora-adapters", ("GET",), "api_lora_adapters"),
         # The hub half of the fleet. Every proxied path is a fixed rule with a
         # fixed destination: a generic `/api/fleet/<id>/<path:rest>` on this
         # unauthenticated port would let anything that can reach 8077 issue

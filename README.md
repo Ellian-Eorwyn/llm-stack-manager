@@ -210,6 +210,25 @@ Callers are unaffected. nginx fronts 8005/8006/8007/8009 onto the router, which 
 
 `MODEL_ROUTER_MAX` is a count, not a memory budget: the router evicts least-recently-used but does not know how large the survivors are. Size it against measured free VRAM, or use `1` for strict one-at-a-time. Off by default; turning it off and re-running the installer restores the four units. See [docs/model-router.md](docs/model-router.md).
 
+## LoRA adapters (swapping between fine-tunes)
+
+`llm-a`, `llm-b` and `task` can each load LoRA adapters on top of the base model
+instead of serving a separately merged checkpoint. One base GGUF then serves
+every fine-tune of it: an adapter is tens of megabytes, several can be resident
+at once, and switching between them is a scale change on a model that is already
+in VRAM rather than a reload.
+
+Drop converted adapters in `models/loras/` (`scripts/import-lora-adapter.sh`
+converts a PEFT adapter directory and checks the result really is one), list them
+in the slot's **LoRA Adapters** config field, and switch between them with the
+sliders that appear on the backend's card on the Services page. Those take effect
+without restarting the backend.
+
+By default adapters are preloaded at scale 0 rather than applied, because
+llama-server otherwise applies every adapter passed to it and they stack — and
+`--lora-init-without-apply` alone does not prevent that, whatever the upstream
+README says. See [docs/lora-adapters.md](docs/lora-adapters.md).
+
 ## Transcription (speech-to-text)
 
 A sidecar on **port 8014** (`transcript-backend`) that turns audio into

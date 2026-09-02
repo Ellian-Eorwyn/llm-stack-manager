@@ -113,6 +113,9 @@ def _large_model_tail(kwargs: options.TemplateKwargs, template: options.Template
         template,
         *(() if mmproj_early else mmproj),
         options.Speculative(),
+        # Last, so that a slot with no adapters configured emits exactly the
+        # command line it emitted before adapters existed.
+        options.Lora(),
     )
 
 

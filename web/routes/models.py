@@ -13,17 +13,20 @@ Registered without a `url_prefix`, so the rules are exactly what they were in
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
 import uuid
 from urllib import error as urlerror
+from urllib import request as urlrequest
 
 from flask import Blueprint, jsonify, request
 
 import config_env
 import core
 import models
+import telemetry
 
 bp = Blueprint("models", __name__)
 
@@ -32,6 +35,92 @@ bp = Blueprint("models", __name__)
 def api_gguf_files():
     """List all .gguf files in the models directory."""
     return jsonify(models.list_gguf_files())
+
+
+@bp.route('/api/lora-adapters')
+def api_lora_adapters():
+    """List the LoRA adapter GGUFs available to attach to a backend."""
+    return jsonify({
+        "ok": True,
+        "directory": str(models.loras_dir()),
+        "adapters": models.list_lora_adapters(),
+    })
+
+
+@bp.route('/api/backends/<slot>/lora', methods=['GET'])
+def api_backend_lora(slot):
+    """What the running backend has loaded, and at what strength.
+
+    Distinct from `/api/lora-adapters`, which lists files on disk. This is the
+    live state: which of them this backend actually holds, with the id
+    llama-server assigns each one -- the id, not the path, is what a scale
+    change is addressed to.
+    """
+    env = config_env.read_env()
+    base_url = telemetry.base_url_for_slot(env, slot)
+    if base_url is None:
+        return jsonify(ok=False, error=f"unknown slot {slot!r}"), 404
+    adapters = telemetry.probe_lora_adapters(base_url)
+    if adapters is None:
+        return jsonify(ok=False, error=f"{slot} is not answering on {base_url}",
+                       adapters=[]), 503
+    # The strength the operator configured, alongside the one currently applied.
+    # With preloading on, everything boots at 0, so "switch this on" needs a
+    # target to raise it to and the live scale cannot supply one.
+    configured = models.configured_lora_scales(env, slot)
+    by_name = {path.rsplit("/", 1)[-1]: scale for path, scale in configured.items()}
+    for adapter in adapters:
+        path = adapter.get("path") or ""
+        # Matched on the full path first; on the basename as a fallback, because
+        # llama-server echoes the path it was given and a hand-launched backend
+        # may have been given a relative one.
+        adapter["configured_scale"] = configured.get(
+            path, by_name.get(path.rsplit("/", 1)[-1], 1.0))
+    return jsonify(ok=True, slot=slot, adapters=adapters)
+
+
+@bp.route('/api/backends/<slot>/lora', methods=['POST'])
+def api_backend_lora_set(slot):
+    """Change adapter scales on a running backend, without reloading it.
+
+    This is the whole point of applying adapters at runtime: switching between
+    fine-tunes is a scale change on a model that is already resident, so it
+    costs a request rather than a restart. A scale of 0 disables an adapter
+    without unloading it.
+
+    llama-server replaces the whole scale set on each call, so the caller sends
+    every adapter it wants applied, not just the one it changed.
+    """
+    base_url = telemetry.base_url_for_slot(config_env.read_env(), slot)
+    if base_url is None:
+        return jsonify(ok=False, error=f"unknown slot {slot!r}"), 404
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, list):
+        return jsonify(ok=False, error="expected a list of {id, scale} objects"), 400
+    scales = []
+    for entry in payload:
+        if not isinstance(entry, dict) or "id" not in entry or "scale" not in entry:
+            return jsonify(ok=False, error="each entry needs an id and a scale"), 400
+        try:
+            scales.append({"id": int(entry["id"]), "scale": float(entry["scale"])})
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error=f"bad id or scale in {entry!r}"), 400
+
+    body = json.dumps(scales).encode()
+    req = urlrequest.Request(f"{base_url}/lora-adapters", data=body, method="POST",
+                             headers={"Content-Type": "application/json"})
+    try:
+        with urlrequest.urlopen(req, timeout=telemetry.PROBE_TIMEOUT_SECONDS) as response:
+            response.read()
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:400]
+        return jsonify(ok=False, error=f"{slot} refused the change: {detail or exc.reason}"), 502
+    except Exception as exc:
+        return jsonify(ok=False, error=f"{slot} is not answering on {base_url}: {exc}"), 503
+
+    return jsonify(ok=True, slot=slot,
+                   adapters=telemetry.probe_lora_adapters(base_url) or [])
 
 
 @bp.route('/api/transcription-models/<engine_id>')

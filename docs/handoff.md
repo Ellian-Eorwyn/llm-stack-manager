@@ -135,13 +135,19 @@ Each of these was found the hard way. None is obvious from the code.
   hash.** An edited template or script needs a manager restart *and* a forced
   reload before a browser shows it. Editing and re-testing without both is how
   you conclude a working fix does not work.
+- **`llamacpp.build(..., said=[])` used to throw the caller's list away.**
+  `said or []` swapped an empty list for a fresh one, and every caller passes an
+  empty list, so no message any option wrote — an ignored `--device`, an inert
+  `--fit-ctx`, a rejected n-gram mode — had ever reached the journal. Fixed to
+  `said if said is not None`; `SaidPropagationTests` pins it. If you see notes in
+  the journal that were never there before, this is why.
 - **`document.hidden` is true in a headless browser pane**, and `poll()` returns
   early on it. A blank fleet view there is the visibility guard, not a bug.
 
 ## 5. How to verify
 
 ```bash
-bash test.sh && bash test.sh      # 956 tests, 5 skipped, both runners
+bash test.sh && bash test.sh      # 984+ tests, both runners
 ```
 
 The tools that make a change here safe rather than hopeful:

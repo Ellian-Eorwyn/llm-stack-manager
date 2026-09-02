@@ -197,6 +197,10 @@ class TaskSettingCoverageTests(unittest.TestCase):
             "MODEL_PATH", "MMPROJ_PATH", "MODEL_NAME", "CUSTOM_ARGS_JSON",
             "THINKING", "REASONING_EFFORT", "CHAT_TEMPLATE_ID",
             "LOAD_ON_STARTUP",
+            # Carried, but computed rather than looked up: the two path/scale
+            # keys become one `lora-scaled` list, so neither can be a member of
+            # VALUE_OPTIONS.
+            "LORA_PATHS", "LORA_SCALES", "LORA_INIT_WITHOUT_APPLY",
         }
         declared = {
             field["key"][len("TASK_"):]

@@ -965,6 +965,21 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 .card-drag-handle:hover { color: var(--text-dim); }
 .card-drag-handle:active { cursor: grabbing; }
 .card-drag-handle svg { width: 14px; height: 14px; }
+/* LoRA adapter control, rendered into a service card only when the backend
+   reports adapters. A row is dim at scale 0 and lights up when applied, so the
+   card answers "which fine-tune am I serving" at a glance. */
+.card-lora:empty { display: none; }
+.lora-panel { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.lora-hdr { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
+.lora-row { display: grid; grid-template-columns: 18px 1fr 90px 34px; align-items: center; gap: 8px; margin-bottom: 4px; opacity: 0.55; transition: opacity 0.15s; }
+.lora-toggle { background: none; border: none; padding: 0; cursor: pointer; color: var(--muted); font-size: 13px; line-height: 1; }
+.lora-row.on .lora-toggle { color: var(--success); }
+.lora-row.on { opacity: 1; }
+.lora-name { font-size: 12px; font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lora-row.on .lora-name { color: var(--success); }
+.lora-scale { width: 100%; accent-color: var(--success); cursor: pointer; }
+.lora-value { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; }
+
 .svc-card.dragging { opacity: 0.5; box-shadow: 0 8px 16px rgba(0,0,0,0.2); }
 .svc-cards { min-height: 40px; } /* Ensure empty groups can accept drops */
 
@@ -1237,6 +1252,9 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         <div class="card-health" id="health-{{ svc.name }}"></div>
         <div class="card-router" id="router-{{ svc.name }}"></div>
         <div class="card-ctx" id="ctx-{{ svc.name }}"></div>
+        {# Filled by lora.js, and only for a backend that actually loaded
+           adapters -- a slot with none renders nothing here. #}
+        <div class="card-lora" id="lora-{{ svc.name }}"></div>
         <div class="card-acts">
           <button class="btn btn-success btn-sm" onclick="svcAction('{{ svc.name }}','start',this)">Start</button>
           <button class="btn btn-danger  btn-sm" onclick="svcAction('{{ svc.name }}','stop',this)">Stop</button>
@@ -1660,6 +1678,19 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
            placeholder="{{ f.get('hint','') }}"
            oninput="markDirty('{{ section }}')">
   </div>
+  {% elif f.type == 'adapter_path' %}
+  {# Like 'path', except the dropdown appends to a comma-separated list rather
+     than replacing it: a backend can hold several adapters at once. Only the
+     <input> carries name=, so collectConfigFormValues() is unchanged. #}
+  <div class="path-picker">
+    <select class="lora-path-select" data-target="cfg-{{ f.key }}" onchange="loraSelectChanged(this, 'cfg-{{ f.key }}'); markDirty('{{ section }}')">
+      <option value="">-- Add adapter --</option>
+    </select>
+    <input id="cfg-{{ f.key }}" name="{{ f.key }}"
+           type="text" class="mono"
+           placeholder="{{ f.get('hint','') }}"
+           oninput="markDirty('{{ section }}')">
+  </div>
   {% elif f.type == 'executable_path' %}
   <input id="cfg-{{ f.key }}" name="{{ f.key }}"
          type="text" class="mono"
@@ -1682,7 +1713,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
          placeholder="{{ f.get('hint','') }}"
          oninput="markDirty('{{ section }}')">
   {% endif %}
-  {% if f.get('hint') and f.type not in ('path',) %}
+  {% if f.get('hint') and f.type not in ('path', 'adapter_path') %}
   <span class="hint">{{ f.hint }}</span>
   {% endif %}
   {# Filled in by refreshShadowedAliasHints() from /api/config/deprecations.
@@ -1791,7 +1822,8 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set behavior_keys = [backend_prefix ~ '_TEMP', backend_prefix ~ '_TOP_P', backend_prefix ~ '_TOP_K', backend_prefix ~ '_MIN_P', backend_prefix ~ '_REASONING_FORMAT', backend_prefix ~ '_PRESERVE_THINKING', backend_prefix ~ '_REASONING_EFFORT'] %}
       {% set spec_keys = [backend_prefix ~ '_SPEC_METHOD', backend_prefix ~ '_SPEC_NGRAM_MOD', backend_prefix ~ '_SPEC_DRAFT_MODEL_PATH', backend_prefix ~ '_SPEC_DRAFT_N_GPU_LAYERS', backend_prefix ~ '_SPEC_DRAFT_DEVICES', backend_prefix ~ '_SPEC_DRAFT_TYPE_K', backend_prefix ~ '_SPEC_DRAFT_TYPE_V', backend_prefix ~ '_SPEC_DRAFT_N_MAX', backend_prefix ~ '_SPEC_DRAFT_N_MIN', backend_prefix ~ '_SPEC_DRAFT_P_MIN', backend_prefix ~ '_SPEC_DRAFT_P_SPLIT', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MATCH', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MIN', backend_prefix ~ '_SPEC_NGRAM_MOD_N_MAX', backend_prefix ~ '_SPEC_NGRAM_SIZE_N', backend_prefix ~ '_SPEC_NGRAM_SIZE_M', backend_prefix ~ '_SPEC_NGRAM_MIN_HITS'] %}
       {% set custom_args_key = backend_prefix ~ '_CUSTOM_ARGS_JSON' %}
-      {% set curated = identity_keys + shared_keys + gpu_keys + behavior_keys + spec_keys + [backend_prefix ~ '_CUSTOM_ARGS_JSON'] %}
+      {% set lora_keys = [backend_prefix ~ '_LORA_PATHS', backend_prefix ~ '_LORA_SCALES', backend_prefix ~ '_LORA_INIT_WITHOUT_APPLY'] %}
+      {% set curated = identity_keys + shared_keys + gpu_keys + behavior_keys + spec_keys + lora_keys + [backend_prefix ~ '_CUSTOM_ARGS_JSON'] %}
 
       <div class="cfg-panel" style="margin-bottom:20px;">
         <h4>Model Identity And Files</h4>
@@ -1881,6 +1913,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         </div>
 
         <div class="cfg-panel">
+          <h4>LoRA Adapters</h4>
+          <p>LoRA adapters are applied on top of the loaded model rather than merged into it, so one base GGUF serves every fine-tune of it. What is listed here is what gets <em>loaded</em> at launch; which of them is actually <em>applied</em>, and how strongly, is a slider on the Services page that takes effect without a restart. Drop converted adapters in <code>models/loras/</code>.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in lora_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
           <h4>Custom llama.cpp Arguments</h4>
           <p>These flags are appended to this backend launch. Use this for model-family flags like <code>--jinja</code> or template kwargs that should follow the loaded model.</p>
       {% for f in fields if f.key == custom_args_key %}
@@ -1894,7 +1936,8 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       {% set task_gpu_keys = ['TASK_GPU_VISIBLE_DEVICES', 'TASK_DEVICE', 'TASK_N_GPU_LAYERS', 'TASK_MAIN_GPU', 'TASK_TENSOR_SPLIT', 'TASK_SPLIT_MODE', 'TASK_KV_OFFLOAD', 'TASK_OP_OFFLOAD', 'TASK_MMPROJ_OFFLOAD', 'TASK_CACHE_TYPE_K', 'TASK_CACHE_TYPE_V', 'TASK_CACHE_RAM', 'TASK_CTX_CHECKPOINTS', 'TASK_CACHE_IDLE_SLOTS', 'TASK_CACHE_REUSE', 'TASK_SWA_FULL', 'TASK_NO_MMAP', 'TASK_MLOCK'] %}
       {% set task_sampling_keys = ['TASK_TEMP', 'TASK_TOP_P', 'TASK_TOP_K', 'TASK_MIN_P', 'TASK_PRESENCE_PENALTY', 'TASK_REPEAT_PENALTY'] %}
       {% set task_spec_keys = ['TASK_SPEC_METHOD', 'TASK_SPEC_NGRAM_MOD', 'TASK_SPEC_DRAFT_MODEL_PATH', 'TASK_SPEC_DRAFT_N_GPU_LAYERS', 'TASK_SPEC_DRAFT_DEVICES', 'TASK_SPEC_DRAFT_TYPE_K', 'TASK_SPEC_DRAFT_TYPE_V', 'TASK_SPEC_DRAFT_N_MAX', 'TASK_SPEC_DRAFT_N_MIN', 'TASK_SPEC_DRAFT_P_MIN', 'TASK_SPEC_DRAFT_P_SPLIT', 'TASK_SPEC_NGRAM_MOD_N_MATCH', 'TASK_SPEC_NGRAM_MOD_N_MIN', 'TASK_SPEC_NGRAM_MOD_N_MAX', 'TASK_SPEC_NGRAM_SIZE_N', 'TASK_SPEC_NGRAM_SIZE_M', 'TASK_SPEC_NGRAM_MIN_HITS'] %}
-      {% set curated = task_identity_keys + task_runtime_keys + task_gpu_keys + task_sampling_keys + task_spec_keys + ['TASK_CUSTOM_ARGS_JSON'] %}
+      {% set task_lora_keys = ['TASK_LORA_PATHS', 'TASK_LORA_SCALES', 'TASK_LORA_INIT_WITHOUT_APPLY'] %}
+      {% set curated = task_identity_keys + task_runtime_keys + task_gpu_keys + task_sampling_keys + task_spec_keys + task_lora_keys + ['TASK_CUSTOM_ARGS_JSON'] %}
       <div class="cfg-panel-grid">
         <div class="cfg-panel">
           <h4>Model Identity And Files</h4>
@@ -1951,6 +1994,16 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
           <p>Use llama.cpp speculative decoding to accelerate the task model. Select the base mode, then tune draft and n-gram values separately.</p>
           <div class="cfg-grid tight">
             {% for f in fields if f.key in task_spec_keys %}
+            {{ render_config_field(f, section) }}
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="cfg-panel">
+          <h4>LoRA Adapters</h4>
+          <p>LoRA adapters are applied on top of the loaded model rather than merged into it, so one base GGUF serves every fine-tune of it. What is listed here is what gets <em>loaded</em> at launch; which of them is actually <em>applied</em>, and how strongly, is a slider on the Services page that takes effect without a restart. Drop converted adapters in <code>models/loras/</code>.</p>
+          <div class="cfg-grid tight">
+            {% for f in fields if f.key in task_lora_keys %}
             {{ render_config_field(f, section) }}
             {% endfor %}
           </div>
@@ -2343,6 +2396,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 <script src="{{ url_for('static', filename='js/deploy.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/telemetry.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/models.js') }}?v={{ asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/lora.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/config.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/setup.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/tts.js') }}?v={{ asset_version }}"></script>
