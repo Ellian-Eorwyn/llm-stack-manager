@@ -156,17 +156,39 @@ The staged path out, so no stage can break a saved config:
 2. **Done.** `GET /api/config/deprecations` names every legacy key still on
    disk, what replaces it, and whether its canonical twin is already present.
    It reports saved profiles separately.
+
+   It walks what is *written down*, through `canonical_name_for`, rather than
+   iterating `LEGACY_ENV_KEY_MAP`. The map is generated from `CONFIG_FIELDS`, so
+   a setting with no UI control is not in it — and six of them (`CHAT2_TEMP`,
+   `TOP_P`, `TOP_K`, `MIN_P`, `REASONING_FORMAT`, `LOG_PREFIX`) are live, because
+   `backends/spec.py` resolves a slot's suffixes over its `legacy_prefixes`
+   whether or not a field declares them. Iterating the map reported 55 on a host
+   with 61 written down, and step 3 then migrated the 55 and left the rest under
+   a banner reading zero.
 3. **Done, opt-in.** `POST /api/config/deprecations/migrate` rewrites
-   `llm-stack.env` onto the canonical names. `update_env_values` already
-   collapses a canonical key's legacy aliases onto one line when it writes, so
+   `llm-stack.env` onto the canonical names. `update_env_values` collapses a
+   canonical key's legacy aliases onto one line when it writes — from
+   `legacy_names_for`, which knows the prefix rule as well as the map — so
    migrating is writing each canonical key with the value the configuration
-   already resolves to — a rename, not a change.
+   already resolves to. A rename, not a change. Anything it passes over comes
+   back in `skipped` rather than being dropped quietly.
 4. **Not taken.** Once a report comes back empty on a host, drop the legacy
    names from `allowed_config_keys` so they stop being writable at all, keeping
    `LEGACY_ENV_KEY_MAP` for read-side backfill of old profiles.
 
 Step 4 is deliberately left undone: it is only safe once step 3 has run and the
-report is empty, and that is an operator action rather than a code change.
+report is empty, and that is an operator action rather than a code change. Note
+that `allowed_config_keys` also unions whatever the env file already holds, so a
+key that is *deleted* from the file stops being writable without any code change
+at all — which is what makes purging the residue durable rather than cosmetic.
+
+**Two spellings, two different rules.** `CHAT_PRIMARY_*` and `CHAT2_*` are
+renames: read, and rewritten on write. A bare `CHAT_*` key is read behind
+`LLM_A_*` — it is `llm-a`'s second legacy prefix — but it is never rewritten,
+because the bare prefix is shared with settings that belong to no slot
+(`CHAT_BEE_*`) and with the frozen port contract (`CHAT_BACKEND_PORT`). So
+`legacy_names_for` knows it and `canonical_name_for` does not, and that
+asymmetry is the whole of `_SHADOWED_SLOT_PREFIXES`.
 
 **Saved profiles are never rewritten.** They are user data, and a profile
 carrying only `CHAT_DENSE_MODEL_PATH` would lose its model if the key were

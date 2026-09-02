@@ -211,13 +211,19 @@ class ClearedMeansClearedTests(unittest.TestCase):
             box.cleanup()
 
     def test_an_emptied_fit_ctx_is_not_inherited_from_the_legacy_key(self):
-        argv = self._argv(CHAT_FIT="on", LLM_A_FIT_CTX="", CHAT_FIT_CTX="8192")
+        argv = self._argv(LLM_A_FIT="on", LLM_A_FIT_CTX="", CHAT_FIT_CTX="8192")
+        # Auto-fit has to actually be on, or "no --fit-ctx" says nothing about
+        # the chain. It went vacuous exactly once, when the example started
+        # spelling this key `LLM_A_FIT` and the test still set `CHAT_FIT`: the
+        # canonical `off` from the example shadowed the legacy `on` here, and
+        # the launcher stopped emitting `--fit-ctx` for an unrelated reason.
+        self.assertEqual(argv[argv.index("--fit") + 1], "on")
         self.assertNotIn("--fit-ctx", argv)
 
     def test_an_absent_fit_ctx_still_falls_back_to_the_legacy_key(self):
         # The control for the case above: without it, "no --fit-ctx" would also
         # pass if the flag had simply stopped being emitted at all.
-        argv = self._argv(CHAT_FIT="on", LLM_A_FIT_CTX=None, CHAT_FIT_CTX="8192")
+        argv = self._argv(LLM_A_FIT="on", LLM_A_FIT_CTX=None, CHAT_FIT_CTX="8192")
         self.assertEqual(argv[argv.index("--fit-ctx") + 1], "8192")
 
     def test_an_emptied_mmproj_is_not_inherited_from_the_legacy_key(self):
