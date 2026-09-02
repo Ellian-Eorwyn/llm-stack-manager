@@ -1,0 +1,469 @@
+diff --git a/graphiti_core/utils/maintenance/node_operations.py b/graphiti_core/utils/maintenance/node_operations.py
+index 10f18d2..06c9ad0 100644
+--- a/graphiti_core/utils/maintenance/node_operations.py
++++ b/graphiti_core/utils/maintenance/node_operations.py
+@@ -138,10 +138,77 @@ async def _extract_nodes_single(
+ ) -> list[ExtractedEntity]:
+     """Extract entities using a single LLM call."""
+     llm_response = await _call_extraction_llm(llm_client, episode, context)
+-    response_object = ExtractedEntities(**llm_response)
++    response_object = ExtractedEntities(**_normalize_extracted_entities_payload(llm_response))
+     return response_object.extracted_entities
+ 
+ 
++def _normalize_extracted_entities_payload(llm_response: Any) -> dict[str, Any]:
++    """
++    Normalize common local-model JSON shapes to ExtractedEntities schema.
++
++    Expected shape:
++      {"extracted_entities":[{"name":"...", "entity_type_id":0}, ...]}
++
++    Common observed variants:
++      [{"entity":"...", "entity_type_id":0}]
++      {"entities":[{"entity":"...", "entity_type_id":0}]}
++      {"extracted_entities":[{"entity":"...", "entity_type_id":0}]}
++    """
++    if isinstance(llm_response, dict):
++        if isinstance(llm_response.get('extracted_entities'), list):
++            candidates = llm_response['extracted_entities']
++        elif isinstance(llm_response.get('entities'), list):
++            candidates = llm_response['entities']
++        elif isinstance(llm_response.get('entity_nodes'), list):
++            candidates = llm_response['entity_nodes']
++        else:
++            # Preserve original payload to let pydantic raise a precise error for unknown shapes.
++            return llm_response
++    elif isinstance(llm_response, list):
++        candidates = llm_response
++    else:
++        return {'extracted_entities': []}
++
++    normalized: list[dict[str, Any]] = []
++    for item in candidates:
++        if not isinstance(item, dict):
++            continue
++        name = item.get('name')
++        if not isinstance(name, str) or not name.strip():
++            entity_name = item.get('entity')
++            if isinstance(entity_name, str) and entity_name.strip():
++                name = entity_name
++        if not isinstance(name, str) or not name.strip():
++            entity_text = item.get('entity_text')
++            if isinstance(entity_text, str) and entity_text.strip():
++                name = entity_text
++        if not isinstance(name, str) or not name.strip():
++            value = item.get('value')
++            if isinstance(value, str) and value.strip():
++                name = value
++        if not isinstance(name, str) or not name.strip():
++            continue
++
++        type_id = item.get('entity_type_id', 0)
++        if not isinstance(type_id, int):
++            try:
++                type_id = int(type_id)
++            except (TypeError, ValueError):
++                type_id = 0
++
++        normalized.append({'name': name.strip(), 'entity_type_id': type_id})
++
++    if isinstance(llm_response, dict) and llm_response.get('extracted_entities') == normalized:
++        return llm_response
++    logger.warning(
++        'Normalized non-standard ExtractedEntities payload shape from LLM output '
++        '(keys=%s, normalized_count=%d)',
++        list(llm_response.keys()) if isinstance(llm_response, dict) else type(llm_response).__name__,
++        len(normalized),
++    )
++    return {'extracted_entities': normalized}
++
++
+ async def _call_extraction_llm(
+     llm_client: LLMClient,
+     episode: EpisodicNode,
+diff --git a/server/graph_service/config.py b/server/graph_service/config.py
+index d3edb22..f27a552 100644
+--- a/server/graph_service/config.py
++++ b/server/graph_service/config.py
+@@ -3,20 +3,55 @@ from typing import Annotated
+ 
+ from fastapi import Depends
+ from pydantic import Field
++from pydantic import model_validator
+ from pydantic_settings import BaseSettings, SettingsConfigDict  # type: ignore
+ 
+ 
+ class Settings(BaseSettings):
+-    openai_api_key: str
++    openai_api_key: str | None = Field(default='llm-stack-local')
++
++    # LLM endpoint/model settings
++    llm_base_url: str | None = Field(None)
++    llm_model_name: str | None = Field(None)
++
++    # Embedding endpoint/model settings
++    embedding_base_url: str | None = Field(None)
++    embedding_model_name: str | None = Field(None)
++
++    # Reranker endpoint/model settings
++    reranker_provider: str = Field('llamacpp')
++    reranker_base_url: str | None = Field(None)
++    reranker_model_name: str | None = Field(None)
++
++    # Back-compat with upstream names
+     openai_base_url: str | None = Field(None)
+     model_name: str | None = Field(None)
+-    embedding_model_name: str | None = Field(None)
++
++    # Graph DB settings
+     neo4j_uri: str
+     neo4j_user: str
+     neo4j_password: str
++    neo4j_database: str = Field('neo4j')
++
++    # Retrieval safety/tuning settings
++    memory_max_query_chars: int = Field(1200)
++    memory_max_messages: int = Field(6)
++    memory_max_facts: int = Field(10)
+ 
+     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
+ 
++    @model_validator(mode='after')
++    def apply_legacy_fallbacks(self):
++        if self.llm_base_url is None:
++            self.llm_base_url = self.openai_base_url
++        if self.llm_model_name is None:
++            self.llm_model_name = self.model_name
++        if self.embedding_base_url is None:
++            self.embedding_base_url = self.llm_base_url
++        if self.reranker_base_url is None:
++            self.reranker_base_url = self.llm_base_url
++        return self
++
+ 
+ @lru_cache
+ def get_settings():
+diff --git a/server/graph_service/main.py b/server/graph_service/main.py
+index e85638e..09467bc 100644
+--- a/server/graph_service/main.py
++++ b/server/graph_service/main.py
+@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
+ 
+ from graph_service.config import get_settings
+ from graph_service.routers import ingest, retrieve
+-from graph_service.zep_graphiti import initialize_graphiti
++from graph_service.zep_graphiti import initialize_graphiti, shutdown_graphiti
+ 
+ 
+ @asynccontextmanager
+@@ -13,8 +13,7 @@ async def lifespan(_: FastAPI):
+     settings = get_settings()
+     await initialize_graphiti(settings)
+     yield
+-    # Shutdown
+-    # No need to close Graphiti here, as it's handled per-request
++    await shutdown_graphiti()
+ 
+ 
+ app = FastAPI(lifespan=lifespan)
+diff --git a/server/graph_service/routers/ingest.py b/server/graph_service/routers/ingest.py
+index d035631..4b2b725 100644
+--- a/server/graph_service/routers/ingest.py
++++ b/server/graph_service/routers/ingest.py
+@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
+ from functools import partial
+ 
+ from fastapi import APIRouter, FastAPI, status
++from graphiti_core.errors import NodeNotFoundError  # type: ignore
+ from graphiti_core.nodes import EpisodeType  # type: ignore
+ from graphiti_core.utils.maintenance.graph_data_operations import clear_data  # type: ignore
+ 
+@@ -17,12 +18,18 @@ class AsyncWorker:
+ 
+     async def worker(self):
+         while True:
++            job = None
+             try:
+                 print(f'Got a job: (size of remaining queue: {self.queue.qsize()})')
+                 job = await self.queue.get()
+                 await job()
+             except asyncio.CancelledError:
+                 break
++            except Exception as exc:
++                print(f'Ingestion worker job failed: {exc}')
++            finally:
++                if job is not None:
++                    self.queue.task_done()
+ 
+     async def start(self):
+         self.task = asyncio.create_task(self.worker())
+@@ -54,15 +61,23 @@ async def add_messages(
+     graphiti: ZepGraphitiDep,
+ ):
+     async def add_messages_task(m: Message):
+-        await graphiti.add_episode(
+-            uuid=m.uuid,
+-            group_id=request.group_id,
+-            name=m.name,
+-            episode_body=f'{m.role or ""}({m.role_type}): {m.content}',
+-            reference_time=m.timestamp,
+-            source=EpisodeType.message,
+-            source_description=m.source_description,
+-        )
++        params = {
++            "group_id": request.group_id,
++            "name": m.name,
++            "episode_body": f'{m.role or ""}({m.role_type}): {m.content}',
++            "reference_time": m.timestamp,
++            "source": EpisodeType.message,
++            "source_description": m.source_description,
++        }
++        if m.uuid:
++            try:
++                await graphiti.add_episode(uuid=m.uuid, **params)
++                return
++            except NodeNotFoundError:
++                # If caller sends a UUID for a brand-new message, Graphiti attempts a lookup and fails.
++                # Retry as create to keep ingestion non-blocking.
++                pass
++        await graphiti.add_episode(**params)
+ 
+     for m in request.messages:
+         await async_worker.queue.put(partial(add_messages_task, m))
+diff --git a/server/graph_service/routers/retrieve.py b/server/graph_service/routers/retrieve.py
+index d42df2a..1059fdc 100644
+--- a/server/graph_service/routers/retrieve.py
++++ b/server/graph_service/routers/retrieve.py
+@@ -2,6 +2,7 @@ from datetime import datetime, timezone
+ 
+ from fastapi import APIRouter, status
+ 
++from graph_service.config import ZepEnvDep
+ from graph_service.dto import (
+     GetMemoryRequest,
+     GetMemoryResponse,
+@@ -14,12 +15,21 @@ from graph_service.zep_graphiti import ZepGraphitiDep, get_fact_result_from_edge
+ router = APIRouter()
+ 
+ 
++def _trim_text(text: str, max_chars: int) -> str:
++    if max_chars <= 0 or len(text) <= max_chars:
++        return text
++    if max_chars < 4:
++        return text[:max_chars]
++    return text[: max_chars - 3] + '...'
++
++
+ @router.post('/search', status_code=status.HTTP_200_OK)
+-async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
++async def search(query: SearchQuery, graphiti: ZepGraphitiDep, settings: ZepEnvDep):
++    num_results = max(1, min(query.max_facts, settings.memory_max_facts))
+     relevant_edges = await graphiti.search(
+         group_ids=query.group_ids,
+         query=query.query,
+-        num_results=query.max_facts,
++        num_results=num_results,
+     )
+     facts = [get_fact_result_from_edge(edge) for edge in relevant_edges]
+     return SearchResults(
+@@ -45,12 +55,16 @@ async def get_episodes(group_id: str, last_n: int, graphiti: ZepGraphitiDep):
+ async def get_memory(
+     request: GetMemoryRequest,
+     graphiti: ZepGraphitiDep,
++    settings: ZepEnvDep,
+ ):
+-    combined_query = compose_query_from_messages(request.messages)
++    max_messages = max(1, settings.memory_max_messages)
++    combined_query = compose_query_from_messages(request.messages[-max_messages:])
++    combined_query = _trim_text(combined_query, settings.memory_max_query_chars)
++    num_results = max(1, min(request.max_facts, settings.memory_max_facts))
+     result = await graphiti.search(
+         group_ids=[request.group_id],
+         query=combined_query,
+-        num_results=request.max_facts,
++        num_results=num_results,
+     )
+     facts = [get_fact_result_from_edge(edge) for edge in result]
+     return GetMemoryResponse(facts=facts)
+diff --git a/server/graph_service/zep_graphiti.py b/server/graph_service/zep_graphiti.py
+index 097c9f3..3a2b867 100644
+--- a/server/graph_service/zep_graphiti.py
++++ b/server/graph_service/zep_graphiti.py
+@@ -1,22 +1,48 @@
++import asyncio
+ import logging
++from urllib.parse import urlparse
+ from typing import Annotated
+ 
+ from fastapi import Depends, HTTPException
+ from graphiti_core import Graphiti  # type: ignore
++from graphiti_core.cross_encoder import OpenAIRerankerClient
++from graphiti_core.cross_encoder.client import CrossEncoderClient
++from graphiti_core.driver.neo4j_driver import Neo4jDriver
+ from graphiti_core.edges import EntityEdge  # type: ignore
++from graphiti_core.embedder import EmbedderClient, OpenAIEmbedder
++from graphiti_core.embedder.openai import OpenAIEmbedderConfig
+ from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError, NodeNotFoundError
+-from graphiti_core.llm_client import LLMClient  # type: ignore
++from graphiti_core.llm_client import LLMClient, LLMConfig, OpenAIClient  # type: ignore
++from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient  # type: ignore
+ from graphiti_core.nodes import EntityNode, EpisodicNode  # type: ignore
+ 
+ from graph_service.config import ZepEnvDep
+ from graph_service.dto import FactResult
++from graph_service.llm_stack_reranker import LlamaCppRerankerClient
+ 
+ logger = logging.getLogger(__name__)
++_graphiti_client: 'ZepGraphiti | None' = None
++_graphiti_client_lock = asyncio.Lock()
+ 
+ 
+ class ZepGraphiti(Graphiti):
+-    def __init__(self, uri: str, user: str, password: str, llm_client: LLMClient | None = None):
+-        super().__init__(uri, user, password, llm_client)
++    def __init__(
++        self,
++        uri: str,
++        user: str,
++        password: str,
++        llm_client: LLMClient,
++        embedder: EmbedderClient,
++        cross_encoder: CrossEncoderClient,
++        neo4j_database: str,
++    ):
++        driver = Neo4jDriver(uri=uri, user=user, password=password, database=neo4j_database)
++        super().__init__(
++            llm_client=llm_client,
++            embedder=embedder,
++            cross_encoder=cross_encoder,
++            graph_driver=driver,
++        )
+ 
+     async def save_entity_node(self, name: str, uuid: str, group_id: str, summary: str = ''):
+         new_node = EntityNode(
+@@ -71,32 +97,104 @@ class ZepGraphiti(Graphiti):
+             raise HTTPException(status_code=404, detail=e.message) from e
+ 
+ 
+-async def get_graphiti(settings: ZepEnvDep):
+-    client = ZepGraphiti(
+-        uri=settings.neo4j_uri,
+-        user=settings.neo4j_user,
+-        password=settings.neo4j_password,
++def _use_generic_openai_client(base_url: str | None) -> bool:
++    if not base_url:
++        return False
++    try:
++        host = (urlparse(base_url).hostname or '').lower()
++    except Exception:
++        return True
++    # Local/OpenAI-compatible servers usually don't support Responses.parse reliably.
++    if host in {'localhost', '127.0.0.1', '0.0.0.0'}:
++        return True
++    if host.startswith('192.168.') or host.startswith('10.') or host.startswith('172.'):
++        return True
++    return 'openai.com' not in host
++
++
++def build_llm_client(settings: ZepEnvDep) -> LLMClient:
++    model_name = settings.llm_model_name or 'qwen-chat'
++    config = LLMConfig(
++        api_key=settings.openai_api_key,
++        model=model_name,
++        base_url=settings.llm_base_url,
+     )
+-    if settings.openai_base_url is not None:
+-        client.llm_client.config.base_url = settings.openai_base_url
+-    if settings.openai_api_key is not None:
+-        client.llm_client.config.api_key = settings.openai_api_key
+-    if settings.model_name is not None:
+-        client.llm_client.model = settings.model_name
++    if _use_generic_openai_client(settings.llm_base_url):
++        logger.info(
++            'Using OpenAIGenericClient for Graphiti extraction (base_url=%s model=%s)',
++            settings.llm_base_url,
++            model_name,
++        )
++        return OpenAIGenericClient(config=config)
++    return OpenAIClient(config=config)
+ 
+-    try:
+-        yield client
+-    finally:
+-        await client.close()
+ 
++def build_embedder(settings: ZepEnvDep) -> OpenAIEmbedder:
++    embedding_model = settings.embedding_model_name or 'qwen-embedding'
++    config = OpenAIEmbedderConfig(
++        api_key=settings.openai_api_key,
++        base_url=settings.embedding_base_url,
++        embedding_model=embedding_model,
++    )
++    return OpenAIEmbedder(config=config)
+ 
+-async def initialize_graphiti(settings: ZepEnvDep):
+-    client = ZepGraphiti(
+-        uri=settings.neo4j_uri,
+-        user=settings.neo4j_user,
+-        password=settings.neo4j_password,
++
++def build_reranker(settings: ZepEnvDep) -> CrossEncoderClient:
++    provider = settings.reranker_provider.lower().strip()
++    model_name = settings.reranker_model_name or 'qwen-reranker'
++
++    if provider in {'llamacpp', 'llama.cpp', 'llama_cpp'}:
++        return LlamaCppRerankerClient(
++            base_url=settings.reranker_base_url or settings.llm_base_url or '',
++            model=model_name,
++            api_key=settings.openai_api_key,
++        )
++
++    # Fallback: OpenAI-compatible chat-completion reranker
++    config = LLMConfig(
++        api_key=settings.openai_api_key,
++        model=model_name,
++        base_url=settings.reranker_base_url or settings.llm_base_url,
+     )
+-    await client.build_indices_and_constraints()
++    return OpenAIRerankerClient(config=config)
++
++
++async def get_graphiti(settings: ZepEnvDep):
++    await initialize_graphiti(settings)
++    # Shared app-lifecycle client (do not close per request).
++    assert _graphiti_client is not None
++    yield _graphiti_client
++
++
++async def initialize_graphiti(settings: ZepEnvDep):
++    global _graphiti_client
++    if _graphiti_client is not None:
++        return
++    async with _graphiti_client_lock:
++        if _graphiti_client is not None:
++            return
++        llm_client = build_llm_client(settings)
++        embedder = build_embedder(settings)
++        reranker = build_reranker(settings)
++        client = ZepGraphiti(
++            uri=settings.neo4j_uri,
++            user=settings.neo4j_user,
++            password=settings.neo4j_password,
++            llm_client=llm_client,
++            embedder=embedder,
++            cross_encoder=reranker,
++            neo4j_database=settings.neo4j_database,
++        )
++        await client.build_indices_and_constraints()
++        _graphiti_client = client
++
++
++async def shutdown_graphiti():
++    global _graphiti_client
++    async with _graphiti_client_lock:
++        if _graphiti_client is not None:
++            await _graphiti_client.close()
++            _graphiti_client = None
+ 
+ 
+ def get_fact_result_from_edge(edge: EntityEdge):

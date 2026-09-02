@@ -1,5 +1,11 @@
 # Runtime configuration and local state
 /config/llm-stack.env
+# Copies of the env file, however they were made. The installed stack is a
+# checkout, so a backup left beside the original is an untracked file inside it
+# -- which is the one condition update.sh refuses to run under. Backing up the
+# config must not cost you the ability to update.
+/config/llm-stack.env.bak*
+/config/llm-stack.env.devbak
 /config/honcho.env
 /config/custom-models.json
 # Peer addresses and their credentials. Per-install state, never committed.
@@ -20,6 +26,12 @@
 /hermes/
 /playwright/node_modules/
 /playwright/logs/
+
+# Local patch sets that are not ours to publish. patches/hermes-agent and
+# patches/llama.cpp are committed on purpose -- they are patches against public
+# upstreams. This one is a rendered Frigate config carrying camera credentials
+# and a LAN address, and this repository is public.
+/patches/frigate/
 
 # Python/runtime artifacts
 .venv/
