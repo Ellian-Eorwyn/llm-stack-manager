@@ -135,6 +135,12 @@ Each of these was found the hard way. None is obvious from the code.
   hash.** An edited template or script needs a manager restart *and* a forced
   reload before a browser shows it. Editing and re-testing without both is how
   you conclude a working fix does not work.
+- **A fine-tune's dataset is built by `scripts/finetune/`, and its runs live at
+  `/mnt/LLMs/unsloth/runs/<name>/`, not in this repo.** `corpus.py report --run
+  <name>` prints everything about one in a single call. The three defaults in
+  `train.py` that look arbitrary — explicit `target_modules`, a response part of
+  `</think>\n\n`, and `reasoning_effort medium` — each prevent a specific,
+  documented failure; `docs/fine-tuning.md` says which.
 - **`llamacpp.build(..., said=[])` used to throw the caller's list away.**
   `said or []` swapped an empty list for a fresh one, and every caller passes an
   empty list, so no message any option wrote — an ignored `--device`, an inert

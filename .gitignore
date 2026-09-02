@@ -38,6 +38,11 @@
 .test-venv/
 */.venv/
 __pycache__/
+
+# Unsloth writes a compiled-trainer cache into the working directory the
+# moment it is imported, so running scripts/finetune/train.py from the
+# repo root drops 3.5 MB of generated trainer subclasses here.
+unsloth_compiled_cache/
 *.py[cod]
 .pytest_cache/
 

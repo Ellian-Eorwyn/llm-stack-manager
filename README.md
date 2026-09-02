@@ -210,6 +210,29 @@ Callers are unaffected. nginx fronts 8005/8006/8007/8009 onto the router, which 
 
 `MODEL_ROUTER_MAX` is a count, not a memory budget: the router evicts least-recently-used but does not know how large the survivors are. Size it against measured free VRAM, or use `1` for strict one-at-a-time. Off by default; turning it off and re-running the installer restores the four units. See [docs/model-router.md](docs/model-router.md).
 
+## Fine-tuning (a folder of documents to an adapter)
+
+`scripts/finetune/` turns a directory of source material — markdown, PDFs, docx,
+transcripts — into a validated SFT dataset, then trains a LoRA on it:
+
+```bash
+python3 scripts/finetune/corpus.py ingest ~/Documents/SomeCorpus --run my-voice
+python3 scripts/finetune/corpus.py build  --run my-voice --shape style
+python3 scripts/finetune/corpus.py validate --run my-voice
+python3 scripts/finetune/corpus.py report --run my-voice
+```
+
+Four dataset shapes (`style`, `dialogue`, `qa`, `raw`), a quality gate that
+refuses truncated rows and bibliographies rather than warning about them, and a
+report that renders one row through the real chat template so a train/serve
+mismatch is visible before a run rather than after. Training is a separate,
+deliberate step on the card that is not serving. See
+[docs/fine-tuning.md](docs/fine-tuning.md).
+
+Only `ingest` and `build` need anything installed — `pandoc` and `poppler-utils`
+for document conversion. Training needs the Unsloth venv, which lives outside
+this repo.
+
 ## LoRA adapters (swapping between fine-tunes)
 
 `llm-a`, `llm-b` and `task` can each load LoRA adapters on top of the base model
