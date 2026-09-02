@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import pathlib
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -264,15 +266,27 @@ class ExampleMergeTests(unittest.TestCase):
         return [line.split("=", 1)[0] for line in self.example.splitlines()
                 if line and not line.startswith("#") and "=" in line]
 
+    #: The old spelling each canonical prefix has to answer to, and which an
+    #: existing config is most likely to be holding. Named rather than inferred:
+    #: asserting only that *some* alias exists passed throughout the window in
+    #: which `LLM_A_TENSOR_SPLIT` knew `CHAT_PRIMARY_TENSOR_SPLIT` and not
+    #: `CHAT_TENSOR_SPLIT`, which is the spelling every host actually had.
+    LIVE_ALIAS_PREFIX = {"LLM_A_": "CHAT_", "LLM_B_": "CHAT2_"}
+
     def test_every_renamed_example_key_knows_its_old_spelling(self):
         """The check `install.sh` makes. A key here with no older name is one
         that would be appended over a config still using the old one."""
+        checked = 0
         for key in self._example_keys():
-            if not key.startswith(("LLM_A_", "LLM_B_")):
-                continue
-            with self.subTest(key):
-                self.assertTrue(self.fields.legacy_names_for(key),
-                                f"{key} would be written over its pre-rename twin")
+            for new_prefix, old_prefix in self.LIVE_ALIAS_PREFIX.items():
+                if not key.startswith(new_prefix):
+                    continue
+                checked += 1
+                alias = old_prefix + key[len(new_prefix):]
+                with self.subTest(key):
+                    self.assertIn(alias, self.fields.legacy_names_for(key),
+                                  f"{key} would be written over {alias}")
+        self.assertTrue(checked, "no renamed example keys — the check would be vacuous")
 
     def test_the_helper_covers_keys_no_field_declares(self):
         """`LLM_B_TEMP` is in the example and in no field list, so the declared
@@ -280,9 +294,77 @@ class ExampleMergeTests(unittest.TestCase):
         keys through after the first attempt at this fix."""
         self.assertIn("CHAT2_TEMP", self.fields.legacy_names_for("LLM_B_TEMP"))
         self.assertIn("CHAT_PRIMARY_TEMP", self.fields.legacy_names_for("LLM_A_TEMP"))
+        self.assertIn("CHAT_TEMP", self.fields.legacy_names_for("LLM_A_TEMP"))
 
     def test_the_frozen_port_keys_are_not_treated_as_renamed(self):
-        self.assertEqual(self.fields.legacy_names_for("CHAT2_BACKEND_PORT"), ())
+        for key in ("CHAT2_BACKEND_PORT", "CHAT2_BACKEND_HOST",
+                    "CHAT_BACKEND_PORT", "CHAT_BACKEND_HOST"):
+            with self.subTest(key):
+                self.assertEqual(self.fields.legacy_names_for(key), ())
+                self.assertEqual(self.fields.canonical_name_for(key), key)
+        # And from the other side: no `LLM_*` key claims them as an old spelling.
+        for key in ("LLM_A_BACKEND_PORT", "LLM_B_BACKEND_PORT"):
+            with self.subTest(key):
+                self.assertEqual(self.fields.legacy_names_for(key), ())
+
+    def test_the_bare_chat_prefix_is_read_but_never_written(self):
+        """`CHAT_*` is llm-a's second legacy prefix, so `legacy_names_for` has to
+        know it or the example rename shadows live values. It must not reach the
+        write side: the bare prefix is shared with `CHAT_BEE_*`, which names no
+        slot, and rewriting those would invent `LLM_A_BEE_*` keys."""
+        self.assertEqual(self.fields.canonical_name_for("CHAT_TENSOR_SPLIT"),
+                         "CHAT_TENSOR_SPLIT")
+        self.assertEqual(self.fields.canonical_name_for("CHAT_BEE_LABEL"), "CHAT_BEE_LABEL")
+        self.assertNotIn("CHAT_BEE_LABEL", self.fields.LEGACY_ENV_KEY_MAP)
+
+    def _run_merge(self, example_text: str, config_text: str) -> str:
+        """`install.sh`'s own merge body, run against a throwaway pair.
+
+        Extracted rather than reimplemented: a copy of the guard would pass
+        while the shipped one was broken, which is the failure this whole file
+        exists to prevent. The `except Exception` fallback in it degrades to no
+        legacy awareness at all, so running the real body is also the only way
+        to notice if the import ever stops working.
+        """
+        body = (ROOT / "install.sh").read_text().split("<<'PYMERGEDEFAULTS'\n", 1)[1]
+        body = body.split("\nPYMERGEDEFAULTS", 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            example = pathlib.Path(tmp) / "example.env"
+            config = pathlib.Path(tmp) / "llm-stack.env"
+            example.write_text(example_text)
+            config.write_text(config_text)
+            subprocess.run([sys.executable, "-c", body, str(example), str(config),
+                            str(ROOT), "llm"], check=True)
+            return config.read_text()
+
+    def test_an_example_default_is_never_appended_over_a_live_legacy_value(self):
+        """The 65-key incident, as a test. A host on the far side of the rename
+        holds `CHAT_TENSOR_SPLIT`; the example holds `LLM_A_TENSOR_SPLIT`. They
+        are one setting, so appending the example's default does not fill a gap,
+        it shadows the operator's value -- `normalize_env_keys` backfills the
+        canonical key only when the canonical is absent."""
+        merged = self._run_merge(
+            "LLM_A_TENSOR_SPLIT=1,1\nLLM_B_TEMP=0.7\n",
+            "CHAT_TENSOR_SPLIT=1,1.25\nCHAT2_TEMP=1.0\n")
+        self.assertNotIn("LLM_A_TENSOR_SPLIT", merged)
+        self.assertNotIn("LLM_B_TEMP", merged)
+        self.assertIn("CHAT_TENSOR_SPLIT=1,1.25", merged)
+
+    def test_a_genuinely_missing_key_is_still_appended(self):
+        """Guard the guard: if the suppression matched everything, the test
+        above would pass vacuously and installs would stop getting defaults."""
+        merged = self._run_merge("LLM_A_TENSOR_SPLIT=1,1\n", "LLM_A_CTX_SIZE=32768\n")
+        self.assertIn("LLM_A_TENSOR_SPLIT=1,1", merged)
+
+    def test_canonical_name_for_is_flat_and_not_a_chain(self):
+        """The prefix rule restated for the inverse: one lookup reaches the
+        current name, from any spelling, for everything on disk anywhere."""
+        candidates = set(self._example_keys()) | set(self.fields.LEGACY_ENV_KEY_MAP)
+        candidates |= {"CHAT2_TEMP", "CHAT_PRIMARY_TEMP", "CHAT_BEE_LABEL"}
+        for key in candidates:
+            once = self.fields.canonical_name_for(key)
+            with self.subTest(key):
+                self.assertEqual(self.fields.canonical_name_for(once), once)
 
 
 class OneSourceTests(unittest.TestCase):

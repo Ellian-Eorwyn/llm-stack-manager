@@ -28,67 +28,31 @@ from pathlib import Path
 
 marker = Path(sys.argv[1])
 stack_dir = marker.parent.parent
-config_path = stack_dir / "config" / "llm-stack.env"
 name = re.sub(r"[^\w-]", "_", marker.read_text().strip())
 saved_path = stack_dir / "config" / "saved" / f"{name}.json"
 if not saved_path.exists():
     raise SystemExit(0)
 
+# The manager's own writer, not a copy of it. This block used to carry its own
+# legacy map, its own CODE_* mirror table and its own quoting -- three tables
+# that had to be kept in step with `web/config_fields.py` and were not. The map
+# still pointed `CHAT_MODEL_27B_PATH` at `CHAT_DENSE_MODEL_PATH`, itself a legacy
+# name two renames ago, so the one path that runs before anything else on a
+# reboot was the one path reintroducing the spellings every other path had
+# retired. It also wrote every key in the profile literally, with no allow-list.
+# Both, and in this order, matching `scripts/lib/boot-services.py`: `config_env`
+# reaches `core`, which imports `setup_engine` from `scripts/`.
+sys.path.insert(0, str(stack_dir / "scripts"))
+sys.path.insert(0, str(stack_dir / "web"))
+import config_env  # noqa: E402
+
 data = json.loads(saved_path.read_text())
 updates = {k: str(v) for k, v in data.items() if not k.startswith("_") and isinstance(v, str)}
+updates = config_env.filter_config_updates(updates)
+updates = config_env.apply_code_chat_mirrors(updates)
+if updates:
+    config_env.update_env_values(updates)
 
-legacy_map = {
-    "CHAT_MODEL_27B_PATH": "CHAT_DENSE_MODEL_PATH",
-    "CHAT_MMPROJ_27B_PATH": "CHAT_DENSE_MMPROJ_PATH",
-    "CHAT_27B_CTX_SIZE": "CHAT_DENSE_CTX_SIZE",
-    "CHAT_MODEL_35B_PATH": "CHAT_MOE_MODEL_PATH",
-    "CHAT_MMPROJ_35B_PATH": "CHAT_MOE_MMPROJ_PATH",
-    "CHAT_35B_CTX_SIZE": "CHAT_MOE_CTX_SIZE",
-}
-updates = {legacy_map.get(k, k): v for k, v in updates.items()}
-
-code_to_chat = {
-    "CODE_CTX_SIZE": ["CHAT_CTX_SIZE", "CHAT_DENSE_CTX_SIZE", "CHAT_MOE_CTX_SIZE"],
-    "CODE_N_PARALLEL": ["CHAT_N_PARALLEL"],
-    "CODE_THREADS": ["CHAT_THREADS"],
-    "CODE_THREADS_BATCH": ["CHAT_THREADS_BATCH"],
-    "CODE_N_GPU_LAYERS": ["CHAT_N_GPU_LAYERS"],
-    "CODE_TENSOR_SPLIT": ["CHAT_TENSOR_SPLIT"],
-    "CODE_SPLIT_MODE": ["CHAT_SPLIT_MODE"],
-    "CODE_FLASH_ATTN": ["CHAT_FLASH_ATTN"],
-    "CODE_CACHE_TYPE_K": ["CHAT_CACHE_TYPE_K"],
-    "CODE_CACHE_TYPE_V": ["CHAT_CACHE_TYPE_V"],
-    "CODE_BATCH_SIZE": ["CHAT_BATCH_SIZE"],
-    "CODE_UBATCH_SIZE": ["CHAT_UBATCH_SIZE"],
-    "CODE_NO_MMAP": ["CHAT_NO_MMAP"],
-    "CODE_MLOCK": ["CHAT_MLOCK"],
-    "CODE_GPU_VISIBLE_DEVICES": ["CHAT_GPU_VISIBLE_DEVICES"],
-    "CODE_REASONING_FORMAT": ["CHAT_REASONING_FORMAT"],
-    "CODE_FIT": ["CHAT_FIT"],
-}
-for code_key, chat_keys in code_to_chat.items():
-    if code_key in updates:
-        for chat_key in chat_keys:
-            if chat_key not in updates:
-                updates[chat_key] = updates[code_key]
-
-content = config_path.read_text()
-
-def quote_env(value: str) -> str:
-    if value == "":
-        return '""'
-    if re.fullmatch(r"[A-Za-z0-9_./,:@%+-]+", value):
-        return value
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-for key, value in updates.items():
-    rendered = quote_env(value)
-    pattern = re.compile(r"^" + re.escape(key) + r"=.*$", re.MULTILINE)
-    if pattern.search(content):
-        content = pattern.sub(f"{key}={rendered}", content, count=1)
-    else:
-        content += f"\n{key}={rendered}\n"
-config_path.write_text(re.sub(r"\n{3,}", "\n\n", content))
 
 # A saved profile used to record which of three mutually exclusive units served
 # the primary slot. There is one unit per slot now, so any profile that had a

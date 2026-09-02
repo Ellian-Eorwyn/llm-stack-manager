@@ -44,27 +44,25 @@ from config_fields import (
     CONFIG_FIELDS,
     LEGACY_ENV_KEY_MAP,
     LLAMA_SPLIT_MODE_OPTIONS,
-    NEW_ENV_KEY_LEGACY_ALIASES,
     RESTART_HINTS,
     TRANSCRIPTION_ENGINES,
+    canonical_name_for,
+    legacy_names_for,
     repair_transcription_model,
 )
 
 
 def apply_code_chat_mirrors(updates: dict) -> dict:
-    """Mirror code backend-level settings onto shared chat backend keys.
+    """Mirror code backend-level settings onto the slot that serves them.
 
-    Full saved configs contain both CODE_* and CHAT_* values. In that case the
-    explicit CHAT_* value must win, otherwise legacy CODE_BATCH_SIZE defaults
-    overwrite saved shared-backend batch settings during load/startup.
+    Full saved configs contain both `CODE_*` and the slot's own values. In that
+    case the explicit slot value must win, otherwise legacy `CODE_BATCH_SIZE`
+    defaults overwrite saved backend batch settings during load/startup.
     """
     expanded = dict(updates)
-    for code_key, chat_key in CODE_TO_CHAT_MIRRORS.items():
-        if code_key in updates:
-            chat_keys = chat_key if isinstance(chat_key, list) else [chat_key]
-            for key in chat_keys:
-                if key not in updates:
-                    expanded[key] = updates[code_key]
+    for code_key, slot_key in CODE_TO_CHAT_MIRRORS.items():
+        if code_key in updates and slot_key not in updates:
+            expanded[slot_key] = updates[code_key]
     return expanded
 
 
@@ -81,6 +79,15 @@ def normalize_env_keys(env: dict) -> dict:
             elif legacy_key == "CHAT_MOE_LABEL" and value.strip() == "Backend MoE":
                 value = "LLM B"
             normalized[new_key] = value
+    # The map only knows keys some field declares. `CHAT2_TEMP` and five more
+    # like it are live -- the launcher resolves a slot's suffixes over its
+    # `legacy_prefixes` -- and would otherwise never resolve to their canonical
+    # name. That gap is what let the deprecation report claim 55 legacy keys on
+    # a host that had 61 written down.
+    for legacy_key in list(normalized):
+        canonical = canonical_name_for(legacy_key)
+        if canonical != legacy_key and canonical not in normalized:
+            normalized[canonical] = normalized[legacy_key]
     backend_defaults = {
         "LLM_A_LABEL": "LLM A",
         "LLM_A_MODEL_NAME": "chat-dense",
@@ -161,26 +168,39 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CODE2_MODEL_NAME", "code2")
     normalized.setdefault("PROXY_STREAM_PASSTHROUGH", "off")
     normalized.setdefault("UPSTREAM_400_CAPTURE_ENABLED", "off")
-    normalized.setdefault("THINK_TEMP", normalized.get("CHAT_TEMP", "0.7"))
+
+    def slot_a(suffix: str, default: str) -> str:
+        """A slot-A sampler default, canonical name first.
+
+        `LLM_A_TEMP` and `CHAT_TEMP` are one setting under two spellings: a
+        migrated host has only the first, an unmigrated one only the second.
+        Reading the legacy name alone meant that promoting `CHAT_TEMP` to its
+        canonical spelling silently reverted every persona to the hardcoded
+        default -- the personas seed off the backend, so the rename has to be
+        invisible to them.
+        """
+        return normalized.get("LLM_A_" + suffix, normalized.get("CHAT_" + suffix, default))
+
+    normalized.setdefault("THINK_TEMP", slot_a("TEMP", "0.7"))
     normalized.setdefault("THINK_MAX_TOKENS", "0")
-    normalized.setdefault("THINK_TOP_P", normalized.get("CHAT_TOP_P", "0.95"))
-    normalized.setdefault("THINK_TOP_K", normalized.get("CHAT_TOP_K", "20"))
-    normalized.setdefault("THINK_MIN_P", normalized.get("CHAT_MIN_P", "0.00"))
+    normalized.setdefault("THINK_TOP_P", slot_a("TOP_P", "0.95"))
+    normalized.setdefault("THINK_TOP_K", slot_a("TOP_K", "20"))
+    normalized.setdefault("THINK_MIN_P", slot_a("MIN_P", "0.00"))
     normalized.setdefault("THINK_PRESENCE_PENALTY", "0.00")
     normalized.setdefault("THINK_REPEAT_PENALTY", "1.00")
-    normalized.setdefault("THINK_REASONING_FORMAT", normalized.get("CHAT_REASONING_FORMAT", "deepseek"))
+    normalized.setdefault("THINK_REASONING_FORMAT", slot_a("REASONING_FORMAT", "deepseek"))
     normalized.setdefault("THINK_JINJA", "on")
     normalized.setdefault("THINK_PRESERVE_THINKING", "on")
     normalized.setdefault("THINK_REASONING_STREAM_MODE", "hidden")
     normalized.setdefault("THINK_REASONING_EFFORT", "xhigh")
-    normalized.setdefault("NOTHINK_TEMP", normalized.get("CHAT_TEMP", "0.7"))
+    normalized.setdefault("NOTHINK_TEMP", slot_a("TEMP", "0.7"))
     normalized.setdefault("NOTHINK_MAX_TOKENS", "0")
-    normalized.setdefault("NOTHINK_TOP_P", normalized.get("CHAT_TOP_P", "0.95"))
-    normalized.setdefault("NOTHINK_TOP_K", normalized.get("CHAT_TOP_K", "20"))
-    normalized.setdefault("NOTHINK_MIN_P", normalized.get("CHAT_MIN_P", "0.00"))
+    normalized.setdefault("NOTHINK_TOP_P", slot_a("TOP_P", "0.95"))
+    normalized.setdefault("NOTHINK_TOP_K", slot_a("TOP_K", "20"))
+    normalized.setdefault("NOTHINK_MIN_P", slot_a("MIN_P", "0.00"))
     normalized.setdefault("NOTHINK_PRESENCE_PENALTY", "0.00")
     normalized.setdefault("NOTHINK_REPEAT_PENALTY", "1.00")
-    normalized.setdefault("NOTHINK_REASONING_FORMAT", normalized.get("CHAT_REASONING_FORMAT", "deepseek"))
+    normalized.setdefault("NOTHINK_REASONING_FORMAT", slot_a("REASONING_FORMAT", "deepseek"))
     normalized.setdefault("NOTHINK_JINJA", "on")
     normalized.setdefault("NOTHINK_PRESERVE_THINKING", "off")
     normalized.setdefault("NOTHINK_REASONING_STREAM_MODE", "hidden")
@@ -549,7 +569,11 @@ def update_env_values(updates: dict):
         content = f.read()
     for key, value in updates.items():
         rendered = _quote_env_value(value)
-        aliases = [key] + NEW_ENV_KEY_LEGACY_ALIASES.get(key, [])
+        # `legacy_names_for`, not the map-derived alias index: the map only
+        # knows keys a field declares, so writing `LLM_B_TEMP` would leave
+        # `CHAT2_TEMP` sitting beside it and the migration would report a
+        # success that left the old line in the file.
+        aliases = [key] + list(legacy_names_for(key))
         replaced = False
         for alias in aliases:
             pattern = re.compile(r'^' + re.escape(alias) + r'=.*$', re.MULTILINE)
@@ -567,10 +591,17 @@ def update_env_values(updates: dict):
 
 
 def normalize_config_updates(updates: dict) -> dict:
+    """Rewrite legacy keys in an update payload onto their canonical names.
+
+    `canonical_name_for` rather than the map alone, so a saved profile written
+    before the rename applies its `CHAT2_TEMP` as `LLM_B_TEMP` instead of having
+    it dropped by `allowed_config_keys` -- profiles are never rewritten, so this
+    is the only place their older spellings get honoured.
+    """
     normalized = {}
     for key, value in updates.items():
-        target = LEGACY_ENV_KEY_MAP.get(key, key)
-        if target in normalized and key in LEGACY_ENV_KEY_MAP:
+        target = canonical_name_for(key)
+        if target in normalized and target != key:
             continue
         normalized[target] = value
     return normalized

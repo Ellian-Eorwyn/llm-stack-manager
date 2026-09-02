@@ -1431,6 +1431,65 @@ class EnvDeprecationTests(unittest.TestCase):
         self.assertNotIn("CHAT_DENSE_MODEL_PATH", written)
         self.assertEqual(resolved["LLM_A_MODEL_PATH"], "/models/a.gguf")
 
+    #: Suffixes both slots take but no `CONFIG_FIELDS` entry declares, so
+    #: `LEGACY_ENV_KEY_MAP` -- which is generated from the fields -- never sees
+    #: them. The launcher does: it resolves a slot's suffixes over its
+    #: `legacy_prefixes`. Reporting from the map alone said 55 on a host with 61
+    #: written down, and Migrate then left these six behind a banner reading zero.
+    FIELDLESS_SUFFIXES = ("TEMP", "TOP_P", "TOP_K", "MIN_P",
+                          "REASONING_FORMAT", "LOG_PREFIX")
+
+    def test_a_legacy_key_no_field_declares_is_still_reported(self):
+        self.config_file.write_text(
+            "".join(f"CHAT2_{s}=x\n" for s in self.FIELDLESS_SUFFIXES))
+        with self._patches()[0], self._patches()[1]:
+            report = manager.collect_env_deprecations()
+        self.assertEqual(report["migratable"], len(self.FIELDLESS_SUFFIXES))
+        self.assertEqual(
+            {entry["replacement"] for entry in report["env_keys"]},
+            {f"LLM_B_{s}" for s in self.FIELDLESS_SUFFIXES})
+
+    def test_migrating_a_key_no_field_declares_removes_the_old_line(self):
+        """The regression that made this worth doing: writing the canonical key
+        without collapsing its alias left both spellings in the file, and the
+        report -- which only knew the map -- called it clean."""
+        self.config_file.write_text("CHAT2_TEMP=1.0\n")
+        with manager.app.test_client() as client, self._patches()[0], self._patches()[1]:
+            response = client.post("/api/config/deprecations/migrate")
+            after = manager.collect_env_deprecations()
+        written = self.config_file.read_text()
+        self.assertEqual(response.get_json()["skipped"], [])
+        self.assertIn("LLM_B_TEMP=1.0", written)
+        self.assertNotIn("CHAT2_TEMP", written)
+        self.assertEqual(after["migratable"], 0)
+
+    def test_the_frozen_port_key_is_never_migrated(self):
+        self.config_file.write_text("CHAT2_BACKEND_PORT=8020\nCHAT2_TEMP=1.0\n")
+        with manager.app.test_client() as client, self._patches()[0], self._patches()[1]:
+            client.post("/api/config/deprecations/migrate")
+        written = self.config_file.read_text()
+        self.assertIn("CHAT2_BACKEND_PORT=8020", written)
+        self.assertNotIn("LLM_B_BACKEND_PORT", written)
+
+    def test_a_write_collapses_the_legacy_line_it_replaces(self):
+        """`update_env_values` renames in place rather than appending beside.
+        Both prefixes: `CHAT_*` is llm-a's second legacy spelling and is the one
+        an unmigrated host actually holds."""
+        self.config_file.write_text(
+            "# tuning\nCHAT2_TEMP=1.0\nCHAT_TENSOR_SPLIT=1,1\nCHAT_BACKEND_PORT=8010\n")
+        with self._patches()[0]:
+            config_env.update_env_values(
+                {"LLM_B_TEMP": "0.9", "LLM_A_TENSOR_SPLIT": "1,1.25"})
+        written = self.config_file.read_text()
+        self.assertNotIn("CHAT2_TEMP", written)
+        self.assertNotIn("CHAT_TENSOR_SPLIT", written)
+        self.assertIn("LLM_B_TEMP=0.9", written)
+        self.assertIn("LLM_A_TENSOR_SPLIT=1,1.25", written)
+        # The comment above the renamed line survives, and the port contract is
+        # not swept up by the prefix it shares.
+        self.assertIn("# tuning", written)
+        self.assertIn("CHAT_BACKEND_PORT=8010", written)
+
     def test_read_env_raw_shows_the_file_without_backfill(self):
         self.config_file.write_text("CHAT_DENSE_MODEL_PATH=/models/a.gguf\n")
         with self._patches()[0]:
@@ -1811,6 +1870,39 @@ class ConfigNormalizationTests(unittest.TestCase):
                 else:
                     self.assertTrue(env[canonical])
 
+    def test_normalize_env_keys_backfills_a_rename_no_field_declares(self):
+        """The map is generated from `CONFIG_FIELDS`, so a setting with no UI
+        control is not in it -- but the launcher still reads it, through the
+        slot's `legacy_prefixes`. Without this the migration reported the key
+        and then skipped it, because the canonical name resolved to nothing."""
+        for suffix in ("TEMP", "TOP_P", "TOP_K", "MIN_P",
+                       "REASONING_FORMAT", "LOG_PREFIX"):
+            with self.subTest(suffix=suffix):
+                self.assertNotIn(f"CHAT2_{suffix}", manager.LEGACY_ENV_KEY_MAP)
+                env = config_env.normalize_env_keys({f"CHAT2_{suffix}": "written"})
+                self.assertEqual(env[f"LLM_B_{suffix}"], "written")
+
+    def test_normalize_env_keys_leaves_the_frozen_port_alone(self):
+        env = config_env.normalize_env_keys({"CHAT2_BACKEND_PORT": "8020"})
+        self.assertNotIn("LLM_B_BACKEND_PORT", env)
+        self.assertEqual(env["CHAT2_BACKEND_PORT"], "8020")
+
+    def test_the_bare_chat_prefix_is_not_swept_into_slot_a(self):
+        """`CHAT_BEE_*` names no slot at all. It shares a prefix with llm-a's
+        second legacy spelling, so a prefix rule applied to the write side would
+        invent `LLM_A_BEE_*` keys out of it."""
+        env = config_env.normalize_env_keys({"CHAT_BEE_LABEL": "bee"})
+        self.assertNotIn("LLM_A_BEE_LABEL", env)
+        self.assertEqual(config_env.normalize_config_updates({"CHAT_BEE_LABEL": "bee"}),
+                         {"CHAT_BEE_LABEL": "bee"})
+
+    def test_an_old_profiles_undeclared_key_applies_under_its_new_name(self):
+        """Saved profiles are never rewritten, so the only place their older
+        spellings get honoured is on the way out. `CHAT2_TEMP` is in no field
+        list, so a map-only rewrite dropped it at the allow-list instead."""
+        self.assertEqual(config_env.normalize_config_updates({"CHAT2_TEMP": "0.5"}),
+                         {"LLM_B_TEMP": "0.5"})
+
     def test_normalize_env_keys_does_not_overwrite_a_canonical_value(self):
         env = config_env.normalize_env_keys({
             "CHAT_DENSE_CTX_SIZE": "32768",
@@ -1818,30 +1910,37 @@ class ConfigNormalizationTests(unittest.TestCase):
         })
         self.assertEqual(env["LLM_A_CTX_SIZE"], "131072")
 
-    def test_every_code_mirror_reaches_its_chat_keys(self):
-        for code_key, chat_keys in manager.CODE_TO_CHAT_MIRRORS.items():
-            expected = chat_keys if isinstance(chat_keys, list) else [chat_keys]
+    def test_every_code_mirror_reaches_its_slot_key(self):
+        for code_key, slot_key in manager.CODE_TO_CHAT_MIRRORS.items():
             with self.subTest(code_key=code_key):
                 mirrored = config_env.apply_code_chat_mirrors({code_key: "mirrored"})
-                for chat_key in expected:
-                    self.assertEqual(mirrored[chat_key], "mirrored")
+                self.assertEqual(mirrored[slot_key], "mirrored")
 
-    def test_an_explicit_chat_value_is_never_overwritten_by_its_code_mirror(self):
+    def test_an_explicit_slot_value_is_never_overwritten_by_its_code_mirror(self):
         """Regression this function's docstring describes: a full saved config
         carries both, and a legacy CODE_* default must not clobber the saved
-        shared-backend value."""
-        for code_key, chat_keys in manager.CODE_TO_CHAT_MIRRORS.items():
-            expected = chat_keys if isinstance(chat_keys, list) else [chat_keys]
-            for chat_key in expected:
-                with self.subTest(code_key=code_key, chat_key=chat_key):
-                    mirrored = config_env.apply_code_chat_mirrors(
-                        {code_key: "from-code", chat_key: "explicit"})
-                    self.assertEqual(mirrored[chat_key], "explicit")
+        backend value."""
+        for code_key, slot_key in manager.CODE_TO_CHAT_MIRRORS.items():
+            with self.subTest(code_key=code_key, slot_key=slot_key):
+                mirrored = config_env.apply_code_chat_mirrors(
+                    {code_key: "from-code", slot_key: "explicit"})
+                self.assertEqual(mirrored[slot_key], "explicit")
 
-    def test_context_size_mirrors_onto_all_three_chat_keys(self):
+    def test_every_mirror_targets_the_slot_the_coding_endpoint_serves(self):
+        """The coding endpoint is a proxy persona on llm-a, so a backend-level
+        `CODE_*` setting belongs to slot A and to nothing else. The table used to
+        name the bare `CHAT_*` spelling, and `CODE_CTX_SIZE` additionally named
+        `CHAT_MOE_CTX_SIZE` -- which normalizes onto `LLM_B_CTX_SIZE`, so saving
+        the Coding Endpoint section resized a backend it has never touched."""
+        for code_key, slot_key in manager.CODE_TO_CHAT_MIRRORS.items():
+            with self.subTest(code_key=code_key):
+                self.assertTrue(slot_key.startswith("LLM_A_"), slot_key)
+
+    def test_context_size_mirrors_onto_slot_a_alone(self):
         mirrored = config_env.apply_code_chat_mirrors({"CODE_CTX_SIZE": "131072"})
-        for key in ("CHAT_CTX_SIZE", "CHAT_DENSE_CTX_SIZE", "CHAT_MOE_CTX_SIZE"):
-            self.assertEqual(mirrored[key], "131072")
+        self.assertEqual(mirrored["LLM_A_CTX_SIZE"], "131072")
+        self.assertNotIn("LLM_B_CTX_SIZE", mirrored)
+        self.assertNotIn("CHAT_CTX_SIZE", mirrored)
 
     def test_unknown_keys_are_dropped(self):
         filtered = config_env.filter_config_updates(

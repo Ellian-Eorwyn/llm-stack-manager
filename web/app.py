@@ -69,7 +69,6 @@ from routes import setup as setup_routes
 # reader, a path, a service call — is reached as `module.name` instead, so the
 # substitution is visible to every importer.
 from config_fields import (
-    BEE_KV_CACHE_OPTIONS,
     CODE_TO_CHAT_MIRRORS,
     CONFIG_FIELDS,
     CORE_CONFIG_SECTIONS,
@@ -83,6 +82,7 @@ from config_fields import (
     NEW_ENV_KEY_LEGACY_ALIASES,
     RESTART_HINTS,
     SHARED_CHAT_BACKEND_RESTART,
+    canonical_name_for,
 )
 
 
@@ -2619,8 +2619,14 @@ def collect_env_deprecations() -> dict:
     """
     raw = config_env.read_env_raw()
     env_keys = []
-    for legacy_key, canonical in LEGACY_ENV_KEY_MAP.items():
-        if legacy_key not in raw:
+    # Walked over what is written down rather than over LEGACY_ENV_KEY_MAP,
+    # because the map is generated from CONFIG_FIELDS and six live `CHAT2_*`
+    # settings have no field to be generated from. Iterating the map reported 55
+    # of them where 61 were on disk, and pressing Migrate then left the other six
+    # in the file under a banner reading zero.
+    for legacy_key in raw:
+        canonical = canonical_name_for(legacy_key)
+        if canonical == legacy_key:
             continue
         env_keys.append({
             "key": legacy_key,
@@ -2639,10 +2645,11 @@ def collect_env_deprecations() -> dict:
             config = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        found = sorted(key for key in LEGACY_ENV_KEY_MAP if key in config)
+        found = {key for key in config if canonical_name_for(key) != key}
         form = config.get("_config_form")
         if isinstance(form, dict):
-            found = sorted(set(found) | {key for key in LEGACY_ENV_KEY_MAP if key in form})
+            found |= {key for key in form if canonical_name_for(key) != key}
+        found = sorted(found)
         if found:
             profiles.append({"name": path.stem, "keys": found})
 
@@ -2676,17 +2683,25 @@ def api_config_deprecations_migrate():
 
     env = config_env.read_env()
     updates = {}
+    skipped = []
     for entry in report["env_keys"]:
         canonical = entry["replacement"]
         # read_env has already resolved which value wins; writing that keeps the
         # migration a rename rather than a change of configuration.
         if canonical in env:
             updates[canonical] = env[canonical]
+        else:
+            # Only reachable if the read-side backfill and the report ever
+            # disagree about what a key's canonical name is. Reported rather
+            # than dropped: a key the migration passed over is exactly what the
+            # operator would otherwise have to notice from an unchanged count.
+            skipped.append(entry["key"])
     try:
         config_env.update_env_values(updates)
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 500
-    return jsonify(ok=True, migrated=sorted(updates), report=collect_env_deprecations())
+    return jsonify(ok=True, migrated=sorted(updates), skipped=sorted(skipped),
+                   report=collect_env_deprecations())
 
 
 @app.route('/api/config/preflight', methods=['POST'])

@@ -65,23 +65,6 @@ LLAMA_TENSOR_SPLIT_HINT = (
     "Weight per visible GPU under split-mode=layer, e.g. 1,1 for an even "
     "split or 3,2 to favour the first. Ignored by none and tensor"
 )
-BEE_KV_CACHE_OPTIONS = [
-    {"value": "f32", "label": "f32 - unquantized 32-bit float"},
-    {"value": "f16", "label": "f16 - unquantized 16-bit float"},
-    {"value": "bf16", "label": "bf16 - unquantized bfloat16"},
-    {"value": "q8_0", "label": "q8_0 - regular 8-bit KV quant"},
-    {"value": "q6_0", "label": "q6_0 - regular 6-bit KV quant"},
-    {"value": "q5_0", "label": "q5_0 - regular 5-bit KV quant"},
-    {"value": "q5_1", "label": "q5_1 - regular 5-bit KV quant"},
-    {"value": "q4_0", "label": "q4_0 - regular 4-bit KV quant"},
-    {"value": "q4_1", "label": "q4_1 - regular 4-bit KV quant"},
-    {"value": "iq4_nl", "label": "iq4_nl - regular importance 4-bit KV quant"},
-    {"value": "turbo2", "label": "turbo2 - TurboQuant 2-bit"},
-    {"value": "turbo3", "label": "turbo3 - TurboQuant 3-bit"},
-    {"value": "turbo4", "label": "turbo4 - TurboQuant 4-bit"},
-    {"value": "turbo2_tcq", "label": "turbo2_tcq - TurboQuant TCQ 2-bit"},
-    {"value": "turbo3_tcq", "label": "turbo3_tcq - TurboQuant TCQ 3-bit"},
-]
 
 
 # Whisper's own model names, used by any engine whose runtime resolves them.
@@ -227,12 +210,28 @@ LEGACY_ENV_KEY_MAP = {
 # than the last.
 _RENAMED_SLOT_PREFIXES = (("CHAT_PRIMARY_", "LLM_A_"), ("CHAT2_", "LLM_B_"))
 
-#: The two keys that keep their old spelling: they name the port and host the
-#: proxy dials, section 2.1 freezes those, and every consumer -- the proxies,
-#: telemetry, health -- talks to them by name.
+#: The keys that keep their old spelling: they name the ports and hosts the
+#: proxies dial, section 2.1 freezes those, and every consumer -- the proxies,
+#: telemetry, health -- talks to them by name. Both slots, so the rule is stated
+#: once rather than being true of llm-b and merely accidental of llm-a.
 _PREFIX_RENAME_EXEMPT = frozenset({
     "CHAT2_BACKEND_PORT", "CHAT2_BACKEND_HOST",
+    "CHAT_BACKEND_PORT", "CHAT_BACKEND_HOST",
+    # Never a spelling anybody wrote, and listed so the prefix rule cannot
+    # invent one in either direction: the port contract has no old name to
+    # answer to and no new name to move to.
+    "CHAT_PRIMARY_BACKEND_PORT", "CHAT_PRIMARY_BACKEND_HOST",
 })
+
+#: Older prefixes a slot answers to but which are never rewritten. `slots.py`
+#: gives llm-a `legacy_prefixes=("CHAT_PRIMARY", "CHAT")`, so a bare `CHAT_*` key
+#: is live on a host that has no `LLM_A_*` twin -- but the bare prefix is shared
+#: with settings that belong to no slot (`CHAT_BEE_*`, `CHAT_SECONDARY_*`) and
+#: with the frozen port contract. So it may only ever be *read*: this tier is
+#: consulted by `legacy_names_for` and by nothing else. Putting it in
+#: `_RENAMED_SLOT_PREFIXES` would reach `normalize_config_updates` and rewrite
+#: `CHAT_TEMP` on write, which is not a rename anyone asked for.
+_SHADOWED_SLOT_PREFIXES = (("CHAT_", "LLM_A_"),)
 
 
 def _register_prefix_renames() -> None:
@@ -261,13 +260,37 @@ def legacy_names_for(key: str) -> tuple[str, ...]:
     a default over a live value.
     """
     names = list(NEW_ENV_KEY_LEGACY_ALIASES.get(key, ()))
-    for old_prefix, new_prefix in _RENAMED_SLOT_PREFIXES:
+    # Renamed before shadowed: the order decides which line `update_env_values`
+    # writes into when a host carries more than one old spelling.
+    for old_prefix, new_prefix in _RENAMED_SLOT_PREFIXES + _SHADOWED_SLOT_PREFIXES:
         if not key.startswith(new_prefix):
             continue
         candidate = old_prefix + key[len(new_prefix):]
         if candidate not in names and candidate not in _PREFIX_RENAME_EXEMPT:
             names.append(candidate)
     return tuple(names)
+
+
+def canonical_name_for(key: str) -> str:
+    """The current spelling of `key`, declared or merely implied by a rename.
+
+    The inverse of `legacy_names_for`, and it exists for the same reason: six
+    `CHAT2_*` settings that no field declares are live on hosts, so a map-only
+    lookup reports 55 legacy keys where 61 are written down -- and a report that
+    goes quiet while the keys are still being read is worse than no report.
+
+    Only the renamed prefixes. A bare `CHAT_*` key is read behind `LLM_A_*` but
+    is not a spelling of it: rewriting one would sweep up `CHAT_BEE_*`, which
+    names no slot at all, and the frozen `CHAT_BACKEND_PORT`.
+    """
+    if key in LEGACY_ENV_KEY_MAP:
+        return LEGACY_ENV_KEY_MAP[key]
+    if key in _PREFIX_RENAME_EXEMPT:
+        return key
+    for old_prefix, new_prefix in _RENAMED_SLOT_PREFIXES:
+        if key.startswith(old_prefix):
+            return new_prefix + key[len(old_prefix):]
+    return key
 
 
 def _rebuild_legacy_aliases() -> None:
@@ -319,18 +342,13 @@ DEPRECATED_ENV_KEY_NOTES = {
         for _legacy in LEGACY_ENV_KEY_MAP
         if _legacy.startswith("WHISPERKIT_")
     },
-    **{
-        _key: "configured the local Honcho memory service, which this stack no longer runs"
-        for _key in (
-            "HONCHO_ENABLED", "HONCHO_HOST", "HONCHO_PORT", "HONCHO_URL",
-            "HONCHO_WORKSPACE", "HONCHO_USER_PEER", "HONCHO_AI_PEER",
-            "HONCHO_INSTALL_DATASTORES", "HONCHO_CONFIGURE_HERMES",
-            "HONCHO_LLM_BASE_URL", "HONCHO_LLM_MODEL", "HONCHO_EMBED_BASE_URL",
-            "HONCHO_EMBED_MODEL", "HONCHO_EMBED_VECTOR_DIMENSIONS",
-            "HONCHO_DIR", "HONCHO_ENV_FILE",
-        )
-    },
 }
+# Sixteen `HONCHO_*` notes used to sit here, for a memory service `install.sh`
+# retired. They were never emitted: this table annotates a *rename*, and the
+# report walks keys that have a canonical name to move to. A key belonging to a
+# service that no longer exists has no such name, so it needs a different
+# mechanism than this one -- and until it has one, a note that cannot be
+# rendered is just a claim the report does not make.
 DEFAULT_DEPRECATION_NOTE = "named for the model architecture a slot happened to hold"
 
 CORE_CONFIG_SECTIONS = {
@@ -356,24 +374,35 @@ CORE_CONFIG_SECTIONS = {
     "Control API",
 }
 
+#: The coding endpoint is a proxy persona on `llm-a` (`backends/proxies.py`), not
+#: a backend of its own, so a backend-level setting saved under `CODE_*` has to
+#: land on the slot that actually serves it.
+#:
+#: These targeted the bare `CHAT_*` spelling, which was right when one backend
+#: was shared by every endpoint. It stopped being right twice over. `CHAT_*` is
+#: now only a legacy name read behind `LLM_A_*`, so the mirror wrote a key the
+#: launcher no longer prefers -- and `CODE_CTX_SIZE` additionally listed
+#: `CHAT_DENSE_CTX_SIZE` *and* `CHAT_MOE_CTX_SIZE`, which normalize onto
+#: `LLM_A_CTX_SIZE` and `LLM_B_CTX_SIZE`. Saving the Coding Endpoint section
+#: resized both backends, one of which the coding endpoint has never touched.
 CODE_TO_CHAT_MIRRORS = {
-    "CODE_CTX_SIZE":            ["CHAT_CTX_SIZE", "CHAT_DENSE_CTX_SIZE", "CHAT_MOE_CTX_SIZE"],
-    "CODE_N_PARALLEL":          "CHAT_N_PARALLEL",
-    "CODE_THREADS":             "CHAT_THREADS",
-    "CODE_THREADS_BATCH":       "CHAT_THREADS_BATCH",
-    "CODE_N_GPU_LAYERS":        "CHAT_N_GPU_LAYERS",
-    "CODE_TENSOR_SPLIT":        "CHAT_TENSOR_SPLIT",
-    "CODE_SPLIT_MODE":          "CHAT_SPLIT_MODE",
-    "CODE_FLASH_ATTN":          "CHAT_FLASH_ATTN",
-    "CODE_CACHE_TYPE_K":        "CHAT_CACHE_TYPE_K",
-    "CODE_CACHE_TYPE_V":        "CHAT_CACHE_TYPE_V",
-    "CODE_BATCH_SIZE":          "CHAT_BATCH_SIZE",
-    "CODE_UBATCH_SIZE":         "CHAT_UBATCH_SIZE",
-    "CODE_NO_MMAP":             "CHAT_NO_MMAP",
-    "CODE_MLOCK":               "CHAT_MLOCK",
-    "CODE_GPU_VISIBLE_DEVICES": "CHAT_GPU_VISIBLE_DEVICES",
-    "CODE_REASONING_FORMAT":    "CHAT_REASONING_FORMAT",
-    "CODE_FIT":                 "CHAT_FIT",
+    "CODE_CTX_SIZE":            "LLM_A_CTX_SIZE",
+    "CODE_N_PARALLEL":          "LLM_A_N_PARALLEL",
+    "CODE_THREADS":             "LLM_A_THREADS",
+    "CODE_THREADS_BATCH":       "LLM_A_THREADS_BATCH",
+    "CODE_N_GPU_LAYERS":        "LLM_A_N_GPU_LAYERS",
+    "CODE_TENSOR_SPLIT":        "LLM_A_TENSOR_SPLIT",
+    "CODE_SPLIT_MODE":          "LLM_A_SPLIT_MODE",
+    "CODE_FLASH_ATTN":          "LLM_A_FLASH_ATTN",
+    "CODE_CACHE_TYPE_K":        "LLM_A_CACHE_TYPE_K",
+    "CODE_CACHE_TYPE_V":        "LLM_A_CACHE_TYPE_V",
+    "CODE_BATCH_SIZE":          "LLM_A_BATCH_SIZE",
+    "CODE_UBATCH_SIZE":         "LLM_A_UBATCH_SIZE",
+    "CODE_NO_MMAP":             "LLM_A_NO_MMAP",
+    "CODE_MLOCK":               "LLM_A_MLOCK",
+    "CODE_GPU_VISIBLE_DEVICES": "LLM_A_GPU_VISIBLE_DEVICES",
+    "CODE_REASONING_FORMAT":    "LLM_A_REASONING_FORMAT",
+    "CODE_FIT":                 "LLM_A_FIT",
 }
 
 # ---------------------------------------------------------------------------
