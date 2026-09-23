@@ -359,6 +359,10 @@ class DarwinPlatform(base.Platform):
         target = f"{domain}/{self.label_for(name)}"
         result = self.run_cmd(["launchctl", "bootout", target], timeout=timeout)
         self.run_cmd(["launchctl", "disable", target])
+        # Already stopped is stopped, as `systemctl stop` on an inactive unit
+        # says. launchd answers "Boot-out failed: 3: No such process".
+        if result.returncode == 3 or "No such process" in (result.stdout or "") + (result.stderr or ""):
+            return subprocess.CompletedProcess(result.args, 0, "already stopped", "")
         return result
 
     def service_restart(self, name: str, timeout: int = 120) -> tuple[int, str]:

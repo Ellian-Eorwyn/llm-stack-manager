@@ -615,6 +615,15 @@ class DarwinStopPersistsTests(unittest.TestCase):
         self.assertEqual(self._calls("service_stop"),
                          [["launchctl", "bootout"], ["launchctl", "disable"]])
 
+    def test_stopping_a_stopped_service_succeeds(self):
+        def run(cmd, timeout=30):
+            if cmd[1] == "bootout":
+                return _completed("Boot-out failed: 3: No such process", 3)
+            return _completed("")
+
+        with platform_harness.as_darwin(run_cmd=run) as platform:
+            self.assertEqual(platform.service_stop("rerank").returncode, 0)
+
     def test_start_enables_before_bootstrapping(self):
         calls = self._calls("service_start")
         self.assertLess(calls.index(["launchctl", "enable"]),
