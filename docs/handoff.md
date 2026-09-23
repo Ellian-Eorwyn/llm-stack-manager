@@ -37,11 +37,11 @@ the manager (8077 + 8078), MLX embeddings (8005), Parakeet transcription
 the tailnet and renders 13 remote services.
 
 **The M5 Ultra Mac Studio** — arrived, 96 GiB unified. Same stack directory;
-three LaunchAgents: the manager, `llm-a` (Qwen3.8 27B on 8010) and
-`llm-a-proxy` (8003/8004/8008). `TRANSCRIPT_ENABLED=off`, no `fleet.json` yet.
-`bash validate.sh` passes against it. Embed and task were left out at setup;
-their launchers work (verified by hand under launchd), and on branch
-`mac-support` pressing Start installs the missing agent.
+LaunchAgents for the manager, `llm-a` (Qwen3.8 27B on 8010), `llm-a-proxy`
+(8003/8004/8008), `embed` (Qwen3-Embedding-4B, 8005), `task` (Qwen3.5 9B,
+8007), `rerank` (Qwen3-Reranker-4B Q8_0 from `Voodisss/…-GGUF-llama_cpp`,
+8006) and `transcript-backend` (Parakeet TDT 0.6B v3 on MLX, 8014). No
+`fleet.json` yet. `bash validate.sh` passes against all of it.
 
 Both are opt-in on both sides: no `fleet.json` means no poller and no extra
 thread; `LLM_CONTROL_ENABLED=off` means nothing binds.
@@ -191,6 +191,19 @@ Each of these was found the hard way. None is obvious from the code.
   running services with `launchctl kickstart -k`, and the manager **last** — the
   Update button runs `update.sh` as the manager's child, so a bootout of the
   manager would kill the update before its bootstrap and leave it down.
+- **Most Qwen3-Reranker GGUFs score garbage in llama.cpp** (~1e-23; missing
+  `cls.output.weight`, llama.cpp#16407). The `Voodisss/Qwen3-Reranker-*-GGUF-llama_cpp`
+  conversions score correctly with `--reranking`; check any other against a
+  query with an obvious answer before trusting it.
+- **Embedding and rerank slots need `*_UBATCH_SIZE` ≥ the longest input.**
+  llama.cpp pools a sequence inside one micro-batch and forces `n_batch =
+  n_ubatch`, so the shipped `512` returns HTTP 500 "input (N tokens) is too
+  large" for any passage over 512 tokens. The Studio runs both at 8192
+  (= `*_CTX_SIZE`); `llms` and `config/llm-stack.env.example` still ship 512.
+- **The MLX runtime's packages are not pinned.** `install-mlx-runtime.sh`
+  installs the latest mlx / mlx-audio; the Studio got mlx-audio 0.5.5 against
+  the lock file's 0.4.6 and Parakeet works on it. It needed
+  `python-multipart`, which the installer now names explicitly.
 - **`document.hidden` is true in a headless browser pane**, and `poll()` returns
   early on it. A blank fleet view there is the visibility guard, not a bug.
 
