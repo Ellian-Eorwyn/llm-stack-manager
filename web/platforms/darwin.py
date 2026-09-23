@@ -254,8 +254,22 @@ class DarwinPlatform(base.Platform):
         # headers say which stream each block came from.
         return ["tail", "-n", str(lines)] + (["-F"] if follow else []) + files
 
+    #: Generates one LaunchAgent the way install.sh does. Kept beside the other
+    #: launchers so the plist it writes points at this tree.
+    INSTALL_SERVICE_SCRIPT = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "scripts", "install-launchd-service.sh")
+
     def service_start(self, name: str, timeout: int = 30):
         domain, plist = self._domain_and_plist(name)
+        if not os.path.exists(plist):
+            # A component left out at setup has no plist, and bootstrapping a
+            # missing file fails with launchctl's "Input/output error". The
+            # launcher itself works; install the agent, then start it.
+            installed = self.run_cmd(["bash", self.INSTALL_SERVICE_SCRIPT, name], timeout=60)
+            if installed.returncode != 0:
+                return installed
+            domain, plist = self._domain_and_plist(name)
         self._expect_change(name)
         self.run_cmd(["launchctl", "bootout", f"{domain}/{self.label_for(name)}"])
         return self.run_cmd(["launchctl", "bootstrap", domain, plist], timeout=timeout)

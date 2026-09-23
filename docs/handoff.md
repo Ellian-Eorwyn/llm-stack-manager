@@ -32,10 +32,16 @@ active, `llm-b` + `llm-b-proxy` stopped on purpose. Its read API answers on
 
 **The M1 Pro** — the fleet hub. Stack directory
 `~/Applications/LLMs/llm-stack-manager`, three LaunchAgents in the user domain:
-the manager (8077 + 8078), `llm-a` (8010) and `llm-a-proxy` (8003/8004/8008).
-No transcript-backend agent; `TRANSCRIPT_ENABLED=off`. `bash validate.sh`
-passes against it. `config/fleet.json` lists `llms` with `control: false`. It polls across
+the manager (8077 + 8078), MLX embeddings (8005), Parakeet transcription
+(8014). `config/fleet.json` lists `llms` with `control: false`. It polls across
 the tailnet and renders 13 remote services.
+
+**The M5 Ultra Mac Studio** — arrived, 96 GiB unified. Same stack directory;
+three LaunchAgents: the manager, `llm-a` (Qwen3.8 27B on 8010) and
+`llm-a-proxy` (8003/8004/8008). `TRANSCRIPT_ENABLED=off`, no `fleet.json` yet.
+`bash validate.sh` passes against it. Embed and task were left out at setup;
+their launchers work (verified by hand under launchd), and on branch
+`mac-support` pressing Start installs the missing agent.
 
 Both are opt-in on both sides: no `fleet.json` means no poller and no extra
 thread; `LLM_CONTROL_ENABLED=off` means nothing binds.
@@ -162,13 +168,27 @@ Each of these was found the hard way. None is obvious from the code.
   host with no transcript-backend unit, `app.get_service_status` goes through
   it; reading every non-zero exit as `failed` put a standing "Transcription has
   failed" alert on any Mac with `TRANSCRIPT_ENABLED=off`.
+- **A Mac answers "what is using the GPU" with `phys_footprint`.** There is
+  no `nvidia-smi`; `darwin.gpu_compute_apps` reads each model server's
+  footprint through `proc_pid_rusage` (no root, same-user only), which counts
+  its wired Metal buffers, and attributes it by walking the process tree up to
+  the launchd job. RSS is the wrong figure. `pid_unit` does the same walk, so
+  router children are attributed too.
+- **launchd has no journal.** `Platform.log_command` is the one place logs are
+  read from: journald on Linux, the files named in the job's plist on macOS.
+  Those lines carry no wall-clock time (llama.cpp's stamp counts from process
+  start), so Mac telemetry is stamped as lines arrive and never backfills.
+- **A component left out at setup has no LaunchAgent.** On a Mac,
+  `service_start` runs `scripts/install-launchd-service.sh` for it first; that
+  script's table must match `install_mac_service` in `install.sh`
+  (`InstallLaunchdServiceTests` holds them together).
 - **`document.hidden` is true in a headless browser pane**, and `poll()` returns
   early on it. A blank fleet view there is the visibility guard, not a bug.
 
 ## 5. How to verify
 
 ```bash
-bash test.sh && bash test.sh      # 1040+ tests, both runners
+bash test.sh && bash test.sh      # 1055+ tests, both runners
 ```
 
 The tools that make a change here safe rather than hopeful:

@@ -1052,7 +1052,11 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       <h3>1. Machine Preflight</h3>
       <button class="btn btn-primary btn-sm" onclick="setupLoadPreflight(this)">Run Preflight</button>
     </div>
+    {% if host_platform == 'darwin' %}
+    <p>Supported target: Apple silicon on macOS 14 or later, with the Xcode command line tools and Homebrew. llama.cpp is built for Metal, and services run as LaunchAgents in your user session.</p>
+    {% else %}
     <p>Supported target: Ubuntu 24.04 x86-64 with a working NVIDIA driver. The installer manages the CUDA toolkit, not the kernel driver.</p>
+    {% endif %}
     <div id="setup-preflight-results" class="svc-cards"></div>
   </div>
 
@@ -1099,7 +1103,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     <h3>Repair or Remove</h3>
     <p>Repair actions preserve models and configuration. Runtime-service removal keeps the manager available while removing generated backend/tool units and preserving downloaded models.</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="btn btn-ghost btn-sm" onclick="setupRepair('packages',this)">Repair Packages/CUDA</button>
+      <button class="btn btn-ghost btn-sm" onclick="setupRepair('packages',this)">{{ 'Repair Packages' if host_platform == 'darwin' else 'Repair Packages/CUDA' }}</button>
       <button class="btn btn-ghost btn-sm" onclick="setupRepair('dependencies',this)">Rebuild llama.cpp</button>
       <button class="btn btn-ghost btn-sm" onclick="setupRepair('services',this)">Regenerate Services</button>
       <button class="btn btn-danger btn-sm" onclick="setupRemoveServices(this)">Remove Runtime Services</button>

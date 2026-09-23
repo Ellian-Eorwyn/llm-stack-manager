@@ -323,9 +323,14 @@ def derive_alerts(gpus: list[dict], backends: list[dict], host: dict,
     for gpu in gpus:
         free = gpu.get("mem_free")
         if free is not None and free < GPU_VRAM_LOW_MIB:
+            # On unified memory "free" is the host's available RAM, and running
+            # short of it means swapping rather than a failed allocation.
+            text = (f"Only {free} MiB of unified memory is available — loading another "
+                    f"model will push macOS into swap."
+                    if gpu.get("unified_memory") else
+                    f"GPU {gpu.get('index')} has {free} MiB of VRAM free — the next model will not fit.")
             alerts.append(_alert(
-                "warn", "gpu_vram_low", f"gpu{gpu.get('index')}",
-                f"GPU {gpu.get('index')} has {free} MiB of VRAM free — the next model will not fit.",
+                "warn", "gpu_vram_low", f"gpu{gpu.get('index')}", text,
                 free_mib=free, total_mib=gpu.get("mem_total")))
 
     swap = (host.get("swap_activity") or {})

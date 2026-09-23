@@ -508,6 +508,47 @@ class LogSourceTests(unittest.TestCase):
         self.assertEqual(cmd[0], "echo")
         self.assertIn("embed", cmd[1])
 
+
+class DarwinStartInstallsMissingAgentTests(unittest.TestCase):
+    def test_a_service_with_no_plist_is_installed_then_started(self):
+        # Bootstrapping a plist that does not exist fails with launchctl's
+        # "Input/output error"; a component left out at setup had no other way
+        # to be started from the manager.
+        calls, installed = [], []
+
+        def run(cmd, timeout=30):
+            calls.append(cmd)
+            if cmd[0] == "bash":
+                installed.append(True)
+            return _completed("")
+
+        exists = lambda path: bool(installed) or not path.endswith("com.llmstack.task.plist")
+        with (
+            platform_harness.as_darwin(run_cmd=run) as platform,
+            patch("platforms.darwin.os.path.exists", side_effect=exists),
+        ):
+            result = platform.service_start("task")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(calls[0][0], "bash")
+        self.assertTrue(calls[0][1].endswith("scripts/install-launchd-service.sh"))
+        self.assertEqual(calls[0][2], "task")
+        self.assertEqual(calls[-1][:2], ["launchctl", "bootstrap"])
+
+    def test_an_install_that_fails_is_reported_not_bootstrapped(self):
+        calls = []
+
+        def run(cmd, timeout=30):
+            calls.append(cmd)
+            return _completed("", 2)
+
+        with (
+            platform_harness.as_darwin(run_cmd=run) as platform,
+            patch("platforms.darwin.os.path.exists", return_value=False),
+        ):
+            result = platform.service_start("glmocr-sdk")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(len(calls), 1)
+
 if __name__ == "__main__":
     unittest.main()
 

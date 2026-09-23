@@ -58,6 +58,9 @@ class _FakeMac:
             esac
         ''') % cases)
         self._stub("curl", 'echo \'{"total_slots":4,"object":"list","content":"ok"}\'')
+        # BSD `stat -f` means something else to GNU stat, so a Linux runner
+        # needs this for the ownership lookups the installer makes.
+        self._stub("stat", 'echo "$(id -un)"')
 
     def _stub(self, name: str, body: str) -> None:
         path = self.bin / name
@@ -149,6 +152,80 @@ class ValidateOnDarwinTests(unittest.TestCase):
         result = self._run()
         self.assertIn("[SKIP] Primary backend", result.stdout)
 
+
+
+class InstallLaunchdServiceTests(unittest.TestCase):
+    """Start on a Mac installs a missing LaunchAgent through this script, so a
+    component left out at setup can still be started from the manager."""
+
+    def setUp(self):
+        self.mac = _FakeMac(running=(), installed=())
+        self.addCleanup(self.mac.cleanup)
+        self.tree = self.mac.dir / "stack"
+        (self.tree / "scripts").mkdir(parents=True)
+        (self.tree / "config").mkdir()
+        for name in ("cross-platform.sh", "install-launchd-service.sh"):
+            shutil.copy(ROOT / "scripts" / name, self.tree / "scripts" / name)
+        for name in ("start-task.sh", "start-embed.sh", "start-embed-mlx.sh"):
+            (self.tree / "scripts" / name).write_text("#!/usr/bin/env bash\n")
+        self._config("")
+
+    def _config(self, extra: str) -> None:
+        (self.tree / "config" / "llm-stack.env").write_text(
+            f"STACK_DIR=/somewhere/else\n{extra}")
+
+    def _install(self, name: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(self.tree / "scripts" / "install-launchd-service.sh"), name],
+            env=self.mac.env(), capture_output=True, text=True, timeout=60)
+
+    def _plist(self, name: str) -> dict:
+        import plistlib
+        path = self.mac.home / "Library" / "LaunchAgents" / f"com.llmstack.{name}.plist"
+        return plistlib.loads(path.read_bytes())
+
+    def test_writes_the_plist_install_sh_would(self):
+        result = self._install("task")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plist = self._plist("task")
+        self.assertEqual(plist["Label"], "com.llmstack.task")
+        wrapper = pathlib.Path(plist["ProgramArguments"][0])
+        # The wrapper runs this tree's launcher, not the one the config names.
+        self.assertEqual(wrapper.parent, self.tree / "scripts")
+        self.assertIn('exec "${STACK_DIR}/scripts/start-task.sh"', wrapper.read_text())
+        self.assertEqual(plist["StandardErrorPath"], str(self.tree / "logs" / "task.stderr.log"))
+
+    def test_follows_the_embedding_engine(self):
+        self._config("EMBED_ENGINE=mlx\n")
+        self.assertEqual(self._install("embed").returncode, 0)
+        wrapper = pathlib.Path(self._plist("embed")["ProgramArguments"][0])
+        self.assertIn("start-embed-mlx.sh", wrapper.read_text())
+
+    def test_refuses_what_needs_the_full_installer(self):
+        for name in ("glmocr-sdk", "transcript-backend", "llama-router", "nonsense"):
+            with self.subTest(name):
+                result = self._install(name)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse((self.mac.home / "Library" / "LaunchAgents"
+                                  / f"com.llmstack.{name}.plist").exists())
+
+    def test_its_launchers_match_install_sh(self):
+        """Two tables of the same fact drift; this holds them together."""
+        import re
+        installer = (ROOT / "install.sh").read_text()
+        expected = dict(re.findall(
+            r'install_mac_service\s+"([\w-]+)"\s+"[^"]*"\s+"(start-[\w.-]+\.sh)"', installer))
+        ours = (ROOT / "scripts" / "install-launchd-service.sh").read_text()
+        mapped = dict(re.findall(r'^\s+([\w-]+)\)\s+script="(start-[\w.-]+\.sh)"', ours, re.M))
+        mapped.pop("mlx", None)   # the embedding engine's own case, below
+        mapped["llama-router"] = "start-model-router.sh"
+        self.assertTrue(mapped)
+        for name, script in mapped.items():
+            with self.subTest(name):
+                self.assertEqual(expected.get(name), script)
+        # The embedding pair, which install.sh resolves through a helper.
+        self.assertIn('resolve_engine_script embed "${EMBED_ENGINE}" "start-embed.sh" "start-embed-mlx.sh"',
+                      installer)
 
 if __name__ == "__main__":
     unittest.main()
