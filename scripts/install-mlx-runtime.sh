@@ -68,7 +68,11 @@ mkdir -p "$(dirname "${VENV_DIR}")" "${MODEL_DIR}" "${HF_HOME}"
 # its absence stopped the Parakeet server at startup.
 PACKAGES=(fastapi uvicorn numpy huggingface_hub python-multipart)
 (( WITH_EMBED ))      && PACKAGES+=(mlx mlx-embeddings)
-(( WITH_TRANSCRIBE )) && PACKAGES+=(mlx mlx-audio)
+# Nemotron 3 Diarization (mlx_audio.vad.models.nemotron_diarization) was merged
+# after mlx-audio 0.5.5, the newest release. Pinned to the commit rather than
+# to main; return to a plain `mlx-audio>=<next release>` once one ships it.
+MLX_AUDIO_SPEC="${MLX_AUDIO_SPEC:-mlx-audio @ git+https://github.com/Blaizzy/mlx-audio@9ada37c1e33cfc99a7bdde0a902c0d4a0b913183}"
+(( WITH_TRANSCRIBE )) && PACKAGES+=(mlx "${MLX_AUDIO_SPEC}")
 
 echo "[mlx] installing: ${PACKAGES[*]}"
 "${VENV_DIR}/bin/python" -m pip install --quiet "${PACKAGES[@]}"
@@ -96,7 +100,8 @@ from huggingface_hub import snapshot_download
 # --embed-only / --transcribe-only used to install one runtime and download
 # both models anyway.
 wanted = {"embedding": os.environ.get("WITH_EMBED") == "1",
-          "transcription": os.environ.get("WITH_TRANSCRIBE") == "1"}
+          "transcription": os.environ.get("WITH_TRANSCRIBE") == "1",
+          "diarization": os.environ.get("WITH_TRANSCRIBE") == "1"}
 for name, entry in (lock.get("models") or {}).items():
     if not wanted.get(name, True):
         print(f"[mlx] {name}: not requested; skipping")
@@ -115,4 +120,4 @@ PY
 fi
 
 echo "[mlx] runtime ready: ${VENV_DIR}"
-echo "[mlx] set MLX_EMBED_MODEL_PATH / MLX_PARAKEET_MODEL_PATH in config/llm-stack.env"
+echo "[mlx] set MLX_EMBED_MODEL_PATH / MLX_PARAKEET_MODEL_PATH / MLX_DIARIZATION_MODEL_PATH in config/llm-stack.env"

@@ -103,6 +103,64 @@ curl http://127.0.0.1:8014/v1/audio/transcriptions \
   -F response_format=verbose_json
 ```
 
+## Speaker diarization
+
+`-F diarize=true` labels who said what, using NVIDIA's Nemotron 3 Diarization
+(100M parameters, up to **eight** speakers, overlapping speech detected) through
+mlx-audio's MLX port. It runs beside Parakeet in the same process, loads on the
+first request that asks for it, and holds about 200 MB.
+
+```bash
+curl http://127.0.0.1:8014/v1/audio/transcriptions \
+  -F file=@meeting.m4a -F diarize=true -F response_format=verbose_json
+```
+
+With `diarize=true`, `verbose_json` changes in these ways:
+
+- `segments[]` are cut wherever the speaker changes as well as at sentence
+  ends, and each has `speaker` (`speaker_0`, `speaker_1`, … in order of
+  arrival) and `overlap`.
+- `words[]` each carry `speaker`, `speaker_score`, `overlap`, `candidates`
+  (everyone heard during the word) and, where the smoothing pass filled the
+  speaker in, `speaker_inferred: true`.
+- `speakers[]` gives each speaker's first appearance, talk time and word count.
+  This is what a naming step works from.
+- `diarization[]` is the diarizer's own who-spoke-when timeline.
+
+`text` becomes one `speaker_N: …` paragraph per turn, and `srt`/`vtt` prefix
+each cue with `[speaker_N]`. `json` is unchanged, because it has nowhere to put
+a speaker. `POST /v1/audio/diarize` returns only the timeline, for pairing with
+another ASR.
+
+**Labels are anonymous and per recording.** `speaker_0` is whoever spoke first
+*in this file*. Attaching real names is a separate step (an LLM reading the
+introductions, or voice enrollment), which this service does not do.
+
+**How words get speakers.** The two models' timelines are joined afterwards.
+Each word takes the speaker whose mean activity over the word's interval clears
+`MLX_DIARIZATION_THRESHOLD`. Two cases are repaired rather than guessed
+(`scripts/speaker_attribution.py`):
+
+- Parakeet's word timestamps are emission times, so a turn's first word is
+  routinely stamped just before the diarizer hears that speaker, and its last
+  word just after. A word that begins a phrase joins the speaker who follows
+  it; any other word stays with the speaker before it.
+- A word spoken during crosstalk is only ever given to a speaker who was
+  actually talking at the time. If neither neighbour was, the word keeps
+  `speaker: null` and the `candidates` list.
+
+**Measured on the Studio (M5 Ultra).** NVIDIA's 97 s eight-voice demo clip took
+1.5 s for transcription plus diarization, with 2 of 285 words left unassigned,
+both in deliberate crosstalk. A 40-minute file took 37 s at about 3 GB
+resident. On that clip the model found **6 of the 8 voices**: two voices that
+joined later were given the IDs of earlier ones. The demo uses synthetic TTS
+voices, so treat that as a known limit rather than a measured rate for real
+meetings.
+
+The model is not in an mlx-audio release yet (0.5.5 predates it).
+`install-mlx-runtime.sh` pins mlx-audio to the commit that added it; replace the
+pin once a release includes `mlx_audio.vad.models.nemotron_diarization`.
+
 ## Service management
 
 The services are per-user LaunchAgents in the `gui/<uid>` domain. They start at

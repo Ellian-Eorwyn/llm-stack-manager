@@ -11,7 +11,7 @@
     "python": "3.14.4",
     "mlx": "0.32.1",
     "mlx_vlm": "0.6.4",
-    "mlx_audio": "0.4.6",
+    "mlx_audio": "git+https://github.com/Blaizzy/mlx-audio@9ada37c1e33cfc99a7bdde0a902c0d4a0b913183",
     "mlx_embeddings": "0.1.0"
   },
   "models": {
@@ -33,6 +33,17 @@
       "service_language": "en",
       "english_only_endpoint": true,
       "checkpoint_languages": 25,
+      "precision": "bfloat16"
+    },
+    "diarization": {
+      "repository": "mlx-community/Nemotron-3-Diarization",
+      "revision": "59ed2dbfc1346dcea9d423c71306a3a2499c568f",
+      "local_path": "models/mlx/Nemotron-3-Diarization",
+      "weight_bytes": 198632220,
+      "weight_sha256": "21e8427d1795c9c46c5800f56b16061734ffd0dcadd71d9bcf0b4d6ef7261da5",
+      "upstream": "nvidia/Nemotron-3-Diarization",
+      "max_speakers": 8,
+      "license": "openmdw-1.1",
       "precision": "bfloat16"
     }
   }

@@ -111,6 +111,16 @@ Seven commits, each releasable:
 7. **A Fleet section** for the host CRUD that `/api/fleet/hosts` already serves
    and nothing renders. Where the Studio gets added.
 
+**Meeting ingestion, the owner's next goal.** New recordings (Zoom, Teams,
+Apple Voice Memos, and later a `~/Documents/meetings` capture folder) should be
+picked up automatically, deduplicated, transcribed with speakers, given real
+names, and filed into the Obsidian vaults by Hermes as source transcripts plus
+linked notes. What exists today is the speaker-labelled transcript
+(`diarize=true`). Watching folders, dedup, naming and filing belong to Hermes,
+not this repo. `llms` (the Linux sidecar, `scripts/transcribe-server.py`)
+has no diarization yet. NeMo's `SortformerEncLabelModel` loads the same
+checkpoint there.
+
 **Two smaller things:**
 
 - **The remote config tab has never been exercised.** It is reachable now, but
@@ -229,17 +239,19 @@ Each of these was found the hard way. None is obvious from the code.
   n_ubatch`, so the shipped `512` returns HTTP 500 "input (N tokens) is too
   large" for any passage over 512 tokens. The Studio runs both at 8192
   (= `*_CTX_SIZE`); `llms` and `config/llm-stack.env.example` still ship 512.
-- **The MLX runtime's packages are not pinned.** `install-mlx-runtime.sh`
-  installs the latest mlx / mlx-audio; the Studio got mlx-audio 0.5.5 against
-  the lock file's 0.4.6 and Parakeet works on it. It needed
-  `python-multipart`, which the installer now names explicitly.
+- **mlx-audio is pinned to a git commit; the rest of the MLX runtime is not
+  pinned.** Nemotron 3 Diarization landed in mlx-audio after its 0.5.5 release,
+  so `install-mlx-runtime.sh` installs `9ada37c` (`MLX_AUDIO_SPEC` overrides it).
+  Move back to a PyPI release once one includes the model. The Studio ran
+  Parakeet on 0.5.5 and runs it unchanged on the pin. The runtime needs
+  `python-multipart`, which the installer names explicitly.
 - **`document.hidden` is true in a headless browser pane**, and `poll()` returns
   early on it. A blank fleet view there is the visibility guard, not a bug.
 
 ## 5. How to verify
 
 ```bash
-bash test.sh && bash test.sh      # 1055+ tests, both runners
+bash test.sh && bash test.sh      # 1100+ tests, both runners
 ```
 
 The tools that make a change here safe rather than hopeful:
