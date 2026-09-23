@@ -1688,6 +1688,46 @@ class RouteInventoryTests(unittest.TestCase):
                                 f"{method} {rule} does not resolve")
 
 
+class TranscriptSidecarStatusTests(unittest.TestCase):
+    """Without a transcript-backend unit, the sidecar's state comes from
+    `manage-transcript-service.sh status`. That exits 3 when the sidecar is not
+    running (the LSB convention), and every non-zero exit used to be read as
+    `failed` -- so a host with TRANSCRIPT_ENABLED=off and nothing installed
+    carried a standing "Transcription has failed" alert."""
+
+    def _status(self, returncode: int, stdout: str = "") -> str:
+        def run(cmd, **kwargs):
+            self.assertEqual(pathlib.Path(cmd[1]).name, "manage-transcript-service.sh")
+            self.assertEqual(cmd[2], "status")
+            return subprocess.CompletedProcess(cmd, returncode, stdout, "")
+
+        with (
+            patch.object(manager, "systemd_unit_exists", return_value=False),
+            patch.object(manager.subprocess, "run", side_effect=run),
+        ):
+            return manager.get_service_status("transcript-backend")
+
+    def test_a_stopped_sidecar_is_inactive_not_failed(self):
+        self.assertEqual(self._status(3, "[transcribe] stopped\n"), "inactive")
+
+    def test_a_running_sidecar_is_active_not_its_status_sentence(self):
+        self.assertEqual(self._status(0, "[transcribe] running (pid 42)\n"), "active")
+
+    def test_a_broken_manager_is_still_failed(self):
+        self.assertEqual(self._status(127), "failed")
+
+    def test_off_and_not_installed_raises_no_alert(self):
+        status = self._status(3, "[transcribe] stopped\n")
+        env = {"TRANSCRIPT_ENABLED": "off"}
+        entry = manager.health.collect(env, {"transcript-backend": status},
+                                       expectations={})["transcript-backend"]
+        self.assertEqual(entry["state"], manager.health.STATE_STOPPED)
+        self.assertEqual(entry["expected"], "off")
+        alerts = manager.public_api.derive_alerts(
+            [], [], {}, [dict(entry, name="transcript-backend", label="Transcription")])
+        self.assertEqual([a for a in alerts if a["subject"] == "transcript-backend"], [])
+
+
 class DeployRouteTests(unittest.TestCase):
     """The endpoints the header badge reads.
 

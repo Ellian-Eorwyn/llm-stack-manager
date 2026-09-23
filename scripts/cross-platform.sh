@@ -197,18 +197,16 @@ svc_is_active() {
             return 1
         fi
 
-        # Check if the service has a PID (is running)
+        # Check if the service has a PID (is running). `launchctl list <label>`
+        # prints an OpenStep plist (`"PID" = 1234;`), not JSON: parsing it as
+        # JSON always failed and read every launchd service as inactive. The
+        # same shape is parsed in web/platforms/darwin.py.
         local pid
-        pid="$(launchctl list "${label}" 2>/dev/null | python3 -c "
-import sys, json
-try:
-    data = json.loads(sys.stdin.read().strip())
-    print(data.get('PID', 0))
-except:
-    print(0)
-" 2>/dev/null || echo 0)"
+        pid="$(launchctl list "${label}" 2>/dev/null \
+            | sed -n 's/^[[:space:]]*"PID"[[:space:]]*=[[:space:]]*\([0-9][0-9]*\);.*/\1/p' \
+            | head -n 1)"
 
-        [[ "${pid}" -gt 0 ]] 2>/dev/null
+        [[ "${pid:-0}" -gt 0 ]] 2>/dev/null
     fi
 }
 

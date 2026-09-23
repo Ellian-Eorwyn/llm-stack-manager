@@ -32,8 +32,9 @@ active, `llm-b` + `llm-b-proxy` stopped on purpose. Its read API answers on
 
 **The M1 Pro** — the fleet hub. Stack directory
 `~/Applications/LLMs/llm-stack-manager`, three LaunchAgents in the user domain:
-the manager (8077 + 8078), MLX embeddings (8005), Parakeet transcription
-(8014). `config/fleet.json` lists `llms` with `control: false`. It polls across
+the manager (8077 + 8078), `llm-a` (8010) and `llm-a-proxy` (8003/8004/8008).
+No transcript-backend agent; `TRANSCRIPT_ENABLED=off`. `bash validate.sh`
+passes against it. `config/fleet.json` lists `llms` with `control: false`. It polls across
 the tailnet and renders 13 remote services.
 
 Both are opt-in on both sides: no `fleet.json` means no poller and no extra
@@ -147,13 +148,27 @@ Each of these was found the hard way. None is obvious from the code.
   `--fit-ctx`, a rejected n-gram mode — had ever reached the journal. Fixed to
   `said if said is not None`; `SaidPropagationTests` pins it. If you see notes in
   the journal that were never there before, this is why.
+- **`launchctl list <label>` prints an OpenStep plist, not JSON** — on the
+  shell side too. `svc_is_active` in `scripts/cross-platform.sh` fed it to
+  `json.loads`, so every launchd service read as inactive (affecting
+  `update.sh`, `restore-active-stack.sh` and `validate.sh`). It now parses
+  `"PID" = N;` the way `platforms/darwin.py` does; `test_validate_script.py`
+  runs both against a stub `launchctl`.
+- **`config/llm-stack.env` sets `STACK_DIR`.** A script that sources it and then
+  sources a sibling via `${STACK_DIR}` picks up the *installed* tree's copy,
+  not its own — which is how a worktree's `validate.sh` silently ran the old
+  helper. Source siblings before the config.
+- **`manage-transcript-service.sh status` exits 3 for "stopped"** (LSB). On a
+  host with no transcript-backend unit, `app.get_service_status` goes through
+  it; reading every non-zero exit as `failed` put a standing "Transcription has
+  failed" alert on any Mac with `TRANSCRIPT_ENABLED=off`.
 - **`document.hidden` is true in a headless browser pane**, and `poll()` returns
   early on it. A blank fleet view there is the visibility guard, not a bug.
 
 ## 5. How to verify
 
 ```bash
-bash test.sh && bash test.sh      # 984+ tests, both runners
+bash test.sh && bash test.sh      # 1040+ tests, both runners
 ```
 
 The tools that make a change here safe rather than hopeful:

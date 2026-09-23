@@ -10,6 +10,9 @@ if [[ ! -f "${CONFIG}" ]]; then
     exit 1
 fi
 
+# svc_is_active: systemd on Linux, launchd on macOS. Sourced before the config,
+# which may set STACK_DIR to a different checkout.
+source "${STACK_DIR}/scripts/cross-platform.sh"
 source "${CONFIG}"
 BASE=http://localhost
 PASS=0
@@ -59,10 +62,10 @@ PY
 # on purpose used to fail this script, which made a clean run mean "everything
 # is installed" rather than "everything that should be running works".
 should_check() {
-    local service="$1"
+    local service="${1:?should_check needs a service name}"
     case " ${EXPECTED_OFF} " in *" ${service} "*) return 1 ;; esac
     case " ${EXPECTED_ON} "  in *" ${service} "*) return 0 ;; esac
-    [[ "$(systemctl is-active "${service}" 2>/dev/null)" == "active" ]]
+    svc_is_active "${service}"
 }
 
 skip() {
@@ -78,7 +81,7 @@ echo "============================================================"
 echo ""
 
 echo "--- Primary backend (port ${CHAT_BACKEND_PORT:-8010}) ---"
-if should_check llm-a || should_check || should_check chat-backend; then
+if should_check llm-a || should_check chat-backend; then
     # The proxy ports below all fan into this one process. Checking only those
     # meant a backend that had died behind a live proxy read as a proxy fault.
     PROPS=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/props" 2>&1 || true)

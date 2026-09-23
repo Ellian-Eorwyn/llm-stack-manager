@@ -321,10 +321,7 @@ def get_service_status(name: str) -> str:
             return output.strip() or 'unknown'
         return 'failed'
     if should_use_local_transcript_manager(name):
-        ok, output = run_transcript_manager('status')
-        if ok:
-            return output.strip() or 'unknown'
-        return 'failed'
+        return transcript_sidecar_status()
     if should_use_local_tts_manager(name):
         ok, output = run_tts_manager(name, 'status')
         if ok:
@@ -990,6 +987,29 @@ def run_transcript_manager(action: str) -> tuple:
         return False, 'Transcript manager action timed out'
     except Exception as e:
         return False, str(e)
+
+
+def transcript_sidecar_status() -> str:
+    """The sidecar's state, from the exit code of its manager's `status`.
+
+    The script follows the LSB convention: 0 running, 3 not running. Treating
+    every non-zero exit as a failure reported the sidecar as `failed` on any
+    host where it was simply not started -- including every host with
+    TRANSCRIPT_ENABLED=off, which then raised a standing alert. Its output is
+    a sentence for people ("[transcribe] running (pid N)"), not a status word.
+    """
+    try:
+        r = subprocess.run(
+            ['bash', str(core.SCRIPTS_DIR / 'manage-transcript-service.sh'), 'status'],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        return 'unknown'
+    if r.returncode == 0:
+        return 'active'
+    if r.returncode == 3:
+        return 'inactive'
+    return 'failed'
 
 
 def is_searxng_service(name: str) -> bool:
