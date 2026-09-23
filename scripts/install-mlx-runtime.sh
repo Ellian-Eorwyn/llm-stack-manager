@@ -77,6 +77,27 @@ MLX_AUDIO_SPEC="${MLX_AUDIO_SPEC:-mlx-audio @ git+https://github.com/Blaizzy/mlx
 echo "[mlx] installing: ${PACKAGES[*]}"
 "${VENV_DIR}/bin/python" -m pip install --quiet "${PACKAGES[@]}"
 
+# The pinned commit still calls itself 0.5.5, so pip counts an existing 0.5.5
+# from PyPI as satisfying it and installs nothing, which leaves an upgraded
+# Mac without the diarization model. Compare the commit pip recorded instead.
+if (( WITH_TRANSCRIBE )) && [[ "${MLX_AUDIO_SPEC}" == *"@ git+"* ]]; then
+    wanted_commit="${MLX_AUDIO_SPEC##*@}"
+    installed_commit="$("${VENV_DIR}/bin/python" - <<'PY'
+import json
+from importlib.metadata import distribution
+try:
+    info = json.loads(distribution("mlx-audio").read_text("direct_url.json") or "{}")
+    print(info.get("vcs_info", {}).get("commit_id", ""))
+except Exception:
+    print("")
+PY
+)"
+    if [[ "${installed_commit}" != "${wanted_commit}" ]]; then
+        echo "[mlx] mlx-audio: replacing ${installed_commit:-a PyPI release} with ${wanted_commit}"
+        "${VENV_DIR}/bin/python" -m pip install --quiet --force-reinstall --no-deps "${MLX_AUDIO_SPEC}"
+    fi
+fi
+
 if (( FETCH_MODELS )); then
     # Pinned to the revisions in config/mlx-models.lock.json rather than to a
     # branch: an embedding model that silently changes revision changes every
