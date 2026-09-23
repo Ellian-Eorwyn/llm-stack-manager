@@ -12,6 +12,7 @@ mistaken for answers being caught if they come back.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import sys
@@ -289,7 +290,7 @@ class GpuAttributionTests(unittest.TestCase):
         # None says do not draw conclusions from the absence of rows.
         self.assertIsNone(self._darwin_apps(footprint=lambda pid: None))
 
-    def _memory_mib(self, footprint_mib, resident_mib):
+    def _memory_mib(self, footprint_mib, resident_mib, mapped_mib):
         import platforms.darwin as darwin
 
         class FakeLibproc:
@@ -299,19 +300,36 @@ class GpuAttributionTests(unittest.TestCase):
                 ref._obj.ri_resident_size = resident_mib * 1024 * 1024
                 return 0
 
-        with patch.object(darwin, "_libproc", FakeLibproc()):
+        with (
+            patch.object(darwin, "_libproc", FakeLibproc()),
+            patch.object(darwin, "_mapped_weights_mib", return_value=mapped_mib),
+        ):
             return darwin._process_memory_mib(4242)
 
     def test_an_mmap_loaded_model_counts_its_weights(self):
         # TASK_NO_MMAP=false: the weights are clean pages of the GGUF, which
         # phys_footprint leaves out. The task model read 5.4 GiB this way while
         # holding 12.4 GiB -- less than its own 6.9 GiB weights file.
-        self.assertEqual(self._memory_mib(footprint_mib=5555, resident_mib=12682), 12682)
+        self.assertEqual(self._memory_mib(5556, 5500, mapped_mib=7102), 12658)
 
-    def test_a_copied_in_model_counts_its_unmapped_graphics_memory(self):
-        # NO_MMAP=true: resident size misses graphics memory mapped nowhere in
-        # the address space, so here it is the footprint that is right.
-        self.assertEqual(self._memory_mib(footprint_mib=36954, resident_mib=35020), 36954)
+    def test_resident_size_is_not_used_for_wired_gpu_memory(self):
+        # Once Metal wires a process's buffers, resident_size stops reflecting
+        # them: llm-a read 15 GiB on it while its footprint was 37.
+        self.assertEqual(self._memory_mib(37593, 15600, mapped_mib=0), 37593)
+
+    @unittest.skipUnless(sys.platform == "darwin", "reads this process's own regions")
+    def test_mapped_weights_are_read_from_the_process_regions(self):
+        # A real mapping of a real file, read back through proc_pidinfo.
+        import mmap
+        import tempfile
+        import platforms.darwin as darwin
+        with tempfile.NamedTemporaryFile(suffix=".gguf") as handle:
+            handle.write(b"\1" * (8 * 1024 * 1024))
+            handle.flush()
+            with mmap.mmap(handle.fileno(), 0, prot=mmap.PROT_READ) as mapped:
+                sum(mapped[i] for i in range(0, len(mapped), 4096))   # fault it in
+                self.assertGreaterEqual(darwin._mapped_weights_mib(os.getpid()), 7)
+        self.assertEqual(darwin._mapped_weights_mib(os.getpid()), 0)
 
     def test_darwin_maps_a_child_process_to_its_launchd_job(self):
         with platform_harness.as_darwin(run_cmd=self._darwin_run) as platform:

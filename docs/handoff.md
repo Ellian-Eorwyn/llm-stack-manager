@@ -172,10 +172,17 @@ Each of these was found the hard way. None is obvious from the code.
   no `nvidia-smi`; `darwin.gpu_compute_apps` reads each model server's memory
   (no root, same-user only) and attributes it by walking the process tree up
   to the launchd job; `pid_unit` does the same walk, so router children are
-  attributed too. **Neither kernel figure is right alone:** `phys_footprint`
-  leaves out an mmap-loaded model's weights (clean file pages — task read
-  5.4 GiB holding 12.4), and `resident_size` leaves out unmapped graphics
-  memory (llm-a reads 1.9 GiB low). The larger of the two is used.
+  attributed too. The figure is `phys_footprint` **plus the resident pages of
+  mapped `.gguf`/`.safetensors` regions** (`proc_pidinfo` region walk):
+  footprint leaves out an mmap-loaded model's clean weight pages (task read
+  5.4 GiB holding 12.4), and `resident_size` is useless once Metal wires a
+  process's buffers (llm-a read 15 GiB on it while holding 37).
+- **On the Studio, "macOS & apps" is ~25 GB and is mostly not apps.** Of 91 GB
+  used: 74 GB wired (≈65 GB of it the model servers' Metal buffers; the rest
+  kernel, GPU driver, WindowServer ~1.7 GB) and ~9.4 GB compressor. Desktop
+  apps are ~15 GB of footprint but mostly compressed. `vmmap` shows 21.5 GB
+  of llm-a as swapped/compressed — more than the compressor holds, so partly
+  GPU-wired pages outside the CPU page table, but the box is at its limit.
 - **launchd has no journal.** `Platform.log_command` is the one place logs are
   read from: journald on Linux, the files named in the job's plist on macOS.
   Those lines carry no wall-clock time (llama.cpp's stamp counts from process

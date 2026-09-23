@@ -19,7 +19,7 @@ than `linux.py` despite doing less.
 3. Unified memory means there is no separate pool of device memory to report,
    and IOAccelerator publishes allocation driver-wide with no per-process
    breakdown. What *is* per-process is the kernel's accounting of each
-   process's memory (footprint or resident, whichever is larger -- see
+   process's memory (its footprint plus any model file it has mapped -- see
    `_process_memory_mib`), so `gpu_compute_apps` reports that for the
    processes serving models, found by walking the process tree up to their
    launchd job. It returns `None` -- "cannot say" -- only when the footprint
@@ -81,37 +81,91 @@ _RUSAGE_INFO_V2 = 2
 _libproc = None
 
 
+class _RegionInfo(ctypes.Structure):
+    """`struct proc_regioninfo` from <sys/proc_info.h>."""
+    _fields_ = [("pri_protection", ctypes.c_uint32), ("pri_max_protection", ctypes.c_uint32),
+                ("pri_inheritance", ctypes.c_uint32), ("pri_flags", ctypes.c_uint32),
+                ("pri_offset", ctypes.c_uint64)] + [
+        (name, ctypes.c_uint32) for name in (
+            "pri_behavior", "pri_user_wired_count", "pri_user_tag", "pri_pages_resident",
+            "pri_pages_shared_now_private", "pri_pages_swapped_out", "pri_pages_dirtied",
+            "pri_ref_count", "pri_shadow_depth", "pri_share_mode",
+            "pri_private_pages_resident", "pri_shared_pages_resident", "pri_obj_id",
+            "pri_depth")] + [
+        ("pri_address", ctypes.c_uint64), ("pri_size", ctypes.c_uint64)]
+
+
+_PROC_PIDREGIONPATHINFO = 8
+#: `struct vnode_info` precedes the path in `struct proc_regionwithpathinfo`.
+_VNODE_INFO_BYTES = 152
+_REGION_BUFFER_BYTES = 4096
+#: Model weight files a server may map rather than copy in.
+_WEIGHT_SUFFIXES = (".gguf", ".safetensors")
+
+
+def _libproc_handle():
+    global _libproc
+    if _libproc is None:
+        _libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        _libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                          ctypes.c_void_p, ctypes.c_int]
+    return _libproc
+
+
+def _mapped_weights_mib(pid: int) -> int:
+    """Resident pages of model files the process has mapped, in MiB.
+
+    A model loaded with mmap (`*_NO_MMAP=false`) keeps its weights as clean
+    pages of the GGUF, which `phys_footprint` does not count and
+    `resident_size` does not reliably count either once Metal has wired the
+    process's other buffers. Walking the regions and reading the resident
+    page count of each one backed by a weight file is exact.
+    """
+    lib = _libproc_handle()
+    buf = ctypes.create_string_buffer(_REGION_BUFFER_BYTES)
+    head = ctypes.sizeof(_RegionInfo)
+    page = os.sysconf("SC_PAGE_SIZE")
+    address, pages = 0, 0
+    # Bounded: a process has a few thousand regions, not millions.
+    for _ in range(100_000):
+        if lib.proc_pidinfo(int(pid), _PROC_PIDREGIONPATHINFO, address, buf,
+                            _REGION_BUFFER_BYTES) <= 0:
+            break
+        info = _RegionInfo.from_buffer_copy(buf.raw[:head])
+        path = buf.raw[head + _VNODE_INFO_BYTES:].split(b"\0", 1)[0]
+        if path.endswith(tuple(s.encode() for s in _WEIGHT_SUFFIXES)):
+            pages += info.pri_pages_resident
+        address = info.pri_address + info.pri_size
+    return pages * page // (1024 * 1024)
+
+
 def _process_memory_mib(pid: int) -> int | None:
     """The unified memory a process is holding, in MiB.
 
-    Two kernel figures, and each misses something:
+    `phys_footprint` -- what Activity Monitor calls "Memory" -- plus the
+    resident pages of any model file the process has mapped.
 
-    - `phys_footprint` is what Activity Monitor calls "Memory". It counts the
-      Metal buffers a process has wired, including graphics memory mapped
-      nowhere in its address space -- which RSS does not. But it counts only
-      *dirty* pages, so a model loaded with mmap (`*_NO_MMAP=false`) has its
-      weights left out: they are clean pages of the GGUF file. On the task
-      model that read 5.4 GiB for a process holding 12.4 GiB.
-    - `resident_size` counts those file pages, but not unmapped graphics
-      memory: llm-a, which copies its weights in, reads 1.9 GiB lower on it.
-
-    The larger of the two is right for both loading modes. The file-backed
-    part is clean, so under pressure macOS can drop it and read it back from
-    disk rather than swap it -- resident, but not pinned.
+    `phys_footprint` counts what a process has dirtied: its Metal buffers
+    (the GPU allocations llama.cpp and MLX make show as "Untagged" and
+    "IOAccelerator"), including any of that the kernel has since compressed or
+    swapped. It leaves out clean file pages, so a model loaded with mmap
+    (`*_NO_MMAP=false`) had its weights missing: the task model read 5.4 GiB
+    while holding 12.4. `resident_size` is no substitute -- once Metal wires a
+    process's buffers it stops reflecting them, and llm-a read 15 GiB on it
+    while holding 37.
 
     Readable without root for processes owned by the same user, which is every
     launchd user-domain job.
     """
-    global _libproc
     try:
-        if _libproc is None:
-            _libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        lib = _libproc_handle()
         info = _RUsageInfoV2()
-        if _libproc.proc_pid_rusage(int(pid), _RUSAGE_INFO_V2, ctypes.byref(info)) != 0:
+        if lib.proc_pid_rusage(int(pid), _RUSAGE_INFO_V2, ctypes.byref(info)) != 0:
             return None
+        mapped = _mapped_weights_mib(pid)
     except (OSError, AttributeError, ValueError):
         return None
-    return max(info.ri_phys_footprint, info.ri_resident_size) // (1024 * 1024)
+    return info.ri_phys_footprint // (1024 * 1024) + mapped
 
 
 class DarwinPlatform(base.Platform):
