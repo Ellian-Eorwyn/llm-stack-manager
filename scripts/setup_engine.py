@@ -356,7 +356,7 @@ def plan_gpu_placement(gpus: list[dict[str, Any]], models: dict[str, dict[str, A
     and a configuration that runs comfortably is refused.
     """
     if not gpus:
-        return {"ok": False, "assignments": {}, "error": "No NVIDIA GPUs detected"}
+        return {"ok": False, "assignments": {}, "error": "No GPUs detected"}
     remaining = {int(gpu["index"]): int(gpu.get("memory_free_mib", gpu["memory_total_mib"]) * 0.90) for gpu in gpus}
     total = sum(remaining.values())
     required = _required_mib(models, exclusive_groups)
@@ -443,12 +443,26 @@ def probe_json(url: str, payload: dict[str, Any] | None = None, timeout: int = 1
     return False, last_error
 
 
-def placement_env(assignments: dict[str, Any]) -> dict[str, str]:
+def placement_env(assignments: dict[str, Any], unified_memory: bool | None = None) -> dict[str, str]:
+    """The env keys that pin each component to its planned GPU(s).
+
+    On unified memory there is one Metal device and nothing to place: writing
+    the CUDA keys there set `LLM_A_DEVICE=CUDA0` -- which the launcher then has
+    to discard -- and `GLMOCR_LAYOUT_DEVICE=cuda:0`, which nothing on a Mac can
+    honour. The device is named `MTL0` for the llama.cpp slots and the layout
+    model is left to choose for itself.
+    """
+    if unified_memory is None:
+        unified_memory = platforms.active().unified_memory
     mapping = {component: slot.prefix for component, slot in SLOT_BY_COMPONENT.items()}
     updates: dict[str, str] = {}
     for component, prefix in mapping.items():
         item = assignments.get(component)
         if not item:
+            continue
+        if unified_memory:
+            if component in {"llm-a", "llm-b"}:
+                updates[f"{prefix}_DEVICE"] = "MTL0"
             continue
         updates[f"{prefix}_GPU_VISIBLE_DEVICES"] = item["visible_devices"]
         updates[f"{prefix}_MAIN_GPU"] = "0"
@@ -456,7 +470,7 @@ def placement_env(assignments: dict[str, Any]) -> dict[str, str]:
         if component in {"llm-a", "llm-b"}:
             updates[f"{prefix}_DEVICE"] = ",".join(f"CUDA{i}" for i in range(len(item["gpu_indices"])))
     layout = assignments.get("glmocr-sdk")
-    if layout:
+    if layout and not unified_memory:
         updates["GLMOCR_LAYOUT_CUDA_VISIBLE_DEVICES"] = layout["visible_devices"]
         updates["GLMOCR_LAYOUT_DEVICE"] = "cuda:0"
     return updates

@@ -227,11 +227,74 @@ Swapouts:                                  112407584.
 
 class GpuAttributionTests(unittest.TestCase):
 
-    def test_darwin_cannot_attribute_device_memory_and_says_so(self):
-        # None and [] mean different things here. [] asserts the GPU is idle;
+    # launchd runs a wrapper script per job; the model server is its child,
+    # and the router's per-model servers are grandchildren.
+    LAUNCHCTL_LIST = ("PID\tStatus\tLabel\n"
+                      "100\t0\tcom.llmstack.llm-a\n"
+                      "200\t0\tcom.llmstack.llm-manager\n"
+                      "300\t0\tcom.llmstack.llama-router\n"
+                      "400\t0\tcom.apple.something\n")
+    UID = 501
+    PS = ("  100     1  501 /bin/bash\n"
+          "  101   100  501 /stack/deps/llama.cpp/build/bin/llama-server\n"
+          "  200     1  501 /stack/.venv/bin/python3\n"
+          "  300     1  501 /bin/bash\n"
+          "  301   300  501 /stack/deps/llama.cpp/build/bin/llama-server\n"
+          "  302   301  501 /stack/deps/llama.cpp/build/bin/llama-server\n"
+          "  500     1  501 /Applications/Safari.app/Contents/MacOS/Safari\n"
+          "  600     1  501 /opt/homebrew/bin/llama-server\n"
+          "  700     1    0 /usr/libexec/llama-server\n")
+    FOOTPRINTS = {100: 3, 101: 36954, 200: 900, 301: 40, 302: 5120,
+                  500: 2048, 600: 1024, 700: 4096}
+
+    def _darwin_run(self, cmd, timeout=30):
+        if cmd[:2] == ["launchctl", "list"]:
+            return _completed(self.LAUNCHCTL_LIST)
+        if cmd[0] == "ps":
+            return _completed(self.PS)
+        return _completed("", 1)
+
+    def _darwin_apps(self, footprint=None):
+        footprint = footprint or (lambda pid: self.FOOTPRINTS.get(pid, 1))
+        with (
+            platform_harness.as_darwin(run_cmd=self._darwin_run) as platform,
+            patch.object(DarwinPlatform, "phys_footprint_mib", staticmethod(footprint)),
+            patch("platforms.darwin.os.getuid", return_value=self.UID),
+        ):
+            return platform.gpu_compute_apps()
+
+    def test_darwin_attributes_unified_memory_to_model_servers(self):
+        # There is no nvidia-smi here, and it used to return None, so the header
+        # said "No compute processes" with a 27B model loaded. phys_footprint
+        # counts a process's wired Metal buffers, which is the answer.
+        apps = {row["pid"]: row for row in self._darwin_apps()}
+        self.assertEqual(apps[101]["used_memory"], 36954)
+        self.assertEqual(apps[101]["process_name"], "llama-server")
+        self.assertEqual(apps[101]["gpu_uuid"], "apple-gpu-0")
+        # A router grandchild is found through the process tree.
+        self.assertIn(302, apps)
+        # A model server started by hand still counts.
+        self.assertIn(600, apps)
+
+    def test_darwin_leaves_out_what_is_not_serving_a_model(self):
+        apps = {row["pid"] for row in self._darwin_apps()}
+        self.assertNotIn(200, apps)   # the manager itself
+        self.assertNotIn(500, apps)   # an unrelated app
+        self.assertNotIn(100, apps)   # a wrapper shell, below the floor
+        self.assertNotIn(301, apps)   # a router child holding nothing
+        self.assertNotIn(700, apps)   # another user's; unreadable anyway
+
+    def test_darwin_says_so_when_footprints_cannot_be_read(self):
+        # None and [] mean different things here. [] asserts nothing is loaded;
         # None says do not draw conclusions from the absence of rows.
-        with platform_harness.as_darwin() as platform:
-            self.assertIsNone(platform.gpu_compute_apps())
+        self.assertIsNone(self._darwin_apps(footprint=lambda pid: None))
+
+    def test_darwin_maps_a_child_process_to_its_launchd_job(self):
+        with platform_harness.as_darwin(run_cmd=self._darwin_run) as platform:
+            self.assertEqual(platform.pid_unit(101), "llm-a")
+            self.assertEqual(platform.pid_unit(302), "llama-router")
+            self.assertEqual(platform.pid_unit(100), "llm-a")
+            self.assertEqual(platform.pid_unit(500), "")
 
     def test_linux_parses_nvidia_compute_apps(self):
         rows = "GPU-aaa, 4242, llama-server, 17104\nGPU-bbb, 4243, python, 428\n"
@@ -403,6 +466,47 @@ class ActiveAdapterTests(unittest.TestCase):
         expected = "darwin" if sys.platform == "darwin" else "linux"
         self.assertEqual(platforms.detect().name, expected)
 
+
+
+class LogSourceTests(unittest.TestCase):
+    """The Logs tab and request telemetry read `journalctl`, which a Mac does
+    not have -- so both were blank there while launchd wrote every line to the
+    files each job's plist names."""
+
+    def test_linux_reads_the_journal(self):
+        cmd = LinuxPlatform().log_command("llm-a", 100, follow=True)
+        self.assertEqual(cmd[:3], ["journalctl", "-u", "llm-a"])
+        self.assertIn("-f", cmd)
+        self.assertIn("--output=short-iso", cmd)
+        self.assertIn("--output=short-iso-precise",
+                      LinuxPlatform().log_command("llm-a", 0, precise=True))
+        self.assertTrue(LinuxPlatform.journal_logs)
+
+    def test_darwin_tails_the_files_its_plist_names(self):
+        import plistlib
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            err, out = pathlib.Path(tmp, "llm-a.stderr.log"), pathlib.Path(tmp, "llm-a.stdout.log")
+            err.write_text("x\n")
+            out.write_text("y\n")
+            plist = pathlib.Path(tmp, "com.llmstack.llm-a.plist")
+            plist.write_bytes(plistlib.dumps({"StandardErrorPath": str(err),
+                                              "StandardOutPath": str(out)}))
+            platform = DarwinPlatform()
+            with patch.object(DarwinPlatform, "_domain_and_plist",
+                              lambda self, name: ("gui/501", str(plist))):
+                cmd = platform.log_command("llm-a", 100, follow=True)
+                self.assertEqual(cmd, ["tail", "-n", "100", "-F", str(err), str(out)])
+                self.assertEqual(platform.log_command("llm-a", 5),
+                                 ["tail", "-n", "5", str(err), str(out)])
+        self.assertFalse(DarwinPlatform.journal_logs)
+
+    def test_darwin_says_why_when_there_is_nothing_to_read(self):
+        with patch.object(DarwinPlatform, "_domain_and_plist",
+                          lambda self, name: ("gui/501", "/nonexistent.plist")):
+            cmd = DarwinPlatform().log_command("embed", 100, follow=True)
+        self.assertEqual(cmd[0], "echo")
+        self.assertIn("embed", cmd[1])
 
 if __name__ == "__main__":
     unittest.main()

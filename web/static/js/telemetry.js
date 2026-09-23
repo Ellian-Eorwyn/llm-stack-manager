@@ -225,6 +225,11 @@ function applyGpus(gpus) {
     return;
   }
   el.innerHTML = gpus.map(g => {
+    // Apple silicon: the "GPU" memory is the host's RAM, so the remainder of the
+    // bar is macOS and every other app, and the card is named for the memory
+    // rather than for a device index there is only ever one of.
+    const unified = !!g.unified_memory;
+    const otherLabel = unified ? 'macOS & apps' : 'Other';
     const used = Number(g.mem_used || 0);
     const total = Number(g.mem_total || 0);
     const pct = Math.max(0, Math.min(100, Number(g.mem_pct || 0)));
@@ -253,18 +258,18 @@ function applyGpus(gpus) {
     const otherUsed = Math.max(0, used - knownUsed);
     if (otherUsed > 0 && total > 0) {
       const otherPct = (otherUsed / total * 100);
-      segmentsHtml += `<div class="bar-segment" style="width:${otherPct}%; background-color:var(--dim);" title="Other: ${formatG(otherUsed)}"></div>`;
+      segmentsHtml += `<div class="bar-segment" style="width:${otherPct}%; background-color:var(--dim);" title="${otherLabel}: ${formatG(otherUsed)}"></div>`;
       if (itemsHtml) {
-        itemsHtml += `<div class="gpu-process-item" title="Other non-llm processes">
+        itemsHtml += `<div class="gpu-process-item" title="${unified ? 'macOS and every other app sharing unified memory' : 'Other non-llm processes'}">
           <span class="gpu-process-dot" style="background-color:var(--dim);"></span>
-          <span style="color:var(--text);">Other</span>
+          <span style="color:var(--text);">${otherLabel}</span>
           <span style="font-family:var(--mono);">${formatG(otherUsed)}</span>
         </div>`;
       }
     }
     
     if (!itemsHtml) {
-      itemsHtml = '<div class="gpu-process-empty">No compute processes</div>';
+      itemsHtml = `<div class="gpu-process-empty">${unified ? 'No models loaded' : 'No compute processes'}</div>`;
     } else {
       itemsHtml = `<div class="gpu-process-inline-list">${itemsHtml}</div>`;
     }
@@ -272,13 +277,13 @@ function applyGpus(gpus) {
     return `
       <div class="gpu-card">
         <div class="gpu-card-head">
-          <span class="gpu-label">GPU${escapeHtml(g.index)}</span>
+          <span class="gpu-label">${unified ? 'Unified memory' : `GPU${escapeHtml(g.index)}`}</span>
           <span class="gpu-name" title="${escapeHtml(g.name || '')}">${escapeHtml(g.name || '')}</span>
         </div>
         <div class="gpu-stat-row">
           <span>${formatG(used)}/${formatG(total)} (${pct}%)</span>
-          <span>${gpuReading(g.util, '%')} util</span>
-          <span>${gpuReading(g.temp, ' C')}</span>
+          <span>${gpuReading(g.util, '%')} ${unified ? 'GPU util' : 'util'}</span>
+          ${unified && g.temp == null ? '' : `<span>${gpuReading(g.temp, ' C')}</span>`}
         </div>
         <div class="bar-wrap" title="${formatG(used)}/${formatG(total)} | ${gpuReading(g.util, '%')} | ${gpuReading(g.temp, ' C')}">
           ${segmentsHtml}

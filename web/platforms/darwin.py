@@ -18,8 +18,11 @@ than `linux.py` despite doing less.
 
 3. Unified memory means there is no separate pool of device memory to report,
    and IOAccelerator publishes allocation driver-wide with no per-process
-   breakdown. `gpu_compute_apps` therefore returns `None` -- "cannot say" --
-   rather than `[]`, which would claim the GPU is idle.
+   breakdown. What *is* per-process is `phys_footprint`, which counts a
+   process's wired Metal buffers, so `gpu_compute_apps` reports that for the
+   processes serving models, found by walking the process tree up to their
+   launchd job. It returns `None` -- "cannot say" -- only when the footprint
+   is unreadable, rather than `[]`, which would claim the GPU is idle.
 
 4. Temperature and power are not readable without elevated privileges, so they
    are reported as `None`. A monitoring daemon should not need root, and a
@@ -28,6 +31,7 @@ than `linux.py` despite doing less.
 
 from __future__ import annotations
 
+import ctypes
 import ipaddress
 import os
 import plistlib
@@ -48,6 +52,53 @@ _VM_STAT_PAGE_SIZE_RE = re.compile(r"page size of (\d+) bytes")
 _SWAPUSAGE_RE = re.compile(r"total\s*=\s*([\d.]+)M\s+used\s*=\s*([\d.]+)M\s+free\s*=\s*([\d.]+)M")
 
 LABEL_PREFIX = "com.llmstack"
+
+#: Processes smaller than this are not listed as holding model memory. The
+#: wrapper shells and proxies sit in the tens of MiB; anything serving a model
+#: is in the GiB.
+MIN_ATTRIBUTED_MIB = 256
+
+#: Command names that serve models even when started outside a managed job --
+#: from a terminal, say -- and so still belong in "what is using the memory".
+_MODEL_SERVER_COMMANDS = ("llama-server", "mlx")
+
+
+class _RUsageInfoV2(ctypes.Structure):
+    """`struct rusage_info_v2` from <sys/resource.h>, up to the fields read."""
+    _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [
+        (name, ctypes.c_uint64) for name in (
+            "ri_user_time", "ri_system_time", "ri_pkg_idle_wkups",
+            "ri_interrupt_wkups", "ri_pageins", "ri_wired_size",
+            "ri_resident_size", "ri_phys_footprint", "ri_proc_start_abstime",
+            "ri_proc_exit_abstime", "ri_child_user_time", "ri_child_system_time",
+            "ri_child_pkg_idle_wkups", "ri_child_interrupt_wkups",
+            "ri_child_pageins", "ri_child_elapsed_abstime",
+            "ri_diskio_bytesread", "ri_diskio_byteswritten")]
+
+
+_RUSAGE_INFO_V2 = 2
+_libproc = None
+
+
+def _phys_footprint_mib(pid: int) -> int | None:
+    """What Activity Monitor calls "Memory" for a process, in MiB.
+
+    `phys_footprint` is the kernel's own accounting of what a process has made
+    resident and dirty, *including* the Metal buffers it has wired for the
+    GPU -- which RSS does not reliably count. On unified memory that is the
+    closest thing there is to "this process's VRAM". Readable without root for
+    processes owned by the same user, which is every launchd user-domain job.
+    """
+    global _libproc
+    try:
+        if _libproc is None:
+            _libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        info = _RUsageInfoV2()
+        if _libproc.proc_pid_rusage(int(pid), _RUSAGE_INFO_V2, ctypes.byref(info)) != 0:
+            return None
+    except (OSError, AttributeError, ValueError):
+        return None
+    return info.ri_phys_footprint // (1024 * 1024)
 
 
 class DarwinPlatform(base.Platform):
@@ -164,6 +215,44 @@ class DarwinPlatform(base.Platform):
             "main_pid": pid,
             "n_restarts": n_restarts,
         }
+
+    # -- logs ---------------------------------------------------------------
+
+    #: launchd has no journal: a job's output goes to the files its plist
+    #: names, with no timestamp of the host's own on each line.
+    journal_logs = False
+
+    def log_files(self, name: str) -> list[str]:
+        """The files launchd writes this job's stderr and stdout to.
+
+        Read from the plist rather than assumed, so a job installed with a
+        different log directory is still found. stderr first: it is where
+        llama.cpp and Python both log.
+        """
+        _domain, plist = self._domain_and_plist(name)
+        try:
+            with open(plist, "rb") as handle:
+                data = plistlib.load(handle)
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            return []
+        paths = []
+        for key in ("StandardErrorPath", "StandardOutPath"):
+            path = data.get(key)
+            if isinstance(path, str) and path and path not in paths:
+                paths.append(path)
+        return paths
+
+    def log_command(self, unit: str, lines: int, follow: bool = False,
+                    precise: bool = False) -> list[str]:
+        files = [path for path in self.log_files(unit) if os.path.exists(path)]
+        if not files:
+            # Printed by the caller like any log line, so the Logs tab says why
+            # it is empty instead of hanging on a journalctl that does not exist.
+            return ["echo", f"No log files found for {unit}: it is not installed "
+                            f"as a launchd service, or has not written anything yet."]
+        # One file is followed without `==> name <==` headers; with two, the
+        # headers say which stream each block came from.
+        return ["tail", "-n", str(lines)] + (["-F"] if follow else []) + files
 
     def service_start(self, name: str, timeout: int = 30):
         domain, plist = self._domain_and_plist(name)
@@ -308,32 +397,67 @@ class DarwinPlatform(base.Platform):
             return ""
         return (r.stdout or "").strip()
 
-    def pid_unit(self, pid) -> str:
-        """The service a PID belongs to.
+    def _launchd_jobs(self) -> dict[int, str]:
+        """PID -> service name for every running com.llmstack job."""
+        try:
+            out = self.run_cmd(["launchctl", "list"], timeout=5).stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        jobs = {}
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3 or not parts[0].isdigit():
+                continue
+            if parts[2].startswith(LABEL_PREFIX + "."):
+                jobs[int(parts[0])] = parts[2][len(LABEL_PREFIX) + 1:]
+        return jobs
 
-        There is no cgroup to read, so this can only match a job's *main* PID
-        from `launchctl list`. Children are therefore invisible to it -- which
-        matters, because the pooled model router's children are exactly the
-        processes worth attributing. Callers already fall back to matching the
-        command line when this returns "".
+    def _process_table(self) -> dict[int, tuple[int, int, str]]:
+        """PID -> (parent PID, uid, command path), from one `ps` call."""
+        try:
+            out = self.run_cmd(["ps", "-axo", "pid=,ppid=,uid=,comm="], timeout=5).stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        table = {}
+        for line in out.splitlines():
+            parts = line.split(None, 3)
+            if len(parts) < 4:
+                continue
+            try:
+                table[int(parts[0])] = (int(parts[1]), int(parts[2]), parts[3].strip())
+            except ValueError:
+                continue
+        return table
+
+    @staticmethod
+    def _owning_job(pid: int, table: dict, jobs: dict[int, str]) -> str:
+        """The managed job `pid` descends from, by walking parent PIDs.
+
+        launchd has no cgroup, but the process tree carries the same fact: the
+        wrapper script launchd starts is the ancestor of the llama-server or MLX
+        interpreter doing the work -- and the router's per-model children are
+        grandchildren of theirs.
         """
+        seen = set()
+        while pid > 1 and pid not in seen:
+            if pid in jobs:
+                return jobs[pid]
+            seen.add(pid)
+            pid = table.get(pid, (0,))[0]
+        return ""
+
+    def pid_unit(self, pid) -> str:
+        """The service a PID belongs to: its own job, or the nearest ancestor's."""
         try:
             pid = int(pid)
         except (TypeError, ValueError):
             return ""
         if pid <= 0:
             return ""
-        try:
-            out = self.run_cmd(["launchctl", "list"], timeout=5).stdout or ""
-        except (OSError, subprocess.SubprocessError):
-            return ""
-        for line in out.splitlines():
-            parts = line.split("\t")
-            if len(parts) < 3 or not parts[0].isdigit():
-                continue
-            if int(parts[0]) == pid and parts[2].startswith(LABEL_PREFIX + "."):
-                return parts[2][len(LABEL_PREFIX) + 1:]
-        return ""
+        jobs = self._launchd_jobs()
+        if pid in jobs:
+            return jobs[pid]
+        return self._owning_job(pid, self._process_table(), jobs)
 
     # -- gpus ---------------------------------------------------------------
 
@@ -434,11 +558,50 @@ class DarwinPlatform(base.Platform):
         return gpus
 
     def gpu_compute_apps(self) -> list[dict] | None:
-        # IOAccelerator publishes allocation driver-wide with no per-process
-        # breakdown, and there is no Darwin equivalent of
-        # `nvidia-smi --query-compute-apps`. `None` says so; `[]` would claim
-        # the GPU is idle.
-        return None
+        """The model-serving processes and the unified memory each holds.
+
+        There is no `nvidia-smi --query-compute-apps` here: IOAccelerator
+        reports allocation driver-wide. But on unified memory the question the
+        operator is asking -- what is holding the memory the GPU works from --
+        has a per-process answer, `phys_footprint`, which includes a process's
+        wired Metal buffers. So the rows are every process under a managed job
+        (except the manager itself), plus any model server started by hand,
+        with its footprint.
+
+        Only processes owned by this user can be read, which is every job in
+        the launchd user domain this stack installs into. `None` is returned
+        only when footprints cannot be read at all -- the reader is checked on
+        this process first, so `[]` really does mean nothing is loaded.
+        """
+        table = self._process_table()
+        if not table or self.phys_footprint_mib(os.getpid()) is None:
+            return None
+        jobs = self._launchd_jobs()
+        uid = os.getuid()
+        rows: list[dict] = []
+        for pid, (_ppid, owner, command) in table.items():
+            if owner != uid:
+                continue
+            job = self._owning_job(pid, table, jobs)
+            name = os.path.basename(command)
+            if job == "llm-manager":
+                continue
+            if not job and not any(key in name for key in _MODEL_SERVER_COMMANDS):
+                continue
+            used = self.phys_footprint_mib(pid)
+            if used is None or used < MIN_ATTRIBUTED_MIB:
+                continue
+            rows.append({
+                "gpu_uuid": "apple-gpu-0",
+                "pid": pid,
+                "process_name": name,
+                "used_memory": used,
+            })
+        return rows
+
+    @staticmethod
+    def phys_footprint_mib(pid: int) -> int | None:
+        return _phys_footprint_mib(pid)
 
     # -- setup ---------------------------------------------------------------
 

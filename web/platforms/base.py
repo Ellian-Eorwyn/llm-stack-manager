@@ -238,6 +238,26 @@ class Platform(ABC):
     #: host starts swapping. Loud versus slow, and a different fix each time.
     unified_memory: bool = False
 
+    # -- logs ---------------------------------------------------------------
+
+    #: Whether service logs carry the host's own timestamps in journald's
+    #: `short-iso-precise` shape. Telemetry backfills history only from a log
+    #: that says when each line was written.
+    journal_logs: bool = True
+
+    def log_command(self, unit: str, lines: int, follow: bool = False,
+                    precise: bool = False) -> list[str]:
+        """The command that prints the last `lines` of a service's log, and
+        keeps printing new ones when `follow` is set.
+
+        journald by default. A service manager that writes plain files instead
+        overrides this; callers only ever read stdout line by line.
+        """
+        return (["journalctl", "-u", unit]
+                + (["-f"] if follow else [])
+                + ["-n", str(lines), "--no-pager",
+                   "--output=short-iso-precise" if precise else "--output=short-iso"])
+
     #: Configuration capabilities this host does not have, and why.
     #:
     #: A control that reports success and changes nothing is worse than a
@@ -293,10 +313,11 @@ class Platform(ABC):
 
         `None` and `[]` say different things and callers depend on the
         difference: `[]` is "nothing is on the GPU", `None` is "do not draw
-        conclusions from the absence of rows here". macOS returns `None` --
-        IOAccelerator reports allocation driver-wide, with no per-process
-        breakdown, so there is no Darwin equivalent of
-        `nvidia-smi --query-compute-apps`.
+        conclusions from the absence of rows here". On macOS there is no
+        `nvidia-smi --query-compute-apps`; unified memory has no device pool,
+        so the rows there are each model-serving process's `phys_footprint`
+        (which includes its wired Metal buffers), and `None` only when that
+        cannot be read.
 
         Deliberately raw. Turning a row into "which unit, which model, which
         alias" is interpretation, not a platform fact, and it lives with the

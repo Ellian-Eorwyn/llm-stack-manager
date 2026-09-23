@@ -254,6 +254,21 @@ def parse_event(body: str) -> dict | None:
     return None
 
 
+def parse_plain_line(line: str, unit: str, ts: float) -> dict | None:
+    """Parse an unprefixed log line -- a launchd log file's -- stamped `ts`.
+
+    launchd writes a job's output to a file with no timestamp of the host's
+    own, and llama.cpp's `--log-prefix` stamp counts from process start, so
+    the time a line is read is the only wall-clock time there is for it.
+    """
+    event = parse_event(line.rstrip("\n"))
+    if event is None:
+        return None
+    event["ts"] = ts
+    event["unit"] = unit
+    return event
+
+
 def parse_line(line: str) -> dict | None:
     """Parse a full journal line into a timestamped event, or None."""
     split = split_journal_line(line)
@@ -476,6 +491,10 @@ class UnitCollector:
             if window_seconds <= self.backfilled_window:
                 return
             self.backfilled_window = window_seconds
+        if not platforms.active().journal_logs:
+            # A launchd log file says nothing about when its lines were written,
+            # so there is no window to seed from; history starts with the tail.
+            return
         try:
             result = subprocess.run(
                 ["journalctl", "-u", self.unit, "--since", f"-{window_seconds}s",
@@ -502,11 +521,11 @@ class UnitCollector:
         self._thread.start()
 
     def _tail(self):
+        platform = platforms.active()
         while not self._stop.is_set():
             try:
                 self._process = subprocess.Popen(
-                    ["journalctl", "-u", self.unit, "-f", "-n", "0",
-                     "--no-pager", "--output=short-iso-precise"],
+                    platform.log_command(self.unit, 0, follow=True, precise=True),
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                 )
             except OSError as exc:
@@ -516,7 +535,8 @@ class UnitCollector:
                 for line in iter(self._process.stdout.readline, ""):
                     if self._stop.is_set():
                         break
-                    event = parse_line(line)
+                    event = (parse_line(line) if platform.journal_logs
+                             else parse_plain_line(line, self.unit, time.time()))
                     if event:
                         self._add(event)
             finally:

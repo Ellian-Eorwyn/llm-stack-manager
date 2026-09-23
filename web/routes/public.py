@@ -26,6 +26,7 @@ import time
 from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 
 import config_env
+import platforms
 import public_api
 import telemetry
 
@@ -261,11 +262,11 @@ def api_v1_logs_raw():
 
     output = {}
     for unit in units:
-        # One-shot, never `-f`. A follow here would leave a journalctl per client
+        # One-shot, never `-f`. A follow here would leave a log reader per client
         # alive for as long as they cared to hold the socket open.
         try:
             result = subprocess.run(
-                ["journalctl", "-u", unit, "-n", str(lines), "--no-pager", "--output=short-iso"],
+                platforms.active().log_command(unit, lines),
                 capture_output=True, text=True, timeout=15,
             )
             output[unit] = result.stdout.splitlines()

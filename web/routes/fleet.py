@@ -244,8 +244,8 @@ def api_fleet_logs(host_id):
     """Parsed log events, polled rather than streamed.
 
     `/api/v1/logs` reads the peer's telemetry ring buffer and is
-    platform-independent. `/api/v1/logs/raw` shells `journalctl` and is not, so
-    it is not proxied at all.
+    platform-independent. `/api/v1/logs/raw` returns journald or launchd-file
+    lines verbatim, whose shape depends on the peer, so it is not proxied.
     """
     host, missing = _known(host_id)
     if missing:

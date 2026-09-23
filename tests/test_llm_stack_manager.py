@@ -954,7 +954,10 @@ class ConfigFieldRenderingTests(unittest.TestCase):
         # offered them either. `_DEVICE` is deliberately not withheld -- it is
         # the one placement key a Metal build still reads, and the launcher
         # drops an unusable value with a message rather than failing.
-        self.assertEqual(len(omitted), 29)
+        # 31 since GLMOCR_LAYOUT_CUDA_VISIBLE_DEVICES and
+        # LLM_ABSOLUTE_GPU_INDICES joined them: the first is CUDA's own variable,
+        # the second only says how the withheld `_MAIN_GPU` values are counted.
+        self.assertEqual(len(omitted), 31)
         for key in omitted:
             with self.subTest(key):
                 self.assertNotIn(f'"cfg-{key}"', html)
@@ -962,6 +965,16 @@ class ConfigFieldRenderingTests(unittest.TestCase):
         self.assertIn("settings not shown on this host.", html)
         for reason in set(omitted.values()):
             self.assertIn(reason, html)
+
+    def test_the_gpu_placement_presets_follow_the_fields_they_set(self):
+        # "GPU 0 only / GPU 1 only / GPU 0 + 1" set exactly the fields a Metal
+        # host does not render, so on a Mac they offered GPUs that do not exist
+        # and changed nothing.
+        self.assertNotIn("quick-gpu-placement", self._render(platform_harness.as_darwin))
+        linux = self._render()
+        for prefix in ("LLM_A", "TASK", "OCR"):
+            with self.subTest(prefix):
+                self.assertIn(f'id="quick-gpu-{prefix}"', linux)
 
     def test_the_settings_a_metal_host_can_act_on_are_still_offered(self):
         # `--device` is not inert on Metal -- MTL0 is a real answer -- so the

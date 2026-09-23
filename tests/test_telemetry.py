@@ -437,5 +437,18 @@ class WarningTests(unittest.TestCase):
         self.assertEqual(telemetry.warnings_for([backend], {"swap_used_pct": 2}, gpus), [])
 
 
+
+class PlainLogLineTests(unittest.TestCase):
+    def test_a_launchd_log_line_is_parsed_and_stamped_when_read(self):
+        # launchd files carry llama.cpp's own stamp, which counts from process
+        # start, not the journal's wall clock.
+        line = ("11.30.316.661 I slot print_timing: id  0 | task 591 |        eval time =    "
+                "4001.59 ms /   157 tokens (   25.65 ms per token,    38.98 tokens per second)\n")
+        event = telemetry.parse_plain_line(line, "llm-a", 1234.5)
+        self.assertIsNotNone(event)
+        self.assertEqual(event["ts"], 1234.5)
+        self.assertEqual(event["unit"], "llm-a")
+        self.assertIsNone(telemetry.parse_plain_line("==> llm-a.stderr.log <==\n", "llm-a", 1.0))
+
 if __name__ == "__main__":
     unittest.main()

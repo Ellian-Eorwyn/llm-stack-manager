@@ -1832,6 +1832,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
           {% for f in fields if f.key in identity_keys %}
           {{ render_config_field(f, section) }}
           {% endfor %}
+          {% if multi_gpu_placement %}
           <div class="field">
             <label for="quick-gpu-{{ backend_prefix }}">GPU Placement</label>
             <select id="quick-gpu-{{ backend_prefix }}" class="quick-gpu-placement" data-prefix="{{ backend_prefix }}" onchange="applyQuickGpuPlacement(this)">
@@ -1842,6 +1843,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
             </select>
             <span class="hint">Updates GPU Devices, Main GPU Index, Split Mode, and Tensor Split.</span>
           </div>
+          {% endif %}
         </div>
         <span class="per-slot-hint" data-per-slot-prefix="{{ backend_prefix }}"></span>
       </div>
@@ -1946,6 +1948,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
             {% for f in fields if f.key in task_identity_keys %}
             {{ render_config_field(f, section) }}
             {% endfor %}
+            {% if multi_gpu_placement %}
             <div class="field">
               <label for="quick-gpu-TASK">GPU Placement</label>
               <select id="quick-gpu-TASK" class="quick-gpu-placement" data-prefix="TASK" onchange="applyQuickGpuPlacement(this)">
@@ -1956,6 +1959,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
               </select>
               <span class="hint">Updates GPU Devices, Main GPU Index, Split Mode, and Tensor Split.</span>
             </div>
+            {% endif %}
           </div>
         </div>
 
@@ -2032,6 +2036,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
             {% for f in fields if f.key in ocr_identity_keys %}
             {{ render_config_field(f, section) }}
             {% endfor %}
+            {% if multi_gpu_placement %}
             <div class="field">
               <label for="quick-gpu-OCR">GPU Placement</label>
               <select id="quick-gpu-OCR" class="quick-gpu-placement" data-prefix="OCR" onchange="applyQuickGpuPlacement(this)">
@@ -2042,6 +2047,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
               </select>
               <span class="hint">Updates GPU Devices, Main GPU Index, Split Mode, and Tensor Split.</span>
             </div>
+            {% endif %}
           </div>
         </div>
 

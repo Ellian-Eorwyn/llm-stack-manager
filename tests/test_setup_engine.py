@@ -120,5 +120,27 @@ class StateAndFirewallTests(unittest.TestCase):
             self.assertEqual(setup_engine.load_state(path)["jobs"]["active"]["status"], "interrupted")
 
 
+
+class PlacementEnvTests(unittest.TestCase):
+    ASSIGNMENTS = {
+        "llm-a": {"gpu_indices": [0, 1], "visible_devices": "0,1", "main_gpu": 0,
+                  "tensor_split": "20000,20000", "estimated_mib": 30000},
+        "glmocr-sdk": {"gpu_indices": [1], "visible_devices": "1"},
+    }
+
+    def test_cuda_hosts_get_device_placement(self):
+        env = setup_engine.placement_env(self.ASSIGNMENTS, unified_memory=False)
+        self.assertEqual(env["LLM_A_GPU_VISIBLE_DEVICES"], "0,1")
+        self.assertEqual(env["LLM_A_TENSOR_SPLIT"], "20000,20000")
+        self.assertEqual(env["LLM_A_DEVICE"], "CUDA0,CUDA1")
+        self.assertEqual(env["GLMOCR_LAYOUT_DEVICE"], "cuda:0")
+
+    def test_a_mac_is_not_given_cuda_devices(self):
+        # Setup used to write LLM_A_DEVICE=CUDA0 and GLMOCR_LAYOUT_DEVICE=cuda:0
+        # on a Mac: the first the launcher had to throw away, the second nothing
+        # there can honour.
+        env = setup_engine.placement_env(self.ASSIGNMENTS, unified_memory=True)
+        self.assertEqual(env, {"LLM_A_DEVICE": "MTL0"})
+
 if __name__ == "__main__":
     unittest.main()

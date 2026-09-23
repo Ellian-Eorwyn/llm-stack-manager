@@ -1124,6 +1124,11 @@ def index():
                            config_sections=dict(sections),
                            omitted_config=omitted_notes,
                            omitted_config_count=len(omitted),
+                           # The GPU 0 / GPU 1 / GPU 0 + 1 presets drive exactly the
+                           # fields a single-device host does not render, so they are
+                           # withheld on the same grounds rather than left to do nothing.
+                           multi_gpu_placement='gpu_indices' not in platforms.active().inert_config_capabilities,
+                           host_platform=platforms.active().name,
                            custom_models=models.load_custom_models(),
                            transcription_engines=config_fields.TRANSCRIPTION_ENGINES,
                            models_dir=str(core.MODELS_DIR),
@@ -2825,9 +2830,9 @@ def api_logs(name):
             return
 
         journal_unit = "uwsgi" if is_searxng_service(name) else name
+        # journald on Linux; the files the launchd plist names on macOS.
         proc = subprocess.Popen(
-            ['journalctl', '-u', journal_unit, '-f', '-n', '100',
-             '--no-pager', '--output=short-iso'],
+            platforms.active().log_command(journal_unit, 100, follow=True),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         try:

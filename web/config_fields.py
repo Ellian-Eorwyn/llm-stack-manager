@@ -1175,7 +1175,12 @@ SHARED_CHAT_BACKEND_RESTART = [slot.name for slot in backends.SLOTS.values()
 # wrong, and that is a different problem from a control with nothing behind it.
 CAPABILITY_BY_SUFFIX = {
     "_GPU_VISIBLE_DEVICES": "gpu_visible_devices",
+    # GLM-OCR's layout model names the variable itself.
+    "_CUDA_VISIBLE_DEVICES": "gpu_visible_devices",
     "_MAIN_GPU": "gpu_indices",
+    # Chooses how the `_MAIN_GPU` values above are counted; with those withheld
+    # there is nothing left for it to change.
+    "_ABSOLUTE_GPU_INDICES": "gpu_indices",
     "_TENSOR_SPLIT": "gpu_indices",
     "_SPLIT_MODE": "split_modes",
 }
