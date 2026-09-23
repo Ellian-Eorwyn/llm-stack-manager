@@ -89,7 +89,7 @@ def tcp_port_open(host: str, port: str | int, timeout: float = PROBE_TIMEOUT_SEC
 def _llama_probes() -> dict[str, dict]:
     """`/props` probes for every unit telemetry already knows how to reach.
 
-    `SERVICES[*]["ports"]` is a display string ("8010 internal / llms:8010"), so
+    `SERVICES[*]["ports"]` is a display string ("8010 internal"), so
     the machine-readable port map is telemetry's, and this reuses it rather than
     starting a third one.
     """

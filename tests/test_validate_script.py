@@ -389,5 +389,53 @@ class LaunchdStopPersistsTests(unittest.TestCase):
         self.assertIn("bootstrap", self._run("svc_enable"))
         self.assertNotIn("bootstrap", self._run("svc_enable"))
 
+
+class TailscaleServeTests(unittest.TestCase):
+    """scripts/tailscale-serve.sh publishes installed services' ports on the
+    tailnet, and leaves one alone that already listens beyond loopback."""
+
+    def setUp(self):
+        self.mac = _FakeMac(running=(), installed=("llm-a", "llm-a-proxy", "llm-manager"))
+        self.addCleanup(self.mac.cleanup)
+        self.calls = self.mac.dir / "ts.calls"
+        self.mac._stub("tailscale", textwrap.dedent(f'''\
+            if [ "$1" = status ]; then echo \'{{"Self": {{"DNSName": "studio.example.ts.net."}}}}\'; exit 0; fi
+            echo "$*" >> "{self.calls}"
+        '''))
+        # 8004 is bound to every interface already; the rest to loopback.
+        self.mac._stub("lsof", textwrap.dedent('''\
+            case "$*" in
+                *TCP:8004*) echo p1; echo "n*:8004" ;;
+                *) echo p1; echo "n127.0.0.1:${2#-iTCP:}" ;;
+            esac
+        '''))
+        self.tree = self.mac.dir / "stack"
+        (self.tree / "scripts").mkdir(parents=True)
+        (self.tree / "config").mkdir()
+        for name in ("cross-platform.sh", "tailscale-serve.sh"):
+            shutil.copy(ROOT / "scripts" / name, self.tree / "scripts" / name)
+        (self.tree / "config" / "llm-stack.env").write_text("STACK_DIR=/elsewhere\n")
+
+    def _run(self, mode: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(self.tree / "scripts" / "tailscale-serve.sh"), mode],
+                              env=self.mac.env(), capture_output=True, text=True, timeout=60)
+
+    def test_publishes_installed_ports_on_the_tailnet(self):
+        result = self._run("on")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        served = [line.split("--http=")[1].split()[0]
+                  for line in self.calls.read_text().splitlines() if "--bg" in line]
+        self.assertEqual(sorted(served), ["8003", "8008", "8010", "8012", "8077"])
+        self.assertIn("http://studio:8010", result.stdout)
+        # Already reachable, so left as it is -- how llms runs its proxies.
+        self.assertIn("8004: already reachable beyond localhost", result.stdout)
+        # Not installed here, so not published.
+        self.assertNotIn("8005", self.calls.read_text())
+
+    def test_off_removes_them(self):
+        self.assertEqual(self._run("off").returncode, 0)
+        offs = [line for line in self.calls.read_text().splitlines() if line.endswith("off")]
+        self.assertIn("serve --http=8010 off", offs)
+
 if __name__ == "__main__":
     unittest.main()

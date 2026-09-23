@@ -129,7 +129,7 @@ SLOTS = {
         label="LLM A",
         desc="Primary model backend",
         config_section="LLM A",
-        ports_display="8010 internal / llms:8010",
+        ports_display="8010 internal",
         probe_host_keys=("!CHAT_BACKEND_HOST",),
         prefix="LLM_A",
         # Three renames deep now. The slot was the bare `CHAT_*` names, then
@@ -170,7 +170,7 @@ SLOTS = {
         label="LLM B",
         desc="Secondary model backend",
         config_section="LLM B",
-        ports_display="8020 internal / llms:8020",
+        ports_display="8020 internal",
         probe_host_keys=("!CHAT2_BACKEND_HOST",),
         prefix="LLM_B",
         # `CHAT2_*` was the canonical spelling until this rename. The port and
