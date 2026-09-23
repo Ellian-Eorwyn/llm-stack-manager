@@ -973,6 +973,16 @@ def run_tts_manager(name: str, action: str) -> tuple:
 
 
 def should_use_local_transcript_manager(name: str) -> bool:
+    """Drive the sidecar with manage-transcript-service.sh instead of the
+    service manager.
+
+    Linux only. That script runs the faster-whisper sidecar and nothing else,
+    so on a Mac configured for Parakeet it started the wrong server; and a Mac
+    needs no fallback, because Start installs the missing LaunchAgent for
+    whichever engine TRANSCRIPT_ENGINE names (install-launchd-service.sh).
+    """
+    if platforms.active().name == "darwin":
+        return False
     return name == TRANSCRIPT_MANAGED_SERVICE and not systemd_unit_exists(name)
 
 

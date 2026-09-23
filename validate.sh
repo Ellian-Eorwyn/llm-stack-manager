@@ -176,12 +176,19 @@ fi
 if [[ "${TRANSCRIPT_ENABLED:-off}" == "on" ]] && should_check transcript-backend; then
     echo ""
     echo "--- Transcription sidecar (port ${TRANSCRIPT_PORT:-8014}) ---"
+    # Two servers answer on this port. The sidecar reports "ok" and runs
+    # TRANSCRIPT_ACTIVE_ENGINE; the MLX Parakeet server reports "healthy" and
+    # runs parakeet-v3, whatever TRANSCRIPT_ACTIVE_ENGINE says.
+    case "${TRANSCRIPT_ENGINE:-sidecar}" in
+        parakeet-mlx|mlx) transcript_ok='"healthy"'; transcript_engine="parakeet-v3" ;;
+        *)                transcript_ok='"ok"';      transcript_engine="${TRANSCRIPT_ACTIVE_ENGINE:-faster-whisper}" ;;
+    esac
     TRANSCRIPT_RESP=$(curl -sf "http://${TRANSCRIPT_HOST:-127.0.0.1}:${TRANSCRIPT_PORT:-8014}/health" 2>&1 || true)
-    check "Transcription health endpoint responds" "${TRANSCRIPT_RESP}" '"ok"'
+    check "Transcription health endpoint responds" "${TRANSCRIPT_RESP}" "${transcript_ok}"
     # Healthy means "can take a request", not "is holding a model": the sidecar
     # idle-unloads on purpose, so no resident model is the expected steady state.
     TRANSCRIPT_ENGINES_RESP=$(curl -sf "http://${TRANSCRIPT_HOST:-127.0.0.1}:${TRANSCRIPT_PORT:-8014}/engines" 2>&1 || true)
-    check "Transcription reports its engines" "${TRANSCRIPT_ENGINES_RESP}" "${TRANSCRIPT_ACTIVE_ENGINE:-faster-whisper}"
+    check "Transcription reports its engines" "${TRANSCRIPT_ENGINES_RESP}" "${transcript_engine}"
 else
     skip "Transcription sidecar"
 fi

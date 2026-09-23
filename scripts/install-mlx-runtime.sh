@@ -63,7 +63,10 @@ mkdir -p "$(dirname "${VENV_DIR}")" "${MODEL_DIR}" "${HF_HOME}"
 [[ -x "${VENV_DIR}/bin/python" ]] || "${PYTHON}" -m venv "${VENV_DIR}"
 "${VENV_DIR}/bin/python" -m pip install --quiet --upgrade pip
 
-PACKAGES=(fastapi uvicorn numpy huggingface_hub)
+# python-multipart: FastAPI will not accept a form upload without it, and the
+# transcription endpoint takes one. Once pulled in by an older dependency tree,
+# its absence stopped the Parakeet server at startup.
+PACKAGES=(fastapi uvicorn numpy huggingface_hub python-multipart)
 (( WITH_EMBED ))      && PACKAGES+=(mlx mlx-embeddings)
 (( WITH_TRANSCRIBE )) && PACKAGES+=(mlx mlx-audio)
 
@@ -74,7 +77,8 @@ if (( FETCH_MODELS )); then
     # Pinned to the revisions in config/mlx-models.lock.json rather than to a
     # branch: an embedding model that silently changes revision changes every
     # vector it has ever produced, and nothing downstream would notice.
-    STACK_DIR="${STACK_DIR}" "${VENV_DIR}/bin/python" - <<'PY'
+    STACK_DIR="${STACK_DIR}" WITH_EMBED="${WITH_EMBED}" WITH_TRANSCRIBE="${WITH_TRANSCRIBE}" \
+        "${VENV_DIR}/bin/python" - <<'PY'
 import json
 import os
 import pathlib
@@ -89,7 +93,14 @@ if not lock_path.exists():
 lock = json.loads(lock_path.read_text())
 from huggingface_hub import snapshot_download
 
+# --embed-only / --transcribe-only used to install one runtime and download
+# both models anyway.
+wanted = {"embedding": os.environ.get("WITH_EMBED") == "1",
+          "transcription": os.environ.get("WITH_TRANSCRIBE") == "1"}
 for name, entry in (lock.get("models") or {}).items():
+    if not wanted.get(name, True):
+        print(f"[mlx] {name}: not requested; skipping")
+        continue
     repo, revision = entry.get("repository"), entry.get("revision")
     local = entry.get("local_path")
     if not (repo and local):

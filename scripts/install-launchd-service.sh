@@ -63,9 +63,18 @@ case "${name}" in
             exit 2
         fi
         script="start-model-router.sh"; description="LLM Model Router - on-demand auxiliary models" ;;
+    transcript-backend)
+        # Same choice install.sh makes through resolve_engine_script. The MLX
+        # server needs deps/mlx-runtime-venv (scripts/install-mlx-runtime.sh);
+        # the sidecar needs scripts/install-transcribe.sh. Either launcher says
+        # so in its log if its runtime is missing.
+        case "${TRANSCRIPT_ENGINE:-sidecar}" in
+            parakeet-mlx|mlx) script="start-parakeet-mlx.sh" ;;
+            *)                script="start-transcribe.sh" ;;
+        esac
+        description="LLM Transcription - ${TRANSCRIPT_ENGINE:-sidecar}" ;;
     *)
-        # glmocr-sdk and the transcription sidecar need runtimes install.sh sets
-        # up; the manager has its own fallback for the sidecar.
+        # glmocr-sdk needs a runtime install.sh sets up.
         echo "${name} cannot be installed on demand; run install.sh." >&2
         exit 2 ;;
 esac

@@ -201,8 +201,20 @@ class InstallLaunchdServiceTests(unittest.TestCase):
         wrapper = pathlib.Path(self._plist("embed")["ProgramArguments"][0])
         self.assertIn("start-embed-mlx.sh", wrapper.read_text())
 
+    def test_transcription_follows_its_engine(self):
+        # Parakeet on MLX is the Mac's transcription server; the sidecar is
+        # faster-whisper. The same choice install.sh makes.
+        for engine, launcher in (("parakeet-mlx", "start-parakeet-mlx.sh"),
+                                 ("sidecar", "start-transcribe.sh")):
+            with self.subTest(engine):
+                self._config(f"TRANSCRIPT_ENGINE={engine}\n")
+                (self.tree / "scripts" / launcher).write_text("#!/usr/bin/env bash\n")
+                self.assertEqual(self._install("transcript-backend").returncode, 0)
+                wrapper = pathlib.Path(self._plist("transcript-backend")["ProgramArguments"][0])
+                self.assertIn(launcher, wrapper.read_text())
+
     def test_refuses_what_needs_the_full_installer(self):
-        for name in ("glmocr-sdk", "transcript-backend", "llama-router", "nonsense"):
+        for name in ("glmocr-sdk", "llama-router", "nonsense"):
             with self.subTest(name):
                 result = self._install(name)
                 self.assertEqual(result.returncode, 2)
@@ -223,7 +235,9 @@ class InstallLaunchdServiceTests(unittest.TestCase):
         for name, script in mapped.items():
             with self.subTest(name):
                 self.assertEqual(expected.get(name), script)
-        # The embedding pair, which install.sh resolves through a helper.
+        # The engine pairs, which install.sh resolves through a helper.
+        self.assertIn('resolve_engine_script transcription "${TRANSCRIPT_ENGINE}" '
+                      '"start-transcribe.sh" "start-parakeet-mlx.sh"', installer)
         self.assertIn('resolve_engine_script embed "${EMBED_ENGINE}" "start-embed.sh" "start-embed-mlx.sh"',
                       installer)
 

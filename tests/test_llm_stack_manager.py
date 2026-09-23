@@ -1715,10 +1715,21 @@ class TranscriptSidecarStatusTests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, returncode, stdout, "")
 
         with (
+            platform_harness.as_linux(),
             patch.object(manager, "systemd_unit_exists", return_value=False),
             patch.object(manager.subprocess, "run", side_effect=run),
         ):
             return manager.get_service_status("transcript-backend")
+
+    def test_a_mac_goes_through_launchd_not_the_sidecar_script(self):
+        # manage-transcript-service.sh runs the faster-whisper sidecar only, so
+        # on a Mac configured for Parakeet it started the wrong server. There,
+        # Start installs the LaunchAgent for whichever engine is configured.
+        with (
+            platform_harness.as_darwin(),
+            patch.object(manager, "systemd_unit_exists", return_value=False),
+        ):
+            self.assertFalse(manager.should_use_local_transcript_manager("transcript-backend"))
 
     def test_a_stopped_sidecar_is_inactive_not_failed(self):
         self.assertEqual(self._status(3, "[transcribe] stopped\n"), "inactive")
