@@ -89,17 +89,29 @@ listening_beyond_loopback() {
     fi
 }
 
+# Installed, not enabled: on Linux the model backends are often started by
+# restore-active-stack.sh rather than enabled at boot, and `is-enabled` missed
+# llm-a on llms. On launchd, installed and enabled are both "the plist exists".
+svc_is_installed() {
+    if is_linux; then
+        [[ "$(systemctl show -p LoadState --value "$1" 2>/dev/null)" == "loaded" ]]
+    else
+        svc_is_enabled "$1"
+    fi
+}
+
 wanted_ports() {
     local svc ports=()
     for svc in "${SERVICES[@]}"; do
-        svc_is_enabled "${svc}" && ports+=($(service_ports "${svc}"))
+        svc_is_installed "${svc}" && ports+=($(service_ports "${svc}"))
     done
-    if svc_is_enabled llama-router; then
+    if svc_is_installed llama-router; then
         for svc in $(router_member_services); do
             ports+=($(service_ports "${svc}"))
         done
     fi
-    printf '%s\n' "${ports[@]}" | awk 'NF && !seen[$0]++'
+    # bash 3.2 treats an empty array as unset under `set -u`.
+    printf '%s\n' ${ports[@]+"${ports[@]}"} | awk 'NF && !seen[$0]++'
 }
 
 host="$("${TS}" status --json 2>/dev/null | python3 -c '

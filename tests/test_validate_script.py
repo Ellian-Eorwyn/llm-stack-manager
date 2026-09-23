@@ -432,6 +432,30 @@ class TailscaleServeTests(unittest.TestCase):
         # Not installed here, so not published.
         self.assertNotIn("8005", self.calls.read_text())
 
+    def test_linux_publishes_installed_units_that_are_not_enabled(self):
+        # llms starts llm-a from restore-active-stack.sh without enabling it;
+        # checking is-enabled left its backend unpublished.
+        self.mac._stub("uname", "echo Linux")
+        self.mac._stub("systemctl", textwrap.dedent('''\
+            if [ "$1" = show ]; then
+                case "$5" in llm-a|llm-a-proxy) echo loaded ;; *) echo not-found ;; esac
+            elif [ "$1" = is-enabled ]; then echo disabled; exit 1
+            fi
+        '''))
+        # The proxies bind every interface, as on llms; the backend loopback.
+        self.mac._stub("ss", textwrap.dedent('''\
+            case "$*" in
+                *":8010"*) echo "LISTEN 0 4096 127.0.0.1:8010 0.0.0.0:*" ;;
+                *) echo "LISTEN 0 4096 0.0.0.0:${3##*:} 0.0.0.0:*" ;;
+            esac
+        '''))
+        result = self._run("on")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        served = [line.split("--http=")[1].split()[0]
+                  for line in self.calls.read_text().splitlines() if "--bg" in line]
+        self.assertEqual(served, ["8010"])
+        self.assertIn("8004: already reachable beyond localhost", result.stdout)
+
     def test_off_removes_them(self):
         self.assertEqual(self._run("off").returncode, 0)
         offs = [line for line in self.calls.read_text().splitlines() if line.endswith("off")]
