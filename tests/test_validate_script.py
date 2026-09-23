@@ -325,5 +325,37 @@ class UpdateOnDarwinTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertTrue((self.tree / "scripts" / f"launchd-wrapper-{name}.sh").exists())
 
+
+class MetalKeepResidentTests(unittest.TestCase):
+    """llama.cpp lets a model's Metal buffers go 3 minutes after its last
+    request; macOS then compressed and swapped 21.5 GB of the idle 27B model."""
+
+    def _keep_alive(self, platform: str, **env) -> str:
+        script = (f'STACK_DIR="{ROOT}"; source "{ROOT}/scripts/lib/backend-preflight.sh"; '
+                  'metal_keep_resident; echo "${GGML_METAL_RESIDENCY_KEEP_ALIVE_S:-unset}"')
+        environ = {k: v for k, v in os.environ.items()
+                   if k not in ("GGML_METAL_RESIDENCY_KEEP_ALIVE_S", "METAL_KEEP_MODELS_RESIDENT")}
+        environ.update(LLM_STACK_PLATFORM=platform, **env)
+        return subprocess.run(["bash", "-uc", script], env=environ,
+                              capture_output=True, text=True).stdout.strip()
+
+    def test_a_mac_keeps_models_wired_by_default(self):
+        value = int(self._keep_alive("Darwin"))
+        self.assertGreater(value, 30 * 24 * 3600)
+        # llama.cpp counts it in 5 ms ticks in an int.
+        self.assertLess(value * 200, 2**31)
+
+    def test_it_can_be_turned_off_and_an_explicit_value_wins(self):
+        self.assertEqual(self._keep_alive("Darwin", METAL_KEEP_MODELS_RESIDENT="off"), "unset")
+        self.assertEqual(self._keep_alive("Darwin", GGML_METAL_RESIDENCY_KEEP_ALIVE_S="600"), "600")
+
+    def test_linux_is_untouched(self):
+        self.assertEqual(self._keep_alive("Linux"), "unset")
+
+    def test_every_llama_cpp_launcher_applies_it(self):
+        for name in ("start-backend.sh", "start-model-router.sh"):
+            with self.subTest(name):
+                self.assertIn("metal_keep_resident", (ROOT / "scripts" / name).read_text())
+
 if __name__ == "__main__":
     unittest.main()

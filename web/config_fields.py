@@ -947,6 +947,7 @@ CONFIG_FIELDS = [
     {"section": "Transcription", "key": "TRANSCRIPT_ENGINES",           "label": "Installed Engines",      "type": "text",   "hint": "Comma-separated --engines tokens for scripts/install-transcribe.sh"},
     {"section": "Apple Silicon (MLX)", "key": "EMBED_ENGINE",      "label": "Embedding Server",   "type": "select", "options": ["llamacpp", "mlx"], "hint": "Which process serves the embedding slot. mlx is Apple silicon only"},
     {"section": "Apple Silicon (MLX)", "key": "TRANSCRIPT_ENGINE",  "label": "Transcription Server", "type": "select", "options": ["sidecar", "parakeet-mlx"], "hint": "Which server runs. Distinct from Active Engine above, which picks the runtime *inside* the sidecar"},
+    {"section": "Apple Silicon (MLX)", "key": "METAL_KEEP_MODELS_RESIDENT", "label": "Keep Models Wired", "type": "select", "options": ["on", "off"], "hint": "on: llama.cpp keeps each model's Metal buffers wired while idle, so macOS cannot compress or swap them. off: llama.cpp's default, which lets go 3 minutes after the last request"},
     {"section": "Apple Silicon (MLX)", "key": "MLX_RUNTIME_VENV",   "label": "Runtime Venv",       "type": "path",   "hint": "Kept apart from the manager's own venv, which depends on nothing but Flask"},
     {"section": "Apple Silicon (MLX)", "key": "MLX_RUNTIME_PYTHON", "label": "Python",             "type": "text",   "hint": "Interpreter used to create the runtime venv"},
     {"section": "Apple Silicon (MLX)", "key": "MLX_HF_HOME",        "label": "HuggingFace Cache",  "type": "path",   "hint": "HF_HOME for the MLX services"},
@@ -1234,6 +1235,8 @@ RESTART_HINTS = {
     "MLX_RUNTIME_PYTHON":           ["embed", "transcript-backend"],
     "MLX_HF_HOME":                  ["embed", "transcript-backend"],
     "MLX_EMBED_MODEL_PATH":         ["embed"],
+    # Read by every llama.cpp launcher at start.
+    "METAL_KEEP_MODELS_RESIDENT":   ["llm-a", "llm-b", "embed", "rerank", "task", "ocr", "llama-router"],
     "MLX_PARAKEET_MODEL_PATH":      ["transcript-backend"],
     "MLX_PARAKEET_MODEL_NAME":      ["transcript-backend"],
     "MLX_PARAKEET_CHUNK_SECONDS":   ["transcript-backend"],

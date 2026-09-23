@@ -177,7 +177,13 @@ Each of these was found the hard way. None is obvious from the code.
   footprint leaves out an mmap-loaded model's clean weight pages (task read
   5.4 GiB holding 12.4), and `resident_size` is useless once Metal wires a
   process's buffers (llm-a read 15 GiB on it while holding 37).
-- **On the Studio, "macOS & apps" is ~25 GB and is mostly not apps.** Of 91 GB
+- **llama.cpp unpins a model's Metal buffers 3 minutes after its last
+  request** (`GGML_METAL_RESIDENCY_KEEP_ALIVE_S`, `ggml-metal-device.m`). The
+  memory then turns from wired into ordinary pageable pages that macOS
+  compresses and swaps — which is why "used" swung from 91 GB to 52 GB with
+  nothing stopped. `METAL_KEEP_MODELS_RESIDENT=on` (default on a Mac) has
+  every llama.cpp launcher keep them wired for 100 days; ~0.1% CPU.
+- **On the Studio, "macOS & apps" was ~25 GB and was mostly not apps.** Of 91 GB
   used: 74 GB wired (≈65 GB of it the model servers' Metal buffers; the rest
   kernel, GPU driver, WindowServer ~1.7 GB) and ~9.4 GB compressor. Desktop
   apps are ~15 GB of footprint but mostly compressed. `vmmap` shows 21.5 GB

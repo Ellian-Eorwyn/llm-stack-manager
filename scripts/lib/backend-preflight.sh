@@ -33,6 +33,28 @@ _bp_platform() {
 }
 
 
+# Keep a Metal backend's buffers wired while it sits idle.
+#
+# llama.cpp holds its Metal buffers in a residency set and keeps asking for
+# residency only for GGML_METAL_RESIDENCY_KEEP_ALIVE_S after the last
+# computation -- three minutes by default. After that the buffers become
+# ordinary pageable memory, and on a box running several models macOS
+# compresses and swaps them: measured on the Studio, 21.5 GB of the idle 27B
+# model's 37 GB was compressed or swapped, and the next request paid to bring
+# it back. A server whose job is to answer at any moment wants the opposite.
+#
+# 100 days rather than "forever": llama.cpp counts the window in 5 ms ticks in
+# an int, and 8,640,000 s is comfortably inside it. The heartbeat that keeps the
+# set resident costs ~0.1% CPU. An explicit GGML_METAL_RESIDENCY_KEEP_ALIVE_S
+# wins; METAL_KEEP_MODELS_RESIDENT=off restores llama.cpp's default.
+metal_keep_resident() {
+    [[ "$(_bp_platform)" == "Darwin" ]] || return 0
+    [[ "${METAL_KEEP_MODELS_RESIDENT:-on}" == "on" ]] || return 0
+    [[ -n "${GGML_METAL_RESIDENCY_KEEP_ALIVE_S:-}" ]] && return 0
+    export GGML_METAL_RESIDENCY_KEEP_ALIVE_S=8640000
+}
+
+
 # Ask the budget model one question about a model file. Prints nothing and
 # returns non-zero when the answer is unavailable.
 budget_field() {

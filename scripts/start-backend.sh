@@ -41,6 +41,7 @@ set -a
 source "${STACK_DIR}/config/llm-stack.env"
 set +a
 source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
+metal_keep_resident
 
 PREFIX="[${SLOT}]"
 PYTHON="${LLM_STACK_PYTHON:-python3}"

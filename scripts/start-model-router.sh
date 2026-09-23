@@ -19,6 +19,11 @@ set -a
 source "${STACK_DIR}/config/llm-stack.env"
 set +a
 
+# The router's llama-server children inherit this, so every pooled model stays
+# wired between requests like a dedicated backend does.
+source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
+metal_keep_resident
+
 if [[ "${MODEL_ROUTER_ENABLED:-off}" != "on" ]]; then
     echo "[model-router] Disabled by MODEL_ROUTER_ENABLED=${MODEL_ROUTER_ENABLED:-off}" >&2
     exit 0
