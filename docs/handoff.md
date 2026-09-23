@@ -40,8 +40,12 @@ the tailnet and renders 13 remote services.
 LaunchAgents for the manager, `llm-a` (Qwen3.8 27B on 8010), `llm-a-proxy`
 (8003/8004/8008), `embed` (Qwen3-Embedding-4B, 8005), `task` (Qwen3.5 9B,
 8007), `rerank` (Qwen3-Reranker-4B Q8_0 from `Voodisss/…-GGUF-llama_cpp`,
-8006) and `transcript-backend` (Parakeet TDT 0.6B v3 on MLX, 8014). No
-`fleet.json` yet. `bash validate.sh` passes against all of it.
+8006, stopped for now) and `transcript-backend` (Parakeet TDT 0.6B v3 on MLX,
+8014). No `fleet.json` yet. `bash validate.sh` passes against all of it.
+The UI is at **http://studio:8077** from the tailnet: the manager stays bound
+to 127.0.0.1 and `tailscale serve --bg --http=8077 http://127.0.0.1:8077`
+proxies tailnet traffic to it (tailnet only; not on the LAN). Undo with
+`tailscale serve --http=8077 off`.
 
 Both are opt-in on both sides: no `fleet.json` means no poller and no extra
 thread; `LLM_CONTROL_ENABLED=off` means nothing binds.
