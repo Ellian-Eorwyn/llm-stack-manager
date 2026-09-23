@@ -240,7 +240,82 @@ else
     echo "Skipping dependency update (no llama.cpp rebuild)."
 fi
 
-if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
+# svc_is_active / svc_restart for both platforms. Sourced from this script's own
+# tree: the config may point STACK_DIR at a different checkout.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/cross-platform.sh"
+
+# The restart hint for a backend running stale launcher code.
+restart_hint() {
+    if is_mac && [[ "${LLM_LAUNCHD_DOMAIN:-user}" != "system" ]]; then
+        echo "  launchctl kickstart -k gui/$(id -u)/com.llmstack.$1"
+    elif is_mac; then
+        echo "  sudo launchctl kickstart -k system/com.llmstack.$1"
+    else
+        echo "  sudo systemctl restart $1"
+    fi
+}
+
+report_stale_backends() {
+    local stale
+    stale="$(changed_backend_files)"
+    [[ -n "${stale}" ]] || return 0
+    echo ""
+    echo "Model backend launchers changed in this update:"
+    printf '  %s\n' ${stale}
+    echo "Those backends are still running the previous code. Restart one when"
+    echo "you can afford the model reload, for example:"
+    restart_hint llm-a
+}
+
+if is_mac && [[ "${LLM_LAUNCHD_DOMAIN:-user}" != "system" && "${SKIP_INSTALL}" != "1" ]]; then
+    # --- macOS, user domain ---------------------------------------------------
+    # No root is needed here, and asking for it would put root-owned plists in
+    # ~/Library/LaunchAgents that launchctl refuses to load. This path used to
+    # sit behind the root check below, so an update on a Mac pulled the code
+    # and restarted nothing -- the manager went on serving the old version.
+    #
+    # Not install.sh: with no component selection it installs an agent for
+    # every component, and launchd starts any KeepAlive agent it finds at the
+    # next login. Refresh the agents that are installed and nothing else.
+    shopt -s nullglob
+    for plist in "$(svc_plist_dir)"/com.llmstack.*.plist; do
+        svc="$(basename "${plist}" .plist)"
+        svc="${svc#com.llmstack.}"
+        bash "${STACK_DIR}/scripts/install-launchd-service.sh" "${svc}" >/dev/null 2>&1 \
+            || echo "  ${svc}: agent left as it was (install.sh regenerates it)"
+    done
+    shopt -u nullglob
+
+    if [[ "${SKIP_RESTART}" != "1" ]]; then
+        source "${STACK_DIR}/scripts/stack-services.sh"
+        if [[ "${MANAGER_ONLY}" == "1" ]]; then
+            restart=("${CHEAP_RESTART_SERVICES[@]}")
+        else
+            restart=("${STACK_UPDATE_RESTART_SERVICES[@]}")
+        fi
+        # Running services only: on launchd, starting a job means loading it,
+        # so restarting a stopped one would start it.
+        for svc in "${restart[@]}"; do
+            [[ "${svc}" == "llm-manager" ]] && continue
+            if svc_is_active "${svc}"; then
+                echo "Restarting ${svc}..."
+                launchctl kickstart -k "$(svc_domain)/$(svc_label "${svc}")"
+            fi
+        done
+        [[ "${MANAGER_ONLY}" == "1" ]] && report_stale_backends
+        # Last, and by kickstart. The manager's Update button runs this script
+        # as the manager's child, so stopping the manager stops this script
+        # too: a bootout-then-bootstrap would never reach the bootstrap and the
+        # manager would stay down. kickstart -k is one request to launchd, which
+        # restarts the job whatever becomes of the process that asked.
+        if svc_is_active llm-manager; then
+            echo "Restarting llm-manager..."
+            launchctl kickstart -k "$(svc_domain)/$(svc_label llm-manager)"
+        fi
+    else
+        echo "Skipping service restarts."
+    fi
+elif [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
     # install.sh runs its own install-dependencies.py --update, which cmake-builds
     # llama.cpp. Skipping our call is not enough; the gate has to be handed down
     # or --skip-deps silently still pays for a CUDA rebuild. A manager-only
@@ -249,24 +324,17 @@ if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
         LLM_STACK_SKIP_EXTERNAL_INSTALL="${MANAGER_ONLY}" \
         bash "${STACK_DIR}/install.sh"
     if [[ "${SKIP_RESTART}" != "1" && "${MANAGER_ONLY}" == "1" ]]; then
-        source "${STACK_DIR}/scripts/cross-platform.sh"
+        # `is_mac ||` used to stand in front of this check, because on a Mac
+        # svc_is_active read every service as inactive. It reads launchd
+        # correctly now, and a stopped service stays stopped.
         for svc in "${CHEAP_RESTART_SERVICES[@]}"; do
-            if is_mac || svc_is_active "${svc}"; then
+            if svc_is_active "${svc}"; then
                 echo "Restarting ${svc}..."
                 svc_restart "${svc}"
             fi
         done
-        STALE_BACKENDS="$(changed_backend_files)"
-        if [[ -n "${STALE_BACKENDS}" ]]; then
-            echo ""
-            echo "Model backend launchers changed in this update:"
-            printf '  %s\n' ${STALE_BACKENDS}
-            echo "Those backends are still running the previous code. Restart one when"
-            echo "you can afford the model reload, for example:"
-            echo "  sudo systemctl restart llm-a"
-        fi
+        report_stale_backends
     elif [[ "${SKIP_RESTART}" != "1" ]]; then
-        source "${STACK_DIR}/scripts/cross-platform.sh"
         # shellcheck source=scripts/stack-services.sh
         source "${STACK_DIR}/scripts/stack-services.sh"
         if is_linux; then
@@ -277,7 +345,7 @@ if [[ "${EUID}" -eq 0 && "${SKIP_INSTALL}" != "1" ]]; then
 
         for svc in "${active[@]}"; do
             if stack_contains "${svc}" "${STACK_UPDATE_RESTART_SERVICES[@]}"; then
-                if is_mac || svc_is_active "${svc}"; then
+                if svc_is_active "${svc}"; then
                     svc_restart "${svc}"
                 fi
             fi

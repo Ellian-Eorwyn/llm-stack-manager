@@ -168,12 +168,14 @@ Each of these was found the hard way. None is obvious from the code.
   host with no transcript-backend unit, `app.get_service_status` goes through
   it; reading every non-zero exit as `failed` put a standing "Transcription has
   failed" alert on any Mac with `TRANSCRIPT_ENABLED=off`.
-- **A Mac answers "what is using the GPU" with `phys_footprint`.** There is
-  no `nvidia-smi`; `darwin.gpu_compute_apps` reads each model server's
-  footprint through `proc_pid_rusage` (no root, same-user only), which counts
-  its wired Metal buffers, and attributes it by walking the process tree up to
-  the launchd job. RSS is the wrong figure. `pid_unit` does the same walk, so
-  router children are attributed too.
+- **A Mac answers "what is using the GPU" from `proc_pid_rusage`.** There is
+  no `nvidia-smi`; `darwin.gpu_compute_apps` reads each model server's memory
+  (no root, same-user only) and attributes it by walking the process tree up
+  to the launchd job; `pid_unit` does the same walk, so router children are
+  attributed too. **Neither kernel figure is right alone:** `phys_footprint`
+  leaves out an mmap-loaded model's weights (clean file pages — task read
+  5.4 GiB holding 12.4), and `resident_size` leaves out unmapped graphics
+  memory (llm-a reads 1.9 GiB low). The larger of the two is used.
 - **launchd has no journal.** `Platform.log_command` is the one place logs are
   read from: journald on Linux, the files named in the job's plist on macOS.
   Those lines carry no wall-clock time (llama.cpp's stamp counts from process
@@ -182,6 +184,13 @@ Each of these was found the hard way. None is obvious from the code.
   `service_start` runs `scripts/install-launchd-service.sh` for it first; that
   script's table must match `install_mac_service` in `install.sh`
   (`InstallLaunchdServiceTests` holds them together).
+- **`update.sh` on a Mac (user domain) does not run `install.sh`.** With no
+  component selection that installs an agent for every component, and launchd
+  starts any KeepAlive agent at the next login. It refreshes the agents already
+  in `~/Library/LaunchAgents` through `install-launchd-service.sh`, restarts only
+  running services with `launchctl kickstart -k`, and the manager **last** — the
+  Update button runs `update.sh` as the manager's child, so a bootout of the
+  manager would kill the update before its bootstrap and leave it down.
 - **`document.hidden` is true in a headless browser pane**, and `poll()` returns
   early on it. A blank fleet view there is the visibility guard, not a bug.
 

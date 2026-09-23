@@ -18,8 +18,9 @@ than `linux.py` despite doing less.
 
 3. Unified memory means there is no separate pool of device memory to report,
    and IOAccelerator publishes allocation driver-wide with no per-process
-   breakdown. What *is* per-process is `phys_footprint`, which counts a
-   process's wired Metal buffers, so `gpu_compute_apps` reports that for the
+   breakdown. What *is* per-process is the kernel's accounting of each
+   process's memory (footprint or resident, whichever is larger -- see
+   `_process_memory_mib`), so `gpu_compute_apps` reports that for the
    processes serving models, found by walking the process tree up to their
    launchd job. It returns `None` -- "cannot say" -- only when the footprint
    is unreadable, rather than `[]`, which would claim the GPU is idle.
@@ -80,14 +81,26 @@ _RUSAGE_INFO_V2 = 2
 _libproc = None
 
 
-def _phys_footprint_mib(pid: int) -> int | None:
-    """What Activity Monitor calls "Memory" for a process, in MiB.
+def _process_memory_mib(pid: int) -> int | None:
+    """The unified memory a process is holding, in MiB.
 
-    `phys_footprint` is the kernel's own accounting of what a process has made
-    resident and dirty, *including* the Metal buffers it has wired for the
-    GPU -- which RSS does not reliably count. On unified memory that is the
-    closest thing there is to "this process's VRAM". Readable without root for
-    processes owned by the same user, which is every launchd user-domain job.
+    Two kernel figures, and each misses something:
+
+    - `phys_footprint` is what Activity Monitor calls "Memory". It counts the
+      Metal buffers a process has wired, including graphics memory mapped
+      nowhere in its address space -- which RSS does not. But it counts only
+      *dirty* pages, so a model loaded with mmap (`*_NO_MMAP=false`) has its
+      weights left out: they are clean pages of the GGUF file. On the task
+      model that read 5.4 GiB for a process holding 12.4 GiB.
+    - `resident_size` counts those file pages, but not unmapped graphics
+      memory: llm-a, which copies its weights in, reads 1.9 GiB lower on it.
+
+    The larger of the two is right for both loading modes. The file-backed
+    part is clean, so under pressure macOS can drop it and read it back from
+    disk rather than swap it -- resident, but not pinned.
+
+    Readable without root for processes owned by the same user, which is every
+    launchd user-domain job.
     """
     global _libproc
     try:
@@ -98,7 +111,7 @@ def _phys_footprint_mib(pid: int) -> int | None:
             return None
     except (OSError, AttributeError, ValueError):
         return None
-    return info.ri_phys_footprint // (1024 * 1024)
+    return max(info.ri_phys_footprint, info.ri_resident_size) // (1024 * 1024)
 
 
 class DarwinPlatform(base.Platform):
@@ -577,8 +590,8 @@ class DarwinPlatform(base.Platform):
         There is no `nvidia-smi --query-compute-apps` here: IOAccelerator
         reports allocation driver-wide. But on unified memory the question the
         operator is asking -- what is holding the memory the GPU works from --
-        has a per-process answer, `phys_footprint`, which includes a process's
-        wired Metal buffers. So the rows are every process under a managed job
+        has a per-process answer: see `_process_memory_mib` for which kernel
+        figure, and why one alone is wrong. So the rows are every process under a managed job
         (except the manager itself), plus any model server started by hand,
         with its footprint.
 
@@ -588,7 +601,7 @@ class DarwinPlatform(base.Platform):
         this process first, so `[]` really does mean nothing is loaded.
         """
         table = self._process_table()
-        if not table or self.phys_footprint_mib(os.getpid()) is None:
+        if not table or self.process_memory_mib(os.getpid()) is None:
             return None
         jobs = self._launchd_jobs()
         uid = os.getuid()
@@ -602,7 +615,7 @@ class DarwinPlatform(base.Platform):
                 continue
             if not job and not any(key in name for key in _MODEL_SERVER_COMMANDS):
                 continue
-            used = self.phys_footprint_mib(pid)
+            used = self.process_memory_mib(pid)
             if used is None or used < MIN_ATTRIBUTED_MIB:
                 continue
             rows.append({
@@ -614,8 +627,8 @@ class DarwinPlatform(base.Platform):
         return rows
 
     @staticmethod
-    def phys_footprint_mib(pid: int) -> int | None:
-        return _phys_footprint_mib(pid)
+    def process_memory_mib(pid: int) -> int | None:
+        return _process_memory_mib(pid)
 
     # -- setup ---------------------------------------------------------------
 

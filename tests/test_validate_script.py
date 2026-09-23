@@ -227,5 +227,89 @@ class InstallLaunchdServiceTests(unittest.TestCase):
         self.assertIn('resolve_engine_script embed "${EMBED_ENGINE}" "start-embed.sh" "start-embed-mlx.sh"',
                       installer)
 
+
+class UpdateOnDarwinTests(unittest.TestCase):
+    """update.sh on a Mac, user domain, not root.
+
+    Everything after the pull used to sit behind a root check, so an update
+    pulled the new code and restarted nothing: the manager kept serving the old
+    version. And where it did restart on a Mac, it restarted every service,
+    running or not -- which on launchd starts the stopped ones.
+    """
+
+    def setUp(self):
+        self.mac = _FakeMac(running=(), installed=("llm-manager", "llm-a-proxy", "embed"))
+        self.addCleanup(self.mac.cleanup)
+        self.calls = self.mac.dir / "launchctl.calls"
+        running = ("llm-manager", "llm-a-proxy")
+        cases = "\n".join(
+            f'        com.llmstack.{name}) printf \'{{\\n\\t"PID" = 4242;\\n}};\\n\' ;;'
+            for name in running)
+        self.mac._stub("launchctl", textwrap.dedent('''\
+            echo "$*" >> "%s"
+            if [ "$1" = list ]; then
+                case "$2" in
+            %s
+                    *) exit 113 ;;
+                esac
+            fi
+        ''') % (self.calls, cases))
+
+        origin = self.mac.dir / "origin.git"
+        self.tree = self.mac.dir / "stack"
+        (self.tree / "scripts").mkdir(parents=True)
+        (self.tree / "config").mkdir()
+        shutil.copy(ROOT / "update.sh", self.tree / "update.sh")
+        for name in ("cross-platform.sh", "stack-services.sh", "install-launchd-service.sh"):
+            shutil.copy(ROOT / "scripts" / name, self.tree / "scripts" / name)
+        for name in ("start-llm-manager.sh", "start-llm-a-proxy.sh", "start-embed.sh"):
+            (self.tree / "scripts" / name).write_text("#!/usr/bin/env bash\n")
+        (self.tree / ".gitignore").write_text(
+            "/config/llm-stack.env\n/logs/\n/scripts/launchd-wrapper-*.sh\n")
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
+        subprocess.run(git + ["init", "-q", "--bare", str(origin)], check=True)
+        for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "base"],
+                     ["remote", "add", "origin", str(origin)], ["push", "-q", "origin", "main"],
+                     ["branch", "-q", "--set-upstream-to=origin/main"]):
+            subprocess.run(git + args, cwd=self.tree, check=True, capture_output=True)
+        (self.tree / "config" / "llm-stack.env").write_text("")
+
+    def _update(self, *args) -> subprocess.CompletedProcess:
+        env = self.mac.env()
+        env["LLM_STACK_SKIP_DEP_UPDATE"] = "1"
+        return subprocess.run(["bash", str(self.tree / "update.sh"), *args],
+                              cwd=self.tree, env=env, capture_output=True, text=True, timeout=120)
+
+    def _kickstarted(self) -> list[str]:
+        lines = self.calls.read_text().splitlines() if self.calls.exists() else []
+        return [line.split("/")[-1].replace("com.llmstack.", "")
+                for line in lines if line.startswith("kickstart")]
+
+    def test_restarts_what_is_running_and_the_manager_last(self):
+        for args in ((), ("--manager-only",)):
+            with self.subTest(args=args):
+                self.calls.unlink(missing_ok=True)
+                result = self._update(*args)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                kicked = self._kickstarted()
+                self.assertIn("llm-a-proxy", kicked)
+                # The Update button runs this as the manager's child: anything
+                # after the manager's restart might not run.
+                self.assertEqual(kicked[-1], "llm-manager")
+                # Stopped stays stopped; launchd would start it on a bootstrap.
+                self.assertNotIn("embed", kicked)
+                self.assertNotIn("bootout", self.calls.read_text())
+
+    def test_refreshes_installed_agents_and_installs_nothing_new(self):
+        self.assertEqual(self._update().returncode, 0)
+        agents = self.mac.home / "Library" / "LaunchAgents"
+        self.assertEqual(sorted(p.name for p in agents.iterdir()),
+                         ["com.llmstack.embed.plist", "com.llmstack.llm-a-proxy.plist",
+                          "com.llmstack.llm-manager.plist"])
+        # Regenerated: the wrappers are written alongside each plist.
+        for name in ("llm-manager", "llm-a-proxy", "embed"):
+            with self.subTest(name):
+                self.assertTrue((self.tree / "scripts" / f"launchd-wrapper-{name}.sh").exists())
+
 if __name__ == "__main__":
     unittest.main()

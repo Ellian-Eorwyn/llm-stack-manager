@@ -258,15 +258,15 @@ class GpuAttributionTests(unittest.TestCase):
         footprint = footprint or (lambda pid: self.FOOTPRINTS.get(pid, 1))
         with (
             platform_harness.as_darwin(run_cmd=self._darwin_run) as platform,
-            patch.object(DarwinPlatform, "phys_footprint_mib", staticmethod(footprint)),
+            patch.object(DarwinPlatform, "process_memory_mib", staticmethod(footprint)),
             patch("platforms.darwin.os.getuid", return_value=self.UID),
         ):
             return platform.gpu_compute_apps()
 
     def test_darwin_attributes_unified_memory_to_model_servers(self):
         # There is no nvidia-smi here, and it used to return None, so the header
-        # said "No compute processes" with a 27B model loaded. phys_footprint
-        # counts a process's wired Metal buffers, which is the answer.
+        # said "No compute processes" with a 27B model loaded. The kernel's
+        # per-process accounting, which counts wired Metal buffers, is the answer.
         apps = {row["pid"]: row for row in self._darwin_apps()}
         self.assertEqual(apps[101]["used_memory"], 36954)
         self.assertEqual(apps[101]["process_name"], "llama-server")
@@ -288,6 +288,30 @@ class GpuAttributionTests(unittest.TestCase):
         # None and [] mean different things here. [] asserts nothing is loaded;
         # None says do not draw conclusions from the absence of rows.
         self.assertIsNone(self._darwin_apps(footprint=lambda pid: None))
+
+    def _memory_mib(self, footprint_mib, resident_mib):
+        import platforms.darwin as darwin
+
+        class FakeLibproc:
+            @staticmethod
+            def proc_pid_rusage(pid, flavor, ref):
+                ref._obj.ri_phys_footprint = footprint_mib * 1024 * 1024
+                ref._obj.ri_resident_size = resident_mib * 1024 * 1024
+                return 0
+
+        with patch.object(darwin, "_libproc", FakeLibproc()):
+            return darwin._process_memory_mib(4242)
+
+    def test_an_mmap_loaded_model_counts_its_weights(self):
+        # TASK_NO_MMAP=false: the weights are clean pages of the GGUF, which
+        # phys_footprint leaves out. The task model read 5.4 GiB this way while
+        # holding 12.4 GiB -- less than its own 6.9 GiB weights file.
+        self.assertEqual(self._memory_mib(footprint_mib=5555, resident_mib=12682), 12682)
+
+    def test_a_copied_in_model_counts_its_unmapped_graphics_memory(self):
+        # NO_MMAP=true: resident size misses graphics memory mapped nowhere in
+        # the address space, so here it is the footprint that is right.
+        self.assertEqual(self._memory_mib(footprint_mib=36954, resident_mib=35020), 36954)
 
     def test_darwin_maps_a_child_process_to_its_launchd_job(self):
         with platform_harness.as_darwin(run_cmd=self._darwin_run) as platform:

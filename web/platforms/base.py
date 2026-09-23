@@ -315,9 +315,9 @@ class Platform(ABC):
         difference: `[]` is "nothing is on the GPU", `None` is "do not draw
         conclusions from the absence of rows here". On macOS there is no
         `nvidia-smi --query-compute-apps`; unified memory has no device pool,
-        so the rows there are each model-serving process's `phys_footprint`
-        (which includes its wired Metal buffers), and `None` only when that
-        cannot be read.
+        so the rows there are each model-serving process's own memory (its
+        wired Metal buffers and, for an mmap-loaded model, its weights), and
+        `None` only when that cannot be read.
 
         Deliberately raw. Turning a row into "which unit, which model, which
         alias" is interpretation, not a platform fact, and it lives with the
