@@ -146,13 +146,22 @@ class MMProj:
     """`--mmproj`, when the slot names one and the file is there.
 
     Emptied means cleared: a slot whose own key has been cleared must not
-    inherit the legacy one.
+    inherit the legacy one. A projector left behind by a model switch is traded
+    for the new model's own; see `budget.matching_projector`.
     """
 
     def resolve(self, env, prefixes, ctx=None):
         keys = ctx.slot.mmproj_keys if ctx else ("MMPROJ_PATH",)
         path = (lookup(env, keys, prefixes, empty_is_set=True) or "").strip()
-        return ["--mmproj", path] if path and os.path.isfile(path) else []
+        if not path or not os.path.isfile(path):
+            return []
+        model = (lookup(env, ctx.slot.model_keys, prefixes) or "").strip() if ctx else ""
+        if model and os.path.isfile(model):
+            import budget  # deferred: budget imports backends
+            path, why = budget.matching_projector(model, path)
+            if why:
+                ctx.say(why)
+        return ["--mmproj", path]
 
 
 @dataclass(frozen=True)

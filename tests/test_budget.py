@@ -771,5 +771,58 @@ class LiveSlidingWindowModelTest(unittest.TestCase):
         self.assertLess(abs(prediction["vram"]["total_mib"] - 37236), 2000)
 
 
+class MatchingProjectorTest(unittest.TestCase):
+    """A projector left behind by a model switch, from the Studio's task slot.
+
+    The UI moved TASK_MODEL_PATH from the 9B to the 4B and kept the 9B's
+    projector; llama-server aborted with "mismatch between text model
+    (n_embd = 2560) and mmproj (n_embd = 4096)" on every restart.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.small = self._model("Qwen3.5-4B-UD-Q4_K_XL", 2560)
+        self.large = self._model("Qwen3.5-9B-Q6_K", 4096)
+
+    def _model(self, stem, width):
+        write_gguf(self.tmp / f"{stem}.gguf", {"general.architecture": "qwen35",
+                                               "qwen35.embedding_length": width})
+        return self.tmp / f"{stem}.gguf"
+
+    def _projector(self, name, width):
+        return write_gguf(self.tmp / name, {"clip.vision.projection_dim": width,
+                                            "clip.projector_type": "qwen3vl_merger"})
+
+    def test_a_stale_projector_is_traded_for_the_models_own(self):
+        stale = self._projector("Qwen3.5-9B-Q6_K.mmproj.gguf", 4096)
+        own = self._projector("Qwen3.5-4B-UD-Q4_K_XL.mmproj.gguf", 2560)
+        path, why = budget.matching_projector(self.small, stale)
+        self.assertEqual(path, str(own))
+        self.assertIn("Qwen3.5-9B-Q6_K.mmproj.gguf", why)
+
+    def test_a_fitting_projector_is_kept_whatever_it_is_called(self):
+        shared = self._projector("mmproj-F16.gguf", 4096)
+        self._projector("Qwen3.5-9B-Q6_K.mmproj.gguf", 4096)
+        self.assertEqual(budget.matching_projector(self.large, shared), (str(shared), ""))
+
+    def test_a_mismatch_without_a_fitting_own_projector_is_left_alone(self):
+        # projection_dim is not every projector's output width, so a mismatch
+        # alone must never drop a projector the operator chose.
+        stale = self._projector("Qwen3.5-9B-Q6_K.mmproj.gguf", 4096)
+        self.assertEqual(budget.matching_projector(self.small, stale), (str(stale), ""))
+        self._projector("Qwen3.5-4B-UD-Q4_K_XL.mmproj.gguf", 1152)
+        self.assertEqual(budget.matching_projector(self.small, stale), (str(stale), ""))
+
+    def test_unreadable_files_keep_the_configured_projector(self):
+        fake = self.tmp / "fake.mmproj.gguf"
+        fake.write_bytes(b"GGUF")
+        self.assertEqual(budget.matching_projector(self.small, fake), (str(fake), ""))
+        not_a_model = self.tmp / "m.gguf"
+        not_a_model.write_bytes(b"GGUF")
+        self.assertEqual(budget.matching_projector(not_a_model, fake), (str(fake), ""))
+
+
 if __name__ == "__main__":
     unittest.main()

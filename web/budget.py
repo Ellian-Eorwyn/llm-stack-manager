@@ -187,6 +187,51 @@ def read_gguf_metadata(path) -> dict:
     return metadata
 
 
+def _projector_fits(model_meta: dict, projector_path) -> bool | None:
+    """Whether a projector's output width is the model's embedding width; None if unknowable."""
+    try:
+        projector = read_gguf_metadata(projector_path)
+    except (OSError, GGUFError, struct.error, UnicodeDecodeError):
+        return None
+    arch = model_meta.get("general.architecture")
+    width = model_meta.get(f"{arch}.embedding_length") if arch else None
+    dims = [projector[key] for key in ("clip.vision.projection_dim", "clip.audio.projection_dim")
+            if isinstance(projector.get(key), int)]
+    if not isinstance(width, int) or not dims:
+        return None
+    return width in dims
+
+
+def matching_projector(model_path, projector_path) -> tuple[str, str]:
+    """The projector to launch with, and why it differs from the one configured ("" if it does not).
+
+    Changing a slot's model in the UI leaves its projector behind. A projector
+    whose output width is not the model's embedding width makes llama-server
+    abort at load ("mismatch between text model (n_embd = 2560) and mmproj
+    (n_embd = 4096)"), which arrives after exec as a restart loop. The
+    downloader saves a model's own projector beside it as
+    `<model stem>.mmproj.gguf`, so when the configured one provably does not
+    fit and that one provably does, it is the one the operator meant.
+
+    Anything short of proof keeps the configured projector: `projection_dim` is
+    not every projector's output width (LLaVA 1.5 records CLIP's 768 for a
+    4096-wide model), so a mismatch alone is not grounds to drop one.
+    """
+    try:
+        model_meta = read_gguf_metadata(model_path)
+    except (OSError, GGUFError, struct.error, UnicodeDecodeError):
+        return str(projector_path), ""
+    if _projector_fits(model_meta, projector_path) is not False:
+        return str(projector_path), ""
+    model = Path(model_path)
+    own = model.with_name(f"{model.stem}.mmproj{model.suffix}")
+    if own == Path(projector_path) or not own.is_file() or _projector_fits(model_meta, own) is not True:
+        return str(projector_path), ""
+    return str(own), (f"Using {own.name} instead of MMProj Path {Path(projector_path).name}: "
+                      f"that projector was built for a different model and llama-server "
+                      f"refuses to load the pair.")
+
+
 def _first(metadata: dict, arch: str, *suffixes, default=None):
     for suffix in suffixes:
         value = metadata.get(f"{arch}.{suffix}")

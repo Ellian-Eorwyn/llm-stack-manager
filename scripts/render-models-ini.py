@@ -319,6 +319,11 @@ def render_member(prefix: str, env: dict, warn=None) -> tuple[str, dict]:
     if mmproj_key:
         mmproj = _clean(env.get(mmproj_key))
         if mmproj:
+            if os.path.isfile(model_path) and os.path.isfile(mmproj):
+                import budget  # noqa: E402 -- a projector left behind by a model switch
+                mmproj, why = budget.matching_projector(model_path, mmproj)
+                if why:
+                    warn(why)
             options["mmproj"] = mmproj
 
     for suffix, key in VALUE_OPTIONS.items():
