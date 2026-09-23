@@ -187,6 +187,15 @@ Each of these was found the hard way. None is obvious from the code.
   compresses and swaps — which is why "used" swung from 91 GB to 52 GB with
   nothing stopped. `METAL_KEEP_MODELS_RESIDENT=on` (default on a Mac) has
   every llama.cpp launcher keep them wired for 100 days; ~0.1% CPU.
+- **The Mac's header bar shows pressure, not "used".** Models, plus
+  `macOS` = wired memory the models do not account for (kernel, GPU driver,
+  WindowServer; ~8 GB on the Studio). Compressed pages and the file cache are
+  left off because macOS reclaims them; `gpu_vram_low` / `host_memory_low`
+  still read MemAvailable. Linux's card is unchanged.
+- **Stop on a Mac persists across logins.** `bootout` alone lasts until the
+  next login, when launchd loads every LaunchAgent and KeepAlive starts it;
+  Stop now also `launchctl disable`s the job and Start `enable`s it. Check
+  with `launchctl print-disabled gui/$(id -u)`.
 - **On the Studio, "macOS & apps" was ~25 GB and was mostly not apps.** Of 91 GB
   used: 74 GB wired (≈65 GB of it the model servers' Metal buffers; the rest
   kernel, GPU driver, WindowServer ~1.7 GB) and ~9.4 GB compressor. Desktop

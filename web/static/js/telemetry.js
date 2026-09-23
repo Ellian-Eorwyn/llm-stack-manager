@@ -231,8 +231,12 @@ function applyGpus(gpus) {
     const unified = !!g.unified_memory;
     const otherLabel = unified ? 'macOS & apps' : 'Other';
     const used = Number(g.mem_used || 0);
+    let shownUsed = used;
     const total = Number(g.mem_total || 0);
-    const pct = Math.max(0, Math.min(100, Number(g.mem_pct || 0)));
+    // Linux keeps the platform's own percentage; the Mac's is recomputed from
+    // the pressure view below.
+    const pct = () => Math.max(0, Math.min(100, unified && total > 0
+      ? Math.round(shownUsed / total * 100) : Number(g.mem_pct || 0)));
     
     let segmentsHtml = '';
     let itemsHtml = '';
@@ -255,7 +259,29 @@ function applyGpus(gpus) {
       });
     }
     
-    const otherUsed = Math.max(0, used - knownUsed);
+    // Unified memory: show what is actually pressing on RAM -- the models,
+    // plus wired memory the models do not account for (kernel, GPU driver,
+    // WindowServer). Compressed pages and the file cache are left out: macOS
+    // gives them back when anything needs the room, and counting them made an
+    // idle Mac look 25 GB fuller than it was. The low-memory alerts still read
+    // the host's real available memory, so leaving them off the bar hides no
+    // warning.
+    const pressureView = unified && g.wired_mib != null;
+    let otherUsed = Math.max(0, used - knownUsed);
+    if (pressureView && total > 0) {
+      const system = Math.max(0, Math.min(Number(g.wired_mib) - knownUsed, used - knownUsed));
+      otherUsed = 0;
+      shownUsed = knownUsed + system;
+      if (system > 0) {
+        segmentsHtml += `<div class="bar-segment" style="width:${system / total * 100}%; background-color:var(--dim);" title="macOS: ${formatG(system)}"></div>`;
+        itemsHtml += `<div class="gpu-process-item" title="Kernel, GPU driver and WindowServer: memory macOS keeps locked. Compressed memory and the file cache are not shown; macOS reclaims them on demand.">
+          <span class="gpu-process-dot" style="background-color:var(--dim);"></span>
+          <span style="color:var(--text);">macOS</span>
+          <span style="font-family:var(--mono);">${formatG(system)}</span>
+        </div>`;
+      }
+    }
+
     if (otherUsed > 0 && total > 0) {
       const otherPct = (otherUsed / total * 100);
       segmentsHtml += `<div class="bar-segment" style="width:${otherPct}%; background-color:var(--dim);" title="${otherLabel}: ${formatG(otherUsed)}"></div>`;
@@ -281,11 +307,11 @@ function applyGpus(gpus) {
           <span class="gpu-name" title="${escapeHtml(g.name || '')}">${escapeHtml(g.name || '')}</span>
         </div>
         <div class="gpu-stat-row">
-          <span>${formatG(used)}/${formatG(total)} (${pct}%)</span>
+          <span>${formatG(shownUsed)}/${formatG(total)} (${pct()}%)</span>
           <span>${gpuReading(g.util, '%')} ${unified ? 'GPU util' : 'util'}</span>
           ${unified && g.temp == null ? '' : `<span>${gpuReading(g.temp, ' C')}</span>`}
         </div>
-        <div class="bar-wrap" title="${formatG(used)}/${formatG(total)} | ${gpuReading(g.util, '%')} | ${gpuReading(g.temp, ' C')}">
+        <div class="bar-wrap" title="${formatG(shownUsed)}/${formatG(total)} | ${gpuReading(g.util, '%')} | ${gpuReading(g.temp, ' C')}">
           ${segmentsHtml}
         </div>
         ${itemsHtml}

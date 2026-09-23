@@ -591,6 +591,58 @@ class DarwinStartInstallsMissingAgentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(len(calls), 1)
 
+
+class DarwinStopPersistsTests(unittest.TestCase):
+    """bootout alone lasted until the next login, when launchd loads every
+    plist in LaunchAgents again and KeepAlive starts it: a service stopped from
+    the manager came back the next day."""
+
+    def _calls(self, action):
+        calls = []
+
+        def run(cmd, timeout=30):
+            calls.append(cmd[:2])
+            return _completed("")
+
+        with (
+            platform_harness.as_darwin(run_cmd=run) as platform,
+            patch("platforms.darwin.os.path.exists", return_value=True),
+        ):
+            getattr(platform, action)("rerank")
+        return calls
+
+    def test_stop_disables_so_it_stays_stopped(self):
+        self.assertEqual(self._calls("service_stop"),
+                         [["launchctl", "bootout"], ["launchctl", "disable"]])
+
+    def test_start_enables_before_bootstrapping(self):
+        calls = self._calls("service_start")
+        self.assertLess(calls.index(["launchctl", "enable"]),
+                        calls.index(["launchctl", "bootstrap"]))
+
+
+class UnifiedMemoryBreakdownTests(unittest.TestCase):
+    def test_gpu_info_reports_wired_and_compressed(self):
+        # The header shows the models plus wired memory they do not account
+        # for, and leaves compressed pages and the file cache out.
+        vm = UnifiedMemoryTests.VM_STAT + "Pages wired down:  1000.\n"
+        ioreg = ('<plist version="1.0"><array><dict>'
+                 '<key>IOClass</key><string>AGXAcceleratorG13X</string>'
+                 '<key>PerformanceStatistics</key><dict></dict></dict></array></plist>')
+
+        def run(cmd, timeout=30):
+            if cmd[0] == "ioreg":
+                return _completed(ioreg)
+            if cmd[0] == "vm_stat":
+                return _completed(vm)
+            return UnifiedMemoryTests()._run(cmd, timeout)
+
+        with platform_harness.as_darwin(run_cmd=run) as platform:
+            type(platform)._page_bytes_cache = None
+            gpu = platform.gpu_info()[0]
+        self.assertEqual(gpu["wired_mib"], round(1000 * 16384 / 2**20))
+        self.assertIn("compressed_mib", gpu)
+
 if __name__ == "__main__":
     unittest.main()
 

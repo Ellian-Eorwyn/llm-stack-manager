@@ -357,5 +357,37 @@ class MetalKeepResidentTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertIn("metal_keep_resident", (ROOT / "scripts" / name).read_text())
 
+
+class LaunchdStopPersistsTests(unittest.TestCase):
+    def setUp(self):
+        self.mac = _FakeMac(running=(), installed=("rerank",))
+        self.addCleanup(self.mac.cleanup)
+        self.calls = self.mac.dir / "calls"
+        self.loaded = self.mac.dir / "loaded"
+        self.mac._stub("launchctl", textwrap.dedent(f'''\
+            echo "$1" >> "{self.calls}"
+            case "$1" in
+                print) [ -f "{self.loaded}" ] ;;
+                bootstrap) touch "{self.loaded}" ;;
+                *) exit 0 ;;
+            esac
+        '''))
+
+    def _run(self, fn: str) -> list[str]:
+        self.calls.unlink(missing_ok=True)
+        subprocess.run(["bash", "-uc", f'source "{ROOT}/scripts/cross-platform.sh"; {fn} rerank'],
+                       env=self.mac.env(), check=True, capture_output=True)
+        return self.calls.read_text().split()
+
+    def test_stop_disables_and_start_enables(self):
+        self.assertEqual(self._run("svc_stop"), ["bootout", "disable"])
+        started = self._run("svc_start")
+        self.assertLess(started.index("enable"), started.index("bootstrap"))
+
+    def test_enable_does_not_bootstrap_a_loaded_job(self):
+        # install.sh runs under set -e, and bootstrapping a loaded job fails.
+        self.assertIn("bootstrap", self._run("svc_enable"))
+        self.assertNotIn("bootstrap", self._run("svc_enable"))
+
 if __name__ == "__main__":
     unittest.main()

@@ -338,14 +338,28 @@ class DarwinPlatform(base.Platform):
                 return installed
             domain, plist = self._domain_and_plist(name)
         self._expect_change(name)
-        self.run_cmd(["launchctl", "bootout", f"{domain}/{self.label_for(name)}"])
+        target = f"{domain}/{self.label_for(name)}"
+        # Undo a Stop: a disabled job refuses to bootstrap.
+        self.run_cmd(["launchctl", "enable", target])
+        self.run_cmd(["launchctl", "bootout", target])
         return self.run_cmd(["launchctl", "bootstrap", domain, plist], timeout=timeout)
 
     def service_stop(self, name: str, timeout: int = 30):
+        """Stop the job, and keep it stopped across logins.
+
+        `bootout` alone unloads the job until the next login, when launchd
+        loads every plist in ~/Library/LaunchAgents again -- and with
+        KeepAlive, loading is starting. So a service stopped from the manager
+        came back the next day. `disable` is launchd's persistent record that
+        a job should not be loaded, kept outside the plist; `service_start`
+        clears it.
+        """
         domain, _plist = self._domain_and_plist(name)
         self._expect_change(name)
-        return self.run_cmd(
-            ["launchctl", "bootout", f"{domain}/{self.label_for(name)}"], timeout=timeout)
+        target = f"{domain}/{self.label_for(name)}"
+        result = self.run_cmd(["launchctl", "bootout", target], timeout=timeout)
+        self.run_cmd(["launchctl", "disable", target])
+        return result
 
     def service_restart(self, name: str, timeout: int = 120) -> tuple[int, str]:
         self.service_stop(name, timeout=timeout)
@@ -573,6 +587,14 @@ class DarwinPlatform(base.Platform):
         # allocation figure is kept alongside, named for what it is, rather than
         # dressed up as VRAM.
         meminfo = self.meminfo()
+        # What the rest of "used" is made of, so the header can say it rather
+        # than lumping it together as "macOS & apps": wired memory holds the
+        # kernel, the GPU driver and -- while they are pinned -- the models'
+        # Metal buffers; the compressor holds whatever macOS has squeezed.
+        counters = self._vm_stat()
+        page_mib = self.page_bytes / (1024 * 1024)
+        wired_mib = round(counters.get("Pages wired down", 0) * page_mib)
+        compressed_mib = round(counters.get("Pages occupied by compressor", 0) * page_mib)
         mem_total = round(meminfo.get("MemTotal", 0) / 1024)
         mem_free = round(meminfo.get("MemAvailable", 0) / 1024)
         mem_used = max(0, mem_total - mem_free)
@@ -620,6 +642,8 @@ class DarwinPlatform(base.Platform):
                 # memory being reported in a GPU-shaped slot. Said out loud in
                 # the payload so a consumer is not left to infer it.
                 "unified_memory": True,
+                "wired_mib": wired_mib,
+                "compressed_mib": compressed_mib,
                 "driver_alloc_mib": round(alloc_bytes / (1024 * 1024)),
                 # None means "driver default", not "no limit".
                 "wired_limit_mib": wired_limit_mib,

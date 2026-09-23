@@ -132,11 +132,16 @@ svc_start() {
     else
         local label
         label="$(svc_label "${name}")"
+        # Undo svc_stop's disable: a disabled job refuses to bootstrap.
+        launchctl enable "$(svc_domain)/${label}" 2>/dev/null || true
         launchctl bootout "$(svc_domain)/${label}" 2>/dev/null || true
         launchctl bootstrap "$(svc_domain)" "$(svc_plist_path "${name}")"
     fi
 }
 
+# On launchd, stopped stays stopped across logins. bootout alone lasts until
+# the next login, when launchd loads every plist in LaunchAgents again and
+# KeepAlive starts it; `disable` is its persistent record not to.
 svc_stop() {
     local name="$1"
     if is_linux; then
@@ -145,6 +150,7 @@ svc_stop() {
         local label
         label="$(svc_label "${name}")"
         launchctl bootout "$(svc_domain)/${label}" 2>/dev/null || true
+        launchctl disable "$(svc_domain)/${label}" 2>/dev/null || true
     fi
 }
 
@@ -163,10 +169,16 @@ svc_enable() {
     if is_linux; then
         systemctl enable "${name}"
     else
-        local plist
+        local plist label
         plist="$(svc_plist_path "${name}")"
+        label="$(svc_label "${name}")"
         if [[ -f "${plist}" ]]; then
-            launchctl bootstrap "$(svc_domain)" "${plist}"
+            launchctl enable "$(svc_domain)/${label}" 2>/dev/null || true
+            # Already loaded is already enabled. bootstrap would fail on it,
+            # and install.sh runs under `set -e`.
+            if ! launchctl print "$(svc_domain)/${label}" >/dev/null 2>&1; then
+                launchctl bootstrap "$(svc_domain)" "${plist}"
+            fi
         fi
     fi
 }
@@ -179,6 +191,7 @@ svc_disable() {
         local label
         label="$(svc_label "${name}")"
         launchctl bootout "$(svc_domain)/${label}" 2>/dev/null || true
+        launchctl disable "$(svc_domain)/${label}" 2>/dev/null || true
     fi
 }
 
