@@ -176,12 +176,16 @@ def speaker_summary(segments: list[dict]) -> list[dict]:
 
 
 def render_text(segments: list[dict]) -> str:
-    """One paragraph per speaker turn, consecutive same-speaker segments joined."""
+    """One paragraph per speaker turn, consecutive same-speaker segments joined.
+
+    An identified speaker is written by name; the rest keep `speaker_N`.
+    """
     paragraphs: list[tuple[str | None, list[str]]] = []
     for segment in segments:
-        if paragraphs and paragraphs[-1][0] == segment["speaker"]:
+        who = segment.get("speaker_name") or segment["speaker"]
+        if paragraphs and paragraphs[-1][0] == who:
             paragraphs[-1][1].append(segment["text"])
         else:
-            paragraphs.append((segment["speaker"], [segment["text"]]))
+            paragraphs.append((who, [segment["text"]]))
     return "\n\n".join(f"{speaker or 'unknown'}: {' '.join(texts)}"
                        for speaker, texts in paragraphs)

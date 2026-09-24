@@ -132,9 +132,9 @@ each cue with `[speaker_N]`. `json` is unchanged, because it has nowhere to put
 a speaker. `POST /v1/audio/diarize` returns only the timeline, for pairing with
 another ASR.
 
-**Labels are anonymous and per recording.** `speaker_0` is whoever spoke first
-*in this file*. Attaching real names is a separate step (an LLM reading the
-introductions, or voice enrollment), which this service does not do.
+**Labels are per recording.** `speaker_0` is whoever spoke first *in this
+file*. Where voice profiles are enrolled, each speaker is also compared with
+them and gets a `name` when the match is clear. See `docs/voiceprints.md`.
 
 **How words get speakers.** The two models' timelines are joined afterwards.
 Each word takes the speaker whose mean activity over the word's interval clears

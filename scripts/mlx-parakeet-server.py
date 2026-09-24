@@ -3,7 +3,9 @@
 
 `diarize=true` adds speakers from NVIDIA Nemotron 3 Diarization (up to eight,
 labelled `speaker_0`… in order of arrival); see speaker_attribution.py for how
-the two models' timelines are joined.
+the two models' timelines are joined. Where voice profiles exist
+(scripts/enroll-voiceprints.py), each speaker is also compared with them and
+named when the match is clear; see speaker_identity.py.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from mlx_audio.stt.utils import load_model
 
 import speaker_attribution
+import speaker_identity
 
 
 MODEL_PATH = os.environ.get("MLX_PARAKEET_MODEL_PATH", "")
@@ -34,9 +37,16 @@ MAX_UPLOAD_MB = int(os.environ.get("TRANSCRIPT_MAX_UPLOAD_MB", "512"))
 WORK_DIR = Path(os.environ.get("TRANSCRIPT_WORK_DIR", "logs/transcript/work"))
 DIARIZATION_MODEL_PATH = os.environ.get("MLX_DIARIZATION_MODEL_PATH", "")
 DIARIZATION_THRESHOLD = float(os.environ.get("MLX_DIARIZATION_THRESHOLD", "0.5"))
+VOICEPRINT_MODEL_PATH = os.environ.get("MLX_VOICEPRINT_MODEL_PATH", "")
+VOICEPRINT_PROFILES = os.environ.get("MLX_VOICEPRINT_PROFILES", "")
+# Blank: the threshold and margin the enrollment's own evaluation chose.
+VOICEPRINT_THRESHOLD = os.environ.get("MLX_VOICEPRINT_THRESHOLD", "")
+VOICEPRINT_MARGIN = os.environ.get("MLX_VOICEPRINT_MARGIN", "")
 
 _model = None
 _diarizer = None
+_embedder = None
+_profiles: dict = {"mtime": None, "data": None}
 _load_lock = asyncio.Lock()
 _inference_lock = asyncio.Lock()
 _started_at = time.time()
@@ -62,6 +72,53 @@ def _load_diarizer_sync():
 
         _diarizer = load_diarization(DIARIZATION_MODEL_PATH, strict=True)
     return _diarizer
+
+
+def _voiceprint_profiles():
+    """Profiles re-read when the file changes, so re-enrolling needs no restart."""
+    if not (VOICEPRINT_MODEL_PATH and VOICEPRINT_PROFILES):
+        return None
+    try:
+        mtime = Path(VOICEPRINT_PROFILES).stat().st_mtime
+    except OSError:
+        return None
+    if _profiles["mtime"] != mtime:
+        _profiles.update(mtime=mtime, data=speaker_identity.load(VOICEPRINT_PROFILES))
+    return _profiles["data"]
+
+
+def _identify(payload: dict, path: str) -> None:
+    """Put enrolled names on the diarized speakers where the voice is a clear match."""
+    global _embedder
+    data = _voiceprint_profiles()
+    if not data or not payload.get("diarization"):
+        return
+    import numpy as np
+    from speaker_embedding import SAMPLE_RATE, SpeakerEmbedder, decode
+
+    if _embedder is None:
+        _embedder = SpeakerEmbedder(VOICEPRINT_MODEL_PATH)
+    audio = decode(path)
+    clusters = {}
+    for speaker, clips in speaker_identity.clean_spans(payload["diarization"]).items():
+        vecs = [_embedder.embed(audio[int(a * SAMPLE_RATE):int(b * SAMPLE_RATE)]) for a, b in clips]
+        if vecs:
+            clusters[speaker] = np.mean(vecs, axis=0).tolist()
+    threshold = float(VOICEPRINT_THRESHOLD or data.get("threshold") or speaker_identity.DEFAULT_THRESHOLD)
+    margin = float(VOICEPRINT_MARGIN or data.get("margin") or speaker_identity.DEFAULT_MARGIN)
+    matches = speaker_identity.match(clusters, data["profiles"], threshold, margin)
+    people = [m["name"] for m in matches.values() if m["name"]]
+    labels = {sp: speaker_identity.choose_label(m["name"], data["profiles"][m["name"]], people)
+              for sp, m in matches.items() if m["name"]}
+    for entry in payload["speakers"]:
+        m = matches.get(entry["id"])
+        if m:
+            entry.update(name=labels.get(entry["id"]), voice_match=m["name"], voice_score=m["score"],
+                         runner_up=m["runner_up"], runner_up_score=m["runner_up_score"])
+    for segment in payload["segments"]:
+        segment["speaker_name"] = labels.get(segment["speaker"])
+    payload["identification"] = {"profiles": len(data["profiles"]), "threshold": threshold,
+                                 "margin": margin, "built": data.get("built")}
 
 
 def _diarize_sync(path: str):
@@ -116,7 +173,7 @@ def _tokens_to_words(tokens) -> list[dict]:
     return words
 
 
-def _transcribe_sync(path: str, diarize: bool = False):
+def _transcribe_sync(path: str, diarize: bool = False, identify: bool = True):
     result = _load_model_sync().generate(
         path,
         dtype=mx.bfloat16,
@@ -149,6 +206,8 @@ def _transcribe_sync(path: str, diarize: bool = False):
     }
     if diarize:
         _add_speakers(payload, path)
+        if identify:
+            _identify(payload, path)
     return payload
 
 
@@ -188,7 +247,7 @@ def _subtitles(payload: dict, *, vtt: bool) -> str:
             [
                 str(index),
                 f"{_timestamp(segment['start'], vtt=vtt)} --> {_timestamp(segment['end'], vtt=vtt)}",
-                (f"[{segment['speaker']}] " if segment.get("speaker") else "")
+                (f"[{segment.get('speaker_name') or segment['speaker']}] " if segment.get("speaker") else "")
                 + segment["text"].strip(),
                 "",
             ]
@@ -210,7 +269,15 @@ app = FastAPI(title="Parakeet v3 English MLX", lifespan=lifespan)
 def _diarization_status() -> dict:
     return {"configured": bool(DIARIZATION_MODEL_PATH),
             "model": Path(DIARIZATION_MODEL_PATH).name if DIARIZATION_MODEL_PATH else None,
-            "loaded": _diarizer is not None}
+            "loaded": _diarizer is not None,
+            "voiceprints": _voiceprint_status()}
+
+
+def _voiceprint_status() -> dict:
+    data = _voiceprint_profiles()
+    return {"configured": bool(VOICEPRINT_MODEL_PATH and VOICEPRINT_PROFILES),
+            "profiles": len(data["profiles"]) if data else 0,
+            "built": data.get("built") if data else None}
 
 
 @app.get("/health")
@@ -288,6 +355,7 @@ async def transcribe(
     response_format: str = Form("json"),
     word_timestamps: bool = Form(False),
     diarize: bool = Form(False),
+    identify: bool = Form(True),
 ):
     del word_timestamps  # Word timestamps are always available from Parakeet.
     global _requests
@@ -306,7 +374,7 @@ async def transcribe(
         tmp_path = await _save_upload(file)
         await _ensure_model()
         async with _inference_lock:
-            payload = await asyncio.to_thread(_transcribe_sync, tmp_path, diarize)
+            payload = await asyncio.to_thread(_transcribe_sync, tmp_path, diarize, identify)
     except HTTPException:
         raise
     except Exception as exc:

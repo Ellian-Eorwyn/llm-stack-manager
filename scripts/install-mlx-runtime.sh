@@ -122,7 +122,8 @@ from huggingface_hub import snapshot_download
 # both models anyway.
 wanted = {"embedding": os.environ.get("WITH_EMBED") == "1",
           "transcription": os.environ.get("WITH_TRANSCRIBE") == "1",
-          "diarization": os.environ.get("WITH_TRANSCRIBE") == "1"}
+          "diarization": os.environ.get("WITH_TRANSCRIBE") == "1",
+          "voiceprint": os.environ.get("WITH_TRANSCRIBE") == "1"}
 for name, entry in (lock.get("models") or {}).items():
     if not wanted.get(name, True):
         print(f"[mlx] {name}: not requested; skipping")
@@ -136,7 +137,8 @@ for name, entry in (lock.get("models") or {}).items():
         print(f"[mlx] {name}: present at {local}")
         continue
     print(f"[mlx] {name}: fetching {repo}@{revision or 'main'}")
-    snapshot_download(repo_id=repo, revision=revision, local_dir=str(target))
+    snapshot_download(repo_id=repo, revision=revision, local_dir=str(target),
+                      allow_patterns=entry.get("allow_patterns"))
 PY
 fi
 

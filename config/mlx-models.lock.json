@@ -45,6 +45,22 @@
       "max_speakers": 8,
       "license": "openmdw-1.1",
       "precision": "bfloat16"
+    },
+    "voiceprint": {
+      "repository": "mlx-community/wespeaker-voxceleb-resnet34-LM",
+      "revision": "e31fae03efe23a0274d5b2417f62f9d41defa1cf",
+      "local_path": "models/mlx/wespeaker-voxceleb-resnet34-LM",
+      "allow_patterns": [
+        "weights.npz",
+        "config.json",
+        "README.md"
+      ],
+      "weight_bytes": 26614262,
+      "weight_sha256": "802706880b81ece11a9acefb2cf523ae91473e3b7615858390a1eded4efcdedf",
+      "upstream": "pyannote/wespeaker-voxceleb-resnet34-LM",
+      "embedding_dim": 256,
+      "license": "MIT",
+      "note": "weights only; the network is scripts/speaker_embedding.py, not the repo's resnet_embedding.py"
     }
   }
 }

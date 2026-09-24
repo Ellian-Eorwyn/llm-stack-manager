@@ -116,8 +116,9 @@ Apple Voice Memos, and later a `~/Documents/meetings` capture folder) should be
 picked up automatically, deduplicated, transcribed with speakers, given real
 names, and filed into the Obsidian vaults by Hermes as source transcripts plus
 linked notes. What exists today is the speaker-labelled transcript
-(`diarize=true`). Watching folders, dedup, naming and filing belong to Hermes,
-not this repo. `llms` (the Linux sidecar, `scripts/transcribe-server.py`)
+(`diarize=true`), with enrolled voices named (`docs/voiceprints.md`; profiles
+built from the owner's MacWhisper library, local only). Watching folders,
+dedup and filing belong to Hermes, not this repo. `llms` (the Linux sidecar, `scripts/transcribe-server.py`)
 has no diarization yet. NeMo's `SortformerEncLabelModel` loads the same
 checkpoint there.
 
