@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import unittest
+from unittest import mock
 
 
 def _load_telemetry_module():
@@ -427,6 +428,13 @@ class WarningTests(unittest.TestCase):
         warnings = telemetry.warnings_for([backend], {}, [])
         self.assertEqual([w["level"] for w in warnings], ["info"])
 
+    def test_an_engine_without_prometheus_is_not_told_to_enable_it(self):
+        # The advice is a llama-server flag. MTPLX and the MLX servers have no
+        # such setting, so the alert would sit on the panel permanently.
+        backend = self._backend()
+        backend.update(metrics_available=False, engine="mtplx")
+        self.assertEqual(telemetry.warnings_for([backend], {}, []), [])
+
     def test_healthy_stack_produces_no_warnings(self):
         backend = self._backend(
             cache={"evictions_per_launch": 0.0},
@@ -436,6 +444,22 @@ class WarningTests(unittest.TestCase):
         gpus = [{"index": 0, "mem_total": 24576, "mem_used": 12000}]
         self.assertEqual(telemetry.warnings_for([backend], {"swap_used_pct": 2}, gpus), [])
 
+
+class EngineAwareSnapshotTests(unittest.TestCase):
+    def test_the_target_carries_the_slot_engine(self):
+        targets = telemetry.resolve_targets({"LLM_A_ENGINE": "mtplx"}, lambda unit: "active")
+        engines = {t["name"]: t["engine"] for t in targets}
+        self.assertEqual((engines["llm-a"], engines["llm-b"]), ("mtplx", "llamacpp"))
+
+    def test_llama_server_endpoints_are_not_asked_of_another_engine(self):
+        target = {"name": "llm-a", "label": "LLM A", "unit": None, "active": True,
+                  "base_url": "http://127.0.0.1:1", "engine": "mtplx"}
+        with mock.patch.object(telemetry, "probe_props") as props, \
+                mock.patch.object(telemetry, "probe_metrics") as metrics:
+            snapshot = telemetry.backend_snapshot(target, 3600)
+        props.assert_not_called()
+        metrics.assert_not_called()
+        self.assertEqual(snapshot["engine"], "mtplx")
 
 
 class PlainLogLineTests(unittest.TestCase):

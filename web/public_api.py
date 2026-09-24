@@ -415,7 +415,8 @@ def derive_alerts(gpus: list[dict], backends: list[dict], host: dict,
                 f"{label}: p90 slot select-to-launch delay is {p90}s before generation starts.",
                 p90_seconds=p90))
 
-        if backend.get("active") and not backend.get("metrics_available"):
+        if backend.get("active") and backend.get("engine", "llamacpp") == "llamacpp" \
+                and not backend.get("metrics_available"):
             alerts.append(_alert(
                 "info", "metrics_disabled", backend.get("unit") or backend.get("name"),
                 f"{label}: Prometheus metrics are off, so counter-level detail is unavailable."))

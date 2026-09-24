@@ -741,9 +741,11 @@ def resolve_targets(env: dict, service_status) -> list[dict]:
         if host in {"0.0.0.0", "::"}:
             host = "127.0.0.1"
         active_unit = next((unit for unit in spec["units"] if service_status(unit) == "active"), None)
+        slot = backends.SLOTS.get(spec["units"][0])
         targets.append({
             "name": spec["name"],
             "label": spec["label"],
+            "engine": slot.engine(env) if slot else "llamacpp",
             "units": spec["units"],
             "unit": active_unit,
             "host": host,
@@ -763,6 +765,7 @@ def backend_snapshot(target: dict, window_seconds: int, registry: TelemetryRegis
         "unit": target["unit"],
         "base_url": target["base_url"],
         "active": target["active"],
+        "engine": target.get("engine", "llamacpp"),
         "props": None,
         "slots": None,
         "metrics": None,
@@ -771,6 +774,12 @@ def backend_snapshot(target: dict, window_seconds: int, registry: TelemetryRegis
         "collector_error": None,
     }
     if not target["active"]:
+        return snapshot
+    # `/props`, `/slots` and Prometheus `/metrics` are llama-server's. The MLX
+    # servers answer the first two 404, and MTPLX's `/metrics` is JSON of its
+    # own shape, so asking would only produce an alert telling the operator to
+    # enable a llama.cpp setting their engine does not have.
+    if snapshot["engine"] != "llamacpp":
         return snapshot
 
     snapshot["props"] = probe_props(target["base_url"])
@@ -961,7 +970,8 @@ def warnings_for(backends: list[dict], host: dict, gpus: list[dict]) -> list[dic
                         + (f" of {available:,} tokens." if available else "."),
             })
 
-        if backend.get("active") and not backend.get("metrics_available"):
+        if backend.get("active") and backend.get("engine", "llamacpp") == "llamacpp" \
+                and not backend.get("metrics_available"):
             alerts.append({
                 "level": "info",
                 "text": f"{label}: Prometheus metrics are off. Enable the backend's Metrics Endpoint "
