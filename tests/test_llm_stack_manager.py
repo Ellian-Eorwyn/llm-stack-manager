@@ -434,6 +434,38 @@ class CustomModelApiTests(unittest.TestCase):
         self.assertEqual(body["model"]["model_name"], "qwen3.5-27b-q4_k_m")
 
 
+class ModelSwitchEngineTests(unittest.TestCase):
+    """Switching llm-a's model takes the engine with it."""
+
+    def _switch(self, model_path: str, env: dict) -> dict:
+        written = {}
+        catalogue = [{"id": "m", "model_path": model_path, "model_name": "m"}]
+        with (
+            manager.app.test_client() as client,
+            patch.object(models, "load_custom_models", return_value=catalogue),
+            patch.object(models, "resolve_custom_args_for_model", return_value=([], "")),
+            patch.object(config_env, "read_env", return_value=env),
+            patch.object(config_env, "update_env_values", side_effect=written.update),
+            patch.object(core.ServiceManager, "restart", return_value=(0, "")),
+            patch.object(core.ServiceManager, "start", return_value=(0, "")),
+        ):
+            self.assertEqual(client.post("/api/switch/m").status_code, 200)
+        return written
+
+    def test_an_mtplx_pack_switches_the_slot_to_mtplx(self):
+        with tempfile.TemporaryDirectory() as pack:
+            pathlib.Path(pack, "mtplx_runtime.json").write_text("{}")
+            written = self._switch(pack, {})
+        self.assertEqual(written["LLM_A_ENGINE"], "mtplx")
+
+    def test_a_gguf_switches_an_mtplx_slot_back(self):
+        written = self._switch("/models/a.gguf", {"LLM_A_ENGINE": "mtplx"})
+        self.assertEqual(written["LLM_A_ENGINE"], "llamacpp")
+
+    def test_a_llamacpp_host_gains_no_engine_key(self):
+        self.assertNotIn("LLM_A_ENGINE", self._switch("/models/a.gguf", {}))
+
+
 class SavedConfigTests(unittest.TestCase):
     def test_save_current_records_exact_form_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

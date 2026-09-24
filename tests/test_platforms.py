@@ -691,6 +691,16 @@ class EngineSelectionTests(unittest.TestCase):
         self.assertEqual(sidecar["expect_field"], ("status", "ok"))
         self.assertEqual(parakeet["expect_field"], ("status", "healthy"))
 
+    def test_a_chat_slot_served_by_mtplx_is_judged_by_its_health(self):
+        # MTPLX has no /props and answers it 404, which read as degraded -- and
+        # took llm-a-proxy down with it through the dependency map.
+        llama = self.health.probe_spec("llm-a", {})
+        mtplx = self.health.probe_spec("llm-a", {"LLM_A_ENGINE": "mtplx"})
+        self.assertEqual(llama["path"], "/props")
+        self.assertEqual((mtplx["path"], mtplx["expect_field"]), ("/health", ("ok", True)))
+        self.assertEqual(self.health.endpoint_for("llm-b", {"LLM_B_ENGINE": "mtplx"}),
+                         ("127.0.0.1", "8020"))
+
     def test_an_unknown_engine_falls_back_rather_than_losing_the_probe(self):
         # A typo in the config should not silently remove a service's readiness
         # check; it should behave as the default engine does.

@@ -248,6 +248,15 @@ Each of these was found the hard way. None is obvious from the code.
   `python-multipart`, which the installer names explicitly.
 - **`document.hidden` is true in a headless browser pane**, and `poll()` returns
   early on it. A blank fleet view there is the visibility guard, not a bug.
+- **Upstream llama.cpp no longer accepts `--no-mmap`** (now `--load-mode none`),
+  and every slot with `*_NO_MMAP=true` passes it. Bumping the pin in
+  `dependencies.json` past `7e4c0a9` fails every such backend at start, on both
+  platforms, until `COMMON_TOGGLES` learns `--load-mode`. Worth doing: on the
+  Studio, master is no faster on short prompts but decodes 30% faster at ~100k
+  context (`docs/mtplx.md`).
+- **The Studio's llm-a runs at ~19 tok/s in real use, not the ~53 a short
+  prompt shows**: its logged requests sit at ~160k tokens of context. MTPLX
+  (`LLM_A_ENGINE=mtplx`, `docs/mtplx.md`) measured 2.9x llama.cpp there.
 
 ## 5. How to verify
 

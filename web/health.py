@@ -238,12 +238,26 @@ ENGINE_PROBES = {
         "host_key": "TRANSCRIPT_HOST", "port_key": "TRANSCRIPT_PORT",
         "default_port": "8014", "expect_field": ("status", "healthy"),
     },
+    # MTPLX has no `/props` either. Its `/health` answers `"ok": true` once the
+    # model is loaded and warmed, and not before -- it binds after the load.
+    ("llm-a", "mtplx"): {
+        "kind": "http", "path": "/health",
+        "host_key": "CHAT_BACKEND_HOST", "port_key": "CHAT_BACKEND_PORT",
+        "default_port": "8010", "expect_field": ("ok", True),
+    },
+    ("llm-b", "mtplx"): {
+        "kind": "http", "path": "/health",
+        "host_key": "CHAT2_BACKEND_HOST", "port_key": "CHAT2_BACKEND_PORT",
+        "default_port": "8020", "expect_field": ("ok", True),
+    },
 }
 
 #: Which env key names the engine for a service, and what it defaults to.
 SERVICE_ENGINE_KEYS = {
     "embed": ("EMBED_ENGINE", "llamacpp"),
     "transcript-backend": ("TRANSCRIPT_ENGINE", "sidecar"),
+    "llm-a": ("LLM_A_ENGINE", "llamacpp"),
+    "llm-b": ("LLM_B_ENGINE", "llamacpp"),
 }
 
 

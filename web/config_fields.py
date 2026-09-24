@@ -947,6 +947,9 @@ CONFIG_FIELDS = [
     {"section": "Transcription", "key": "TRANSCRIPT_ENGINES",           "label": "Installed Engines",      "type": "text",   "hint": "Comma-separated --engines tokens for scripts/install-transcribe.sh"},
     {"section": "Apple Silicon (MLX)", "key": "EMBED_ENGINE",      "label": "Embedding Server",   "type": "select", "options": ["llamacpp", "mlx"], "hint": "Which process serves the embedding slot. mlx is Apple silicon only"},
     {"section": "Apple Silicon (MLX)", "key": "TRANSCRIPT_ENGINE",  "label": "Transcription Server", "type": "select", "options": ["sidecar", "parakeet-mlx"], "hint": "Which server runs. Distinct from Active Engine above, which picks the runtime *inside* the sidecar"},
+    {"section": "Apple Silicon (MLX)", "key": "LLM_A_ENGINE",       "label": "LLM A Server",       "type": "select", "options": ["llamacpp", "mtplx"], "hint": "mtplx: Apple silicon only; serves an MTPLX pack directory (set LLM A's model path to it) with native MTP speculative decoding. Restart LLM A to switch"},
+    {"section": "Apple Silicon (MLX)", "key": "LLM_B_ENGINE",       "label": "LLM B Server",       "type": "select", "options": ["llamacpp", "mtplx"], "hint": "As LLM A Server, for the second chat slot"},
+    {"section": "Apple Silicon (MLX)", "key": "MTPLX_VENV",         "label": "MTPLX Venv",         "type": "path",   "hint": "Created by scripts/install-mtplx-runtime.sh; separate from the MLX runtime because their mlx pins differ"},
     {"section": "Apple Silicon (MLX)", "key": "METAL_KEEP_MODELS_RESIDENT", "label": "Keep Models Wired", "type": "select", "options": ["on", "off"], "hint": "on: llama.cpp keeps each model's Metal buffers wired while idle, so macOS cannot compress or swap them. off: llama.cpp's default, which lets go 3 minutes after the last request"},
     {"section": "Apple Silicon (MLX)", "key": "MLX_RUNTIME_VENV",   "label": "Runtime Venv",       "type": "path",   "hint": "Kept apart from the manager's own venv, which depends on nothing but Flask"},
     {"section": "Apple Silicon (MLX)", "key": "MLX_RUNTIME_PYTHON", "label": "Python",             "type": "text",   "hint": "Interpreter used to create the runtime venv"},
@@ -1241,6 +1244,10 @@ RESTART_HINTS = {
     "MLX_RUNTIME_PYTHON":           ["embed", "transcript-backend"],
     "MLX_HF_HOME":                  ["embed", "transcript-backend"],
     "MLX_EMBED_MODEL_PATH":         ["embed"],
+    # The chat slots choose their engine when they start (start-backend.sh), so
+    # unlike the two above a restart is the whole of it. LLM_*_ENGINE get
+    # theirs from the prefix rule.
+    "MTPLX_VENV":                   ["llm-a", "llm-b"],
     # Read by every llama.cpp launcher at start.
     "METAL_KEEP_MODELS_RESIDENT":   ["llm-a", "llm-b", "embed", "rerank", "task", "ocr", "llama-router"],
     "MLX_PARAKEET_MODEL_PATH":      ["transcript-backend"],

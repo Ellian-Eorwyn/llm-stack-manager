@@ -191,6 +191,105 @@ class EngineSelectionTests(unittest.TestCase):
             backends.build_command("rerank", dict(BASE, RERANK_ENGINE="mlx"))
 
 
+class MtplxEngineTests(unittest.TestCase):
+    """A chat slot served by MTPLX reads the settings it already had."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.pack = pathlib.Path(tmp.name) / "Qwen3.8-27B-MTPLX-Optimized-Speed"
+        self.pack.mkdir()
+        (self.pack / "mtplx_runtime.json").write_text("{}")
+        self.env = dict(BASE, STACK_DIR="/stack", LLM_A_ENGINE="mtplx",
+                        LLM_A_MODEL_PATH=str(self.pack), LLM_A_MODEL_NAME="qwen3.8-27b",
+                        LLM_A_CTX_SIZE="262144", LLM_A_TEMP="0.7", LLM_A_TOP_P="0.9",
+                        LLM_A_TOP_K="40", LLM_A_REASONING_EFFORT="medium",
+                        LLM_A_CACHE_RAM="8192")
+
+    def build(self, slot="llm-a", **overrides):
+        with as_darwin():
+            return backends.build_command(slot, dict(self.env, **overrides))
+
+    def test_the_slot_settings_become_mtplx_flags(self):
+        argv = self.build()
+        self.assertEqual(argv[:4], ["/usr/bin/env", "PYTHONUNBUFFERED=1",
+                                    "MTPLX_SESSION_BANK_MAX_BYTES=8192M",
+                                    "/stack/deps/mtplx-venv/bin/mtplx"])
+        self.assertEqual(argv[4], "serve")
+        got = flags(argv)
+        self.assertEqual(got["--model"], str(self.pack))
+        self.assertEqual(got["--model-id"], "qwen3.8-27b")
+        self.assertEqual(got["--host"], "127.0.0.1")
+        self.assertEqual(got["--port"], "8010")
+        self.assertEqual(got["--context-window"], "262144")
+        self.assertEqual(got["--default-temperature"], "0.7")
+        self.assertEqual(got["--default-top-p"], "0.9")
+        self.assertEqual(got["--default-top-k"], "40")
+        self.assertEqual(got["--reasoning-effort"], "medium")
+        self.assertEqual(got["--preserve-thinking"], "on")
+
+    def test_the_reply_text_carries_no_stats_footer(self):
+        # MTPLX appends a tokens-per-second line to every reply without it.
+        self.assertIn("--no-stats-footer", self.build())
+
+    def test_the_proxy_is_not_asked_for_a_key(self):
+        self.assertIn("--no-auth", self.build())
+
+    def test_unset_sampling_matches_what_llama_server_would_get(self):
+        env = {k: v for k, v in self.env.items()
+               if k not in ("LLM_A_TEMP", "LLM_A_TOP_P", "LLM_A_TOP_K")}
+        with as_darwin():
+            got = flags(backends.build_command("llm-a", env))
+        self.assertEqual((got["--default-temperature"], got["--default-top-p"],
+                          got["--default-top-k"]), ("1.0", "0.95", "20"))
+
+    def test_the_legacy_chat_keys_still_configure_it(self):
+        env = {k: v for k, v in self.env.items() if k != "LLM_A_CTX_SIZE"}
+        with as_darwin():
+            got = flags(backends.build_command("llm-a", dict(env, CHAT_CTX_SIZE="65536")))
+        self.assertEqual(got["--context-window"], "65536")
+
+    def test_the_second_chat_slot_binds_its_own_port(self):
+        got = flags(self.build("llm-b", LLM_B_ENGINE="mtplx", LLM_B_MODEL_PATH=str(self.pack)))
+        self.assertEqual(got["--port"], "8020")
+
+    def test_a_gguf_left_behind_by_the_engine_switch_is_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.build(LLM_A_MODEL_PATH="/models/Qwen3.8-27B-Q6_K.gguf")
+        self.assertIn("not an MTPLX pack", str(caught.exception))
+
+    def test_a_wider_bind_is_refused_because_mtplx_would_demand_a_key(self):
+        with self.assertRaises(SystemExit):
+            self.build(CHAT_BACKEND_HOST="0.0.0.0")
+
+    def test_llama_server_custom_args_are_not_passed_to_it(self):
+        argv = self.build(LLM_A_CUSTOM_ARGS_JSON='["--no-warmup"]',
+                          LLM_A_MTPLX_ARGS_JSON='["--profile sustained"]')
+        self.assertNotIn("--no-warmup", argv)
+        self.assertEqual(argv[-2:], ["--profile", "sustained"])
+
+    def test_a_zero_cache_ram_leaves_the_cache_to_mtplx(self):
+        argv = self.build(LLM_A_CACHE_RAM="0")
+        self.assertFalse(any(a.startswith("MTPLX_SESSION_BANK_MAX_BYTES") for a in argv))
+
+    def test_a_linux_host_is_told_to_use_llamacpp(self):
+        # A config copied off a Mac must not restart-loop on a missing venv.
+        with as_linux(), self.assertRaises(SystemExit) as caught:
+            backends.build_command("llm-a", self.env)
+        self.assertIn("LLM_A_ENGINE=llamacpp", str(caught.exception))
+
+    def test_linux_still_builds_llama_server_for_the_same_slot(self):
+        env = {k: v for k, v in self.env.items() if k != "LLM_A_ENGINE"}
+        with as_linux():
+            argv = backends.build_command("llm-a", dict(env, LLM_A_MODEL_PATH="/m/a.gguf"))
+        self.assertTrue(argv[0].endswith("llama-server"))
+
+    def test_it_serves_only_the_chat_slots(self):
+        with as_darwin(), self.assertRaises(SystemExit):
+            backends.build_command("task", dict(self.env, TASK_ENGINE="mtplx",
+                                                TASK_MODEL_PATH=str(self.pack)))
+
+
 class PrefixChainTests(unittest.TestCase):
     """A slot may answer to more than one prefix.
 

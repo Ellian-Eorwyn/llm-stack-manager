@@ -2284,6 +2284,14 @@ def api_switch(variant):
     }
     if model.get('display_name'):
         updates['LLM_A_LABEL'] = model['display_name']
+    # A custom model may be an MTPLX pack rather than a GGUF, and the engine has
+    # to follow the model: left alone, the restart below starts llama-server on
+    # a directory, or MTPLX on a GGUF. Written only when it changes, so a host
+    # that has only ever run llama.cpp gains no new key.
+    engine = ('mtplx' if os.path.isfile(os.path.join(model['model_path'], 'mtplx_runtime.json'))
+              else 'llamacpp')
+    if engine != backends.SLOTS['llm-a'].engine(config_env.read_env()):
+        updates['LLM_A_ENGINE'] = engine
     config_env.update_env_values(updates)
 
     returncode, output = core.ServiceManager.restart('llm-a')

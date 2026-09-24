@@ -18,6 +18,10 @@ The reference configuration is an M1 Pro with 16 GiB unified memory running only
 the manager, embeddings and transcription, with the llama.cpp auxiliary stack
 disabled in the local environment file.
 
+The chat slots have an Apple silicon engine of their own, MTPLX, which runs
+Qwen3.8 27B at roughly 1.6-2.9x llama.cpp's speed on the Studio. It is chosen
+per slot the same way (`LLM_A_ENGINE=mtplx`); see `docs/mtplx.md`.
+
 ## Installing the runtime
 
 ```bash

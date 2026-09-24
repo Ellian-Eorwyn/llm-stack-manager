@@ -84,8 +84,14 @@ echo "--- Primary backend (port ${CHAT_BACKEND_PORT:-8010}) ---"
 if should_check llm-a || should_check chat-backend; then
     # The proxy ports below all fan into this one process. Checking only those
     # meant a backend that had died behind a live proxy read as a proxy fault.
-    PROPS=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/props" 2>&1 || true)
-    check "GET :${CHAT_BACKEND_PORT:-8010}/props returns slot geometry" "${PROPS}" '"total_slots"'
+    # MTPLX has no /props; its /health says ok only once the model is loaded.
+    if [[ "${LLM_A_ENGINE:-llamacpp}" == "mtplx" ]]; then
+        HEALTH=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/health" 2>&1 || true)
+        check "GET :${CHAT_BACKEND_PORT:-8010}/health reports the MTPLX model loaded" "${HEALTH}" '"ok":true'
+    else
+        PROPS=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/props" 2>&1 || true)
+        check "GET :${CHAT_BACKEND_PORT:-8010}/props returns slot geometry" "${PROPS}" '"total_slots"'
+    fi
 else
     skip "Primary backend"
 fi
