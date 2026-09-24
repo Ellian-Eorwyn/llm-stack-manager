@@ -35,6 +35,18 @@ class RequestKindTests(unittest.TestCase):
         self.assertEqual(proxy._requested_model_id_from_path("/v1/models/openclaw%2Fdefault"), "openclaw/default")
 
 
+class UpstreamPathTests(unittest.TestCase):
+    def test_a_bare_openai_route_is_sent_upstream_with_v1(self):
+        # MTPLX answers /chat/completions 404; llama-server accepts both forms.
+        self.assertEqual(proxy._upstream_path("/chat/completions"), "/v1/chat/completions")
+        self.assertEqual(proxy._upstream_path("/responses?stream=true"), "/v1/responses?stream=true")
+
+    def test_a_prefixed_or_unknown_path_is_left_alone(self):
+        for path in ("/v1/chat/completions", "/health", "/props", "/v1/models"):
+            with self.subTest(path=path):
+                self.assertEqual(proxy._upstream_path(path), path)
+
+
 class MemoryInjectionTests(unittest.TestCase):
     def test_responses_string_input_becomes_developer_prefixed_messages(self):
         payload = {"input": "hello"}

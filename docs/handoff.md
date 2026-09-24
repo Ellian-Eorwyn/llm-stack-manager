@@ -257,7 +257,9 @@ Each of these was found the hard way. None is obvious from the code.
 - **The Studio's llm-a runs at ~19 tok/s in real use, not the ~53 a short
   prompt shows**: its logged requests sit at ~160k tokens of context. MTPLX
   (an MTPLX pack as LLM A's model, `docs/mtplx.md`) measured 2.9x llama.cpp
-  there, and the Studio's llm-a runs on it.
+  there, and the Studio's llm-a runs on it (Speed pack). The Quality pack
+  under memory pressure once returned zeros at ~107k tokens; see "Known
+  issue" in `docs/mtplx.md` before blaming the client.
 
 ## 5. How to verify
 

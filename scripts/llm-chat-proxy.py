@@ -412,6 +412,21 @@ def _normalized_path(path: str) -> str:
     return normalized or "/"
 
 
+#: OpenAI routes a client may name without the `/v1` prefix. llama-server
+#: serves both spellings; MTPLX serves only `/v1/...` and answers the bare one
+#: 404, which took Hermes down when llm-a moved to it. So the proxy sends the
+#: prefixed spelling upstream whichever engine is behind it.
+_BARE_OPENAI_ROUTES = ("/chat/completions", "/completions", "/responses",
+                       "/embeddings", "/messages")
+
+
+def _upstream_path(path: str) -> str:
+    parsed = urllib.parse.urlsplit(path or "")
+    if parsed.path.rstrip("/") in _BARE_OPENAI_ROUTES:
+        return urllib.parse.urlunsplit(parsed._replace(path="/v1" + parsed.path))
+    return path
+
+
 def _request_kind(path: str) -> str | None:
     normalized = _normalized_path(path)
     if normalized in ("/v1/models", "/models"):
@@ -1589,7 +1604,7 @@ def make_handler(
             stream_rewriter = None
 
             try:
-                request_line = f"{method} {self.path} HTTP/1.1\r\n"
+                request_line = f"{method} {_upstream_path(self.path)} HTTP/1.1\r\n"
                 header_block = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
                 raw_request = (request_line + header_block + "\r\n").encode("utf-8") + body
 

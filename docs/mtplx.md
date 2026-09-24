@@ -78,9 +78,13 @@ What sets memory at long context instead: the conversation itself -- the
 cache is paged and grows with it, 64 KiB a token, so `LLM_A_CTX_SIZE` is the
 ceiling on how far it can grow -- the pack (Speed is 8.6 GB lighter than
 Quality), and `CACHE_RAM`, the warm-conversation cache.
-- **The proxy is unchanged.** think / nothink / code, reasoning separated into
-  `reasoning_content`, and streamed tool calls all work through it as they do
-  against llama-server.
+- **The proxy is unchanged**, apart from one thing. think / nothink / code,
+  reasoning separated into `reasoning_content`, and streamed tool calls all
+  work through it as they do against llama-server. The one thing: MTPLX serves
+  only `/v1/chat/completions` and answers `/chat/completions` 404, where
+  llama-server took both. A client with a base URL lacking `/v1` (Hermes had
+  four) went down when llm-a moved, so the proxy now sends the `/v1` spelling
+  upstream either way. Talking to 8010 directly still needs `/v1`.
 - **Health** reads MTPLX's `/health` (`"ok": true`) instead of `/props`.
   `validate.sh` does the same.
 - **Telemetry** has less to say: the slot, context and Prometheus panels are
@@ -88,6 +92,20 @@ Quality), and `CACHE_RAM`, the warm-conversation cache.
   slot's port, `http://127.0.0.1:8010/`.
 - **Binds loopback only.** MTPLX demands an API key on any other address, and
   the proxy sends none.
+
+## Known issue: nonsense under memory pressure
+
+Once, on the Optimized Quality pack, a long Hermes session came back as
+strings of zeros at 107-109k tokens. MTPLX logged no error. What preceded it,
+in `logs/llm-a.stdout.log`: two `memory pressure guard` events at macOS level
+2 (MTPLX at 58 GB, 14 GB free system-wide), a reply that stalled 94 s mid
+stream (`mtplx_stream_silence`), and a `retokenized_history_mismatch`.
+
+The same shape of session on the Speed pack, grown turn by turn to 194k
+tokens with memory healthy, stayed coherent throughout. So the trigger looks
+like memory pressure rather than context length. Keep the pack and context
+within what the machine has room for beside its other services, and if replies
+turn to nonsense, look for those events first.
 
 ## Setting it up
 
