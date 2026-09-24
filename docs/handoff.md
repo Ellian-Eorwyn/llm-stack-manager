@@ -256,7 +256,8 @@ Each of these was found the hard way. None is obvious from the code.
   context (`docs/mtplx.md`).
 - **The Studio's llm-a runs at ~19 tok/s in real use, not the ~53 a short
   prompt shows**: its logged requests sit at ~160k tokens of context. MTPLX
-  (`LLM_A_ENGINE=mtplx`, `docs/mtplx.md`) measured 2.9x llama.cpp there.
+  (an MTPLX pack as LLM A's model, `docs/mtplx.md`) measured 2.9x llama.cpp
+  there, and the Studio's llm-a runs on it.
 
 ## 5. How to verify
 

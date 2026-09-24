@@ -20,7 +20,15 @@ accident to be normalised away.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
+
+#: The file that makes a directory an MTPLX pack: its runtime contract.
+MTPLX_PACK_MARKER = "mtplx_runtime.json"
+
+
+def is_mtplx_pack(path: str | None) -> bool:
+    return bool(path) and os.path.isfile(os.path.join(path, MTPLX_PACK_MARKER))
 
 
 def lookup(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...],
@@ -211,5 +219,16 @@ class Slot:
         return tuple(out)
 
     def engine(self, env: dict) -> str:
+        """The engine that serves this slot, with `auto` already decided.
+
+        `auto` reads the model: an MTPLX pack directory runs on MTPLX and
+        anything else on llama.cpp. It is what lets a chat slot switch between
+        a GGUF and a pack by choosing the model alone, the way it always
+        switched between two GGUFs.
+        """
         key = self.engine_key or f"{self.prefix}_ENGINE"
-        return str(env.get(key) or self.engine_default).strip()
+        chosen = str(env.get(key) or self.engine_default).strip()
+        if chosen != "auto":
+            return chosen
+        model = lookup(env, self.model_keys, self.prefixes)
+        return "mtplx" if is_mtplx_pack(model) else "llamacpp"

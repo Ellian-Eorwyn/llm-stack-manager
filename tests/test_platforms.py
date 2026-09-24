@@ -737,6 +737,15 @@ class EngineSelectionTests(unittest.TestCase):
         self.assertEqual(self.health.endpoint_for("llm-b", {"LLM_B_ENGINE": "mtplx"}),
                          ("127.0.0.1", "8020"))
 
+    def test_auto_judges_a_chat_slot_by_the_model_it_holds(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as pack:
+            pathlib.Path(pack, "mtplx_runtime.json").write_text("{}")
+            served_by_pack = self.health.probe_spec("llm-a", {"LLM_A_MODEL_PATH": pack})
+        self.assertEqual(served_by_pack["path"], "/health")
+        self.assertEqual(self.health.probe_spec("llm-a", {"LLM_A_MODEL_PATH": "/m/a.gguf"})["path"],
+                         "/props")
+
     def test_an_unknown_engine_falls_back_rather_than_losing_the_probe(self):
         # A typo in the config should not silently remove a service's readiness
         # check; it should behave as the default engine does.

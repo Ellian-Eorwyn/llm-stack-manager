@@ -23,9 +23,11 @@ from urllib import request as urlrequest
 
 from flask import Blueprint, jsonify, request
 
+import backends
 import config_env
 import core
 import models
+import platforms
 import telemetry
 
 bp = Blueprint("models", __name__)
@@ -33,8 +35,13 @@ bp = Blueprint("models", __name__)
 
 @bp.route('/api/gguf-files')
 def api_gguf_files():
-    """List all .gguf files in the models directory."""
-    return jsonify(models.list_gguf_files())
+    """The models a slot can be pointed at: .gguf files, and MTPLX packs.
+
+    Packs ride in the same list, marked `kind: "mtplx"`, because the chat
+    slots switch to them the way they switch GGUFs; the page offers them only
+    where they can be served.
+    """
+    return jsonify(models.list_gguf_files() + models.list_mtplx_packs())
 
 
 @bp.route('/api/lora-adapters')
@@ -176,6 +183,23 @@ def api_huggingface_repo_files():
         matched_mmproj = models.choose_matching_mmproj_file(file["path"], files)
         file["matched_mmproj"] = matched_mmproj
         file["renamed_mmproj"] = models.derive_mmproj_target_name(file["name"]) if matched_mmproj else ""
+        file["kind"] = "gguf"
+
+    # An MTPLX pack is one model spread over a repo, so it is offered as one
+    # entry, downloaded whole. Only where it can run: MTPLX is Apple silicon.
+    note = ""
+    pack_files = models.mtplx_pack_files(files)
+    if pack_files and platforms.active().name == "darwin":
+        model_files.insert(0, {
+            "path": backends.spec.MTPLX_PACK_MARKER,
+            "name": f"{repo_ref['repo_id'].split('/')[-1]} (MTPLX pack, {len(pack_files)} files)",
+            "size": sum((item.get("size") or 0) for item in pack_files),
+            "kind": "mtplx",
+            "matched_mmproj": "",
+            "renamed_mmproj": "",
+        })
+    elif pack_files:
+        note = "This repo is an MTPLX pack, which runs on Apple silicon only."
 
     return jsonify({
         "ok": True,
@@ -184,6 +208,7 @@ def api_huggingface_repo_files():
         "repo_url": repo_ref["repo_url"],
         "model_files": model_files,
         "mmproj_files": mmproj_files,
+        "note": note,
     })
 
 
@@ -214,6 +239,10 @@ def api_huggingface_download_create():
     except ValueError as exc:
         return jsonify(ok=False, error=str(exc)), 400
 
+    kind = (data.get('kind') or 'gguf').strip()
+    if kind == 'mtplx' and platforms.active().name != 'darwin':
+        return jsonify(ok=False, error='MTPLX packs run on Apple silicon only'), 400
+
     job_id = uuid.uuid4().hex[:10]
     job = {
         "id": job_id,
@@ -233,15 +262,20 @@ def api_huggingface_download_create():
         "created_at": int(time.time()),
         "updated_at": int(time.time()),
         "result": {},
+        "kind": kind,
     }
     with models.HF_DOWNLOAD_JOBS_LOCK:
         models.HF_DOWNLOAD_JOBS[job_id] = job
 
-    thread = threading.Thread(
-        target=models.run_hf_download_job,
-        args=(job_id, repo_ref, job["model_file"], job["mmproj_file"], job["expected_model_sha256"], job["expected_mmproj_sha256"]),
-        daemon=True,
-    )
+    if kind == 'mtplx':
+        thread = threading.Thread(target=models.run_hf_mtplx_download_job,
+                                  args=(job_id, repo_ref), daemon=True)
+    else:
+        thread = threading.Thread(
+            target=models.run_hf_download_job,
+            args=(job_id, repo_ref, job["model_file"], job["mmproj_file"], job["expected_model_sha256"], job["expected_mmproj_sha256"]),
+            daemon=True,
+        )
     thread.start()
     return jsonify(ok=True, job=job)
 

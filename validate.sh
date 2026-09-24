@@ -85,7 +85,12 @@ if should_check llm-a || should_check chat-backend; then
     # The proxy ports below all fan into this one process. Checking only those
     # meant a backend that had died behind a live proxy read as a proxy fault.
     # MTPLX has no /props; its /health says ok only once the model is loaded.
-    if [[ "${LLM_A_ENGINE:-llamacpp}" == "mtplx" ]]; then
+    # The engine is asked of the slot registry, as start-backend.sh asks it,
+    # because `auto` is decided by what the model path holds.
+    LLM_A_SERVED_BY="$( (set -a; source "${CONFIG}"; STACK_DIR="${STACK_DIR}" \
+        python3 "${STACK_DIR}/scripts/lib/slot-facts.py" llm-a) 2>/dev/null \
+        | sed -n "s/^FACT_ENGINE=//p")"
+    if [[ "${LLM_A_SERVED_BY}" == "mtplx" ]]; then
         HEALTH=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/health" 2>&1 || true)
         check "GET :${CHAT_BACKEND_PORT:-8010}/health reports the MTPLX model loaded" "${HEALTH}" '"ok":true'
     else

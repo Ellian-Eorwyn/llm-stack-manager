@@ -110,7 +110,16 @@ function isLikelyMmprojGguf(file) {
 function ggufFilesForTarget(targetId = '') {
   const key = String(targetId || '').replace(/^cfg-/, '').toUpperCase();
   const wantsMmproj = key.includes('MMPROJ');
-  return ggufFiles.filter(file => wantsMmproj ? isLikelyMmprojGguf(file) : !isLikelyMmprojGguf(file));
+  // MTPLX packs serve only the chat slots, which pick their engine from the
+  // model -- choosing a pack there is the whole switch.
+  const takesPacks = /^(LLM_A|LLM_B|CHAT\w*)_MODEL_PATH$/.test(key);
+  return ggufFiles.filter(file => file.kind === 'mtplx'
+    ? takesPacks
+    : (wantsMmproj ? isLikelyMmprojGguf(file) : !isLikelyMmprojGguf(file)));
+}
+
+function modelFileLabel(file) {
+  return `${file.name} (${file.size_gb} GB)${file.kind === 'mtplx' ? ' · MTPLX' : ''}`;
 }
 
 function fillCustomModelIdentityFromPath(path = '', overwrite = false) {
@@ -127,10 +136,17 @@ function fillCustomModelIdentityFromPath(path = '', overwrite = false) {
   scheduleCustomArgPresetRefresh();
 }
 
+// What a Hugging Face entry should be called. A pack's path is its marker
+// file, which would name every pack "mtplx_runtime.json"; its repo is its name.
+function hfEntryIdentity(path = '') {
+  const entry = huggingFaceRepoFiles.find(item => item.path === path);
+  return entry && entry.kind === 'mtplx' ? entry.name.replace(/ \(MTPLX pack.*$/, '') : path;
+}
+
 function ensureCustomModelIdentity() {
   const selectedHfPath = document.getElementById('hf-model-file-select')?.value || '';
   const modelPath = document.getElementById('new-model-path')?.value || '';
-  const identitySource = modelPath || selectedHfPath;
+  const identitySource = modelPath || hfEntryIdentity(selectedHfPath);
   if (identitySource) {
     fillCustomModelIdentityFromPath(identitySource);
   }
@@ -404,7 +420,7 @@ function populateGgufSelects() {
     ggufFilesForTarget(targetId).forEach(f => {
       const opt = document.createElement('option');
       opt.value = f.path;
-      opt.textContent = `${f.name} (${f.size_gb} GB)`;
+      opt.textContent = modelFileLabel(f);
       if (f.path === currentVal) opt.selected = true;
       sel.appendChild(opt);
     });
@@ -448,7 +464,7 @@ function populateAddModelSelects() {
   ggufFiles.filter(f => !isLikelyMmprojGguf(f)).forEach(f => {
     const opt1 = document.createElement('option');
     opt1.value = f.path;
-    opt1.textContent = `${f.name} (${f.size_gb} GB)`;
+    opt1.textContent = modelFileLabel(f);
     modelSel.appendChild(opt1);
   });
 
@@ -898,7 +914,7 @@ async function loadHuggingFaceRepoFiles(btn) {
       return;
     }
     populateHuggingFaceRepoFiles(d);
-    setHfStatus(huggingFaceRepoFiles.length ? 'Select a GGUF file to download' : 'No non-MMProj GGUF files found in this repo', huggingFaceRepoFiles.length ? 'ok' : 'err');
+    setHfStatus(huggingFaceRepoFiles.length ? 'Select a model to download' : (d.note || 'No non-MMProj GGUF files found in this repo'), huggingFaceRepoFiles.length ? 'ok' : 'err');
   } catch (e) {
     setHfStatus(`Failed to load repo files: ${e}`, 'err');
   } finally {
@@ -941,7 +957,7 @@ async function loadHuggingFaceRepoFilesForAdd() {
     handleHuggingFaceModelSelection();
     return true;
   }
-  setHfStatus(huggingFaceRepoFiles.length ? 'Choose a GGUF file, then click Add Model again' : 'No non-MMProj GGUF files found in this repo', huggingFaceRepoFiles.length ? '' : 'err');
+  setHfStatus(huggingFaceRepoFiles.length ? 'Choose a model, then click Add Model again' : (d.note || 'No non-MMProj GGUF files found in this repo'), huggingFaceRepoFiles.length ? '' : 'err');
   return false;
 }
 
@@ -960,6 +976,12 @@ function handleHuggingFaceModelSelection() {
   if (mmprojMatch) mmprojMatch.value = file.matched_mmproj || '';
   if (mmprojRename) mmprojRename.value = file.renamed_mmproj || '';
   if (downloadBtn) downloadBtn.disabled = false;
+  if (file.kind === 'mtplx') {
+    // Named after the repo, not the file: the pack is the whole repo.
+    fillCustomModelIdentityFromPath(hfEntryIdentity(file.path));
+    setHfStatus('MTPLX pack ready to download, whole repo (its vision tower is included)', 'ok');
+    return;
+  }
   fillCustomModelIdentityFromPath(file.name || file.path);
   scheduleCustomArgPresetRefresh();
   setHfStatus(file.matched_mmproj ? 'Model and MMProj ready to download' : 'Model ready to download; no MMProj found', 'ok');
@@ -1149,6 +1171,7 @@ async function downloadSelectedHuggingFaceModel(btn) {
       repo_url: repoUrl,
       model_file: modelFile,
       mmproj_file: match.matched_mmproj || '',
+      kind: match.kind || 'gguf',
     });
     if (!d.ok || !d.job) {
       setHfStatus(d.error || 'Failed to start download', 'err');
@@ -1169,8 +1192,10 @@ async function downloadSelectedHuggingFaceModel(btn) {
     fillCustomModelIdentityFromPath(downloadedName || downloadedModelPath);
     selectGgufOption('new-model-gguf-select', downloadedModelPath);
     selectGgufOption('new-mmproj-gguf-select', downloadedMmprojPath);
-    setHfStatus('Download complete. The form below was populated with the new local paths.', 'ok');
-    toast(`Downloaded ${downloadedName}`, 'ok');
+    const already = Boolean(job.result.already_present);
+    setHfStatus(already ? 'Already downloaded. The form below was populated with its local path.'
+                        : 'Download complete. The form below was populated with the new local paths.', 'ok');
+    toast(`${already ? 'Already have' : 'Downloaded'} ${downloadedName}`, 'ok');
   } catch (e) {
     setHfStatus(`Download failed: ${e}`, 'err');
   } finally {
@@ -1206,6 +1231,7 @@ async function ensureSelectedHuggingFaceModelDownloaded() {
     repo_url: repoUrl,
     model_file: modelFile,
     mmproj_file: match.matched_mmproj || '',
+    kind: match.kind || 'gguf',
   });
   if (!d.ok || !d.job) {
     throw new Error(d.error || 'Failed to start download');

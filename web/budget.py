@@ -911,6 +911,11 @@ def budget_for(env: dict, backend: str = "llm-a",
         "verdict": None,
         "error": None,
     }
+    if backends.spec.is_mtplx_pack(model_path):
+        # Not a GGUF, so there is nothing here to read -- and MTPLX plans its
+        # own memory from the pack at load, reported by its /health.
+        result["error"] = "an MTPLX pack, which MTPLX sizes itself at load; no GGUF estimate"
+        return result
     if not model_path or not Path(model_path).is_file():
         result["error"] = f"model not found: {model_path or '(unset)'}"
         return result

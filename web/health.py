@@ -49,6 +49,7 @@ from pathlib import Path
 # Explicit rather than relying on the caller's path, so loading this module by
 # path (as the tests do) resolves its sibling the same way systemd does.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import backends
 import telemetry
 
 import platforms
@@ -252,12 +253,14 @@ ENGINE_PROBES = {
     },
 }
 
-#: Which env key names the engine for a service, and what it defaults to.
+#: Which env key names the engine for a service, and what it defaults to. A
+#: backend slot is asked instead (`Slot.engine`), because a chat slot's `auto`
+#: is decided by its model and only the slot knows how.
 SERVICE_ENGINE_KEYS = {
     "embed": ("EMBED_ENGINE", "llamacpp"),
     "transcript-backend": ("TRANSCRIPT_ENGINE", "sidecar"),
-    "llm-a": ("LLM_A_ENGINE", "llamacpp"),
-    "llm-b": ("LLM_B_ENGINE", "llamacpp"),
+    "llm-a": ("LLM_A_ENGINE", "auto"),
+    "llm-b": ("LLM_B_ENGINE", "auto"),
 }
 
 
@@ -270,7 +273,8 @@ def probe_spec(name: str, env: dict) -> dict | None:
     """
     engine_key, default = SERVICE_ENGINE_KEYS.get(name, (None, None))
     if engine_key:
-        engine = str(env.get(engine_key) or default).strip()
+        slot = backends.SLOTS.get(name)
+        engine = slot.engine(env) if slot else str(env.get(engine_key) or default).strip()
         override = ENGINE_PROBES.get((name, engine))
         if override:
             return override

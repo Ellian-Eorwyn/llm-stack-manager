@@ -284,6 +284,31 @@ class MtplxEngineTests(unittest.TestCase):
             argv = backends.build_command("llm-a", dict(env, LLM_A_MODEL_PATH="/m/a.gguf"))
         self.assertTrue(argv[0].endswith("llama-server"))
 
+    def test_auto_serves_a_pack_on_mtplx_and_a_gguf_on_llamacpp(self):
+        # Switching engines is choosing the model, as switching GGUFs always was.
+        env = {k: v for k, v in self.env.items() if k != "LLM_A_ENGINE"}
+        with as_darwin():
+            pack = backends.build_command("llm-a", env)
+            gguf = backends.build_command("llm-a", dict(env, LLM_A_MODEL_PATH="/m/a.gguf"))
+        self.assertEqual(pack[pack.index("serve") - 1], "/stack/deps/mtplx-venv/bin/mtplx")
+        self.assertTrue(gguf[0].endswith("llama-server"))
+
+    def test_an_explicit_engine_still_overrides_auto(self):
+        self.assertEqual(SLOTS["llm-a"].engine(dict(self.env, LLM_A_ENGINE="llamacpp")), "llamacpp")
+
+    def test_the_gguf_kv_cache_types_do_not_quantize_mtplx(self):
+        # q8_0 costs llama.cpp little; MTPLX 2.12 decoded a third as fast with
+        # a quantized cache at 100k context. Carrying it over would be silent.
+        argv = self.build(LLM_A_CACHE_TYPE_K="q8_0", LLM_A_CACHE_TYPE_V="q8_0")
+        self.assertNotIn("--paged-kv-quantization", argv)
+
+    def test_mtplx_kv_quantization_is_its_own_setting(self):
+        for mode in ("q8", "q4"):
+            with self.subTest(mode=mode):
+                got = flags(self.build(LLM_A_MTPLX_KV_QUANT=mode))
+                self.assertEqual(got["--paged-kv-quantization"], mode)
+        self.assertNotIn("--paged-kv-quantization", self.build(LLM_A_MTPLX_KV_QUANT="off"))
+
     def test_it_serves_only_the_chat_slots(self):
         with as_darwin(), self.assertRaises(SystemExit):
             backends.build_command("task", dict(self.env, TASK_ENGINE="mtplx",

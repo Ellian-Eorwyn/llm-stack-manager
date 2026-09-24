@@ -2284,14 +2284,14 @@ def api_switch(variant):
     }
     if model.get('display_name'):
         updates['LLM_A_LABEL'] = model['display_name']
-    # A custom model may be an MTPLX pack rather than a GGUF, and the engine has
-    # to follow the model: left alone, the restart below starts llama-server on
-    # a directory, or MTPLX on a GGUF. Written only when it changes, so a host
-    # that has only ever run llama.cpp gains no new key.
-    engine = ('mtplx' if os.path.isfile(os.path.join(model['model_path'], 'mtplx_runtime.json'))
-              else 'llamacpp')
-    if engine != backends.SLOTS['llm-a'].engine(config_env.read_env()):
-        updates['LLM_A_ENGINE'] = engine
+    # The engine follows the model by itself (`auto`, the default): an MTPLX
+    # pack runs on MTPLX, a GGUF on llama.cpp. Only an explicit engine that the
+    # new model contradicts needs clearing -- left alone, the restart below
+    # would start llama-server on a directory, or MTPLX on a GGUF.
+    explicit = (config_env.read_env().get('LLM_A_ENGINE') or 'auto').strip()
+    needed = 'mtplx' if backends.spec.is_mtplx_pack(model['model_path']) else 'llamacpp'
+    if explicit not in ('auto', needed):
+        updates['LLM_A_ENGINE'] = 'auto'
     config_env.update_env_values(updates)
 
     returncode, output = core.ServiceManager.restart('llm-a')

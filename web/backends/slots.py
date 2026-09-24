@@ -162,6 +162,8 @@ SLOTS = {
         # `budget.py` knows the slot by what it holds, not by its unit name.
         budget_name="llm-a",
         preflight_fields=_LARGE_PREFLIGHT,
+        # A GGUF runs on llama.cpp and an MTPLX pack on MTPLX; see Slot.engine.
+        engine_default="auto",
     ),
     "llm-b": Slot(
         name="llm-b",
@@ -191,6 +193,8 @@ SLOTS = {
         custom_args_keys=("CUSTOM_ARGS_JSON",),
         budget_name="llm-b",
         preflight_fields=_LARGE_PREFLIGHT,
+        # A GGUF runs on llama.cpp and an MTPLX pack on MTPLX; see Slot.engine.
+        engine_default="auto",
     ),
     "embed": Slot(
         name="embed",

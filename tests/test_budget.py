@@ -575,6 +575,12 @@ class BudgetForTest(unittest.TestCase):
         self.assertIn("model not found", result["error"])
         self.assertIsNone(result["prediction"])
 
+    def test_an_mtplx_pack_is_named_rather_than_called_missing(self):
+        (self.tmp / "mtplx_runtime.json").write_text("{}")
+        result = budget.budget_for({"LLM_A_MODEL_PATH": str(self.tmp)}, "llm-a")
+        self.assertIn("MTPLX pack", result["error"])
+        self.assertIsNone(result["prediction"])
+
     def test_unreadable_model_reports_rather_than_raises(self):
         path = self.tmp / "junk.gguf"
         path.write_bytes(b"not gguf at all" + b"\0" * 64)

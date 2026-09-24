@@ -44,6 +44,7 @@ from urllib.parse import quote, unquote, urlparse
 
 import jinja2
 
+import backends
 import budget
 import config_env
 import core
@@ -167,8 +168,41 @@ def list_gguf_files() -> list:
                 "size_gb": round(f.stat().st_size / (1024**3), 2),
                 "relative": str(f.relative_to(core.MODELS_DIR)),
                 "is_mmproj": is_mmproj_gguf(f.name, f.stat().st_size),
+                "kind": "gguf",
             })
     return files
+
+
+#: Where a downloaded MTPLX pack goes, beside the other MLX models.
+MTPLX_PACKS_SUBDIR = "mlx"
+
+
+def list_mtplx_packs() -> list:
+    """MTPLX packs under the models directory, as `list_gguf_files` entries.
+
+    A pack is a directory -- whatever holds an `mtplx_runtime.json` -- so it is
+    found by that file rather than by a suffix. A download still in progress is
+    staged in `<name>.part/` and is not offered until it is renamed into place.
+    """
+    packs = []
+    if not core.MODELS_DIR.is_dir():
+        return packs
+    for marker in sorted(core.MODELS_DIR.rglob(backends.spec.MTPLX_PACK_MARKER)):
+        pack = marker.parent
+        relative = pack.relative_to(core.MODELS_DIR)
+        if any(part.startswith('.') or part.endswith('.part') for part in relative.parts):
+            continue
+        size = sum(f.stat().st_size for f in pack.rglob('*')
+                   if f.is_file() and not f.relative_to(pack).parts[0].startswith('.'))
+        packs.append({
+            "path": str(pack),
+            "name": pack.name,
+            "size_gb": round(size / (1024**3), 2),
+            "relative": str(relative),
+            "is_mmproj": False,
+            "kind": "mtplx",
+        })
+    return packs
 
 
 #: Adapters live in their own directory so the base-model pickers do not have to
@@ -816,6 +850,83 @@ def run_hf_download_job(job_id: str, repo_ref: dict, model_file: str, mmproj_fil
             ok=True,
             status="done",
             stage="Completed",
+            progress=100.0,
+            current_file="",
+            result=result,
+        )
+    except Exception as exc:
+        update_hf_download_job(
+            job_id,
+            ok=False,
+            status="error",
+            error=str(exc),
+            stage="Failed",
+        )
+
+
+def mtplx_pack_files(files: list[dict]) -> list[dict]:
+    """The files of an MTPLX pack repo, or [] when the repo is not one."""
+    if not any(item.get("path") == backends.spec.MTPLX_PACK_MARKER for item in files):
+        return []
+    return [item for item in files
+            if item.get("path") and not item["path"].startswith(".") and "/." not in item["path"]]
+
+
+def download_mtplx_pack(repo_ref: dict, job_id: str | None = None) -> dict:
+    """Every file of an MTPLX pack repo, into models/mlx/<repo name>/.
+
+    Staged in `<name>.part/` and renamed into place at the end: the pickers
+    offer any directory holding `mtplx_runtime.json`, and that file arrives
+    long before the weights. A failed download resumes where it stopped -- a
+    file already complete is skipped, and a partial one keeps its own `.part`.
+
+    Pinned to the commit the repo was at when the download began, so a pack
+    cannot change revision halfway through a 20 GB transfer.
+    """
+    if (repo_ref.get("revision") or "main") == "main":
+        sha = huggingface_repo_metadata(repo_ref).get("revision_sha")
+        if sha:
+            repo_ref = dict(repo_ref, revision=sha)
+    files = mtplx_pack_files(list_huggingface_repo_files(repo_ref))
+    if not files:
+        raise ValueError(f"{repo_ref['repo_id']} is not an MTPLX pack "
+                         f"(it has no {backends.spec.MTPLX_PACK_MARKER})")
+
+    name = repo_ref["repo_id"].split("/")[-1]
+    target = core.MODELS_DIR / MTPLX_PACKS_SUBDIR / name
+    result = {"model_path": str(target), "model_name": name, "mmproj_path": "",
+              "mmproj_name": "", "kind": "mtplx", "repo_id": repo_ref["repo_id"],
+              "revision": repo_ref["revision"], "file_count": len(files)}
+    if backends.spec.is_mtplx_pack(str(target)):
+        return dict(result, already_present=True)
+
+    staging = target.with_name(name + ".part")
+    remaining = sum((item.get("size") or 0) for item in files
+                    if not (staging / item["path"]).is_file())
+    staging.mkdir(parents=True, exist_ok=True)
+    if remaining > shutil.disk_usage(staging).free:
+        raise RuntimeError(f"Not enough disk space for {name}: need {remaining} bytes")
+    for index, item in enumerate(files, start=1):
+        dest = staging / item["path"]
+        if dest.is_file() and item.get("size") and dest.stat().st_size == item["size"]:
+            continue
+        update_hf_download_job(job_id, stage=f"Downloading file {index}/{len(files)}",
+                               current_file=item["path"])
+        stream_download_to_path(build_huggingface_download_url(repo_ref, item["path"]),
+                                dest, job_id=job_id, label=item["path"])
+    staging.rename(target)
+    return result
+
+
+def run_hf_mtplx_download_job(job_id: str, repo_ref: dict):
+    try:
+        update_hf_download_job(job_id, status="running", stage="Downloading MTPLX pack")
+        result = download_mtplx_pack(repo_ref, job_id=job_id)
+        update_hf_download_job(
+            job_id,
+            ok=True,
+            status="done",
+            stage="Already downloaded" if result.get("already_present") else "Completed",
             progress=100.0,
             current_file="",
             result=result,

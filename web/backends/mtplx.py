@@ -21,14 +21,12 @@ carries its vision tower inside it.
 
 from __future__ import annotations
 
-import os
-
 import platforms
 
 from .llamacpp import custom_args
 from .options import REASONING_EFFORTS
 from .slots import COMMON_FLAGS
-from .spec import Slot, lookup
+from .spec import MTPLX_PACK_MARKER, Slot, is_mtplx_pack, lookup
 
 #: The slots this engine can serve: the two that hold a conversation behind
 #: the chat proxy.
@@ -41,6 +39,11 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 #: The operator's own MTPLX arguments. Not `CUSTOM_ARGS_JSON`: that one holds
 #: llama-server flags, and MTPLX would refuse to start on them.
 ARGS_KEYS = ("MTPLX_ARGS_JSON",)
+
+#: `--paged-kv-quantization` widths. Its own setting, `{PREFIX}_MTPLX_KV_QUANT`,
+#: not the GGUF slot's CACHE_TYPE_K/V: those cost llama.cpp little, while
+#: MTPLX 2.12 has a fast path for a quantized cache only at short context.
+KV_QUANT_MODES = ("q8", "q4")
 
 
 def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> str:
@@ -58,7 +61,8 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
         # Said here and not only by the installer: a config copied from a Mac
         # onto a Linux host would otherwise restart-loop on a missing venv.
         raise SystemExit(
-            f"{slot.name}: the mtplx engine is Apple silicon only; set "
+            f"{slot.name}: the mtplx engine is Apple silicon only; point "
+            f"{slot.prefix}_MODEL_PATH at a GGUF, or set "
             f"{slot.prefix}_ENGINE=llamacpp on this host")
     if slot.name not in SLOTS:
         raise SystemExit(
@@ -69,11 +73,12 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     model = _first(env, slot.model_keys, prefixes)
     if not model:
         raise SystemExit(f"{slot.name}: the mtplx engine needs {slot.prefix}_MODEL_PATH")
-    if not os.path.isfile(os.path.join(model, "mtplx_runtime.json")):
+    if not is_mtplx_pack(model):
         raise SystemExit(
-            f"{slot.name}: {model} is not an MTPLX pack (no mtplx_runtime.json). "
+            f"{slot.name}: {model} is not an MTPLX pack (no {MTPLX_PACK_MARKER}). "
             f"The mtplx engine serves a pack directory, not a GGUF; point "
-            f"{slot.prefix}_MODEL_PATH at one, or set {slot.prefix}_ENGINE=llamacpp.")
+            f"{slot.prefix}_MODEL_PATH at one, or set {slot.prefix}_ENGINE=auto "
+            f"to serve whichever the model is.")
 
     host = _first(env, slot.host_keys, prefixes) or "127.0.0.1"
     if host not in _LOOPBACK:
@@ -135,6 +140,15 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     thinking = (_first(env, ("PRESERVE_THINKING",), prefixes) or "on").strip()
     if thinking == "on":
         argv += ["--preserve-thinking", "on"]
+
+    # Off unless asked for. q8 halves the cache (~16 GiB to ~8 at 262k), but on
+    # the Studio it took decode at ~100k context from 67.9 to 22.2 tok/s: past
+    # a context threshold MTPLX 2.12 verifies a quantized cache on a slow,
+    # uncompiled path. Carrying CACHE_TYPE_K/V over would have made every long
+    # session a third of the speed the engine exists for, without a word.
+    kv_quant = _first(env, ("MTPLX_KV_QUANT",), prefixes).strip()
+    if kv_quant in KV_QUANT_MODES:
+        argv += ["--paged-kv-quantization", kv_quant]
 
     argv += custom_args(env, ARGS_KEYS, prefixes)
     argv += list(extra or [])

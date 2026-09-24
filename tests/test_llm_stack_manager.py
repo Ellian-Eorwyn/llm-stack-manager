@@ -414,6 +414,124 @@ class HuggingFaceRepoFileTests(unittest.TestCase):
         self.assertEqual(body["model_files"][0]["matched_mmproj"], "mmproj-Qwen3.5-27B-f16.gguf")
 
 
+class MtplxPackTests(unittest.TestCase):
+    """An MTPLX pack is listed, browsed and downloaded the way a GGUF is."""
+
+    REPO = {"repo_id": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed", "revision": "main",
+            "repo_url": "https://huggingface.co/Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"}
+    FILES = [
+        {"path": ".gitattributes", "name": ".gitattributes", "size": 10},
+        {"path": "config.json", "name": "config.json", "size": 20},
+        {"path": "mtplx_runtime.json", "name": "mtplx_runtime.json", "size": 30},
+        {"path": "model-00001-of-00002.safetensors", "name": "model-00001-of-00002.safetensors", "size": 400},
+        {"path": "mtp.safetensors", "name": "mtp.safetensors", "size": 50},
+    ]
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.models_dir = pathlib.Path(tmp.name)
+        patcher = patch.object(core, "MODELS_DIR", self.models_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _pack(self, relative: str) -> pathlib.Path:
+        pack = self.models_dir / relative
+        pack.mkdir(parents=True)
+        (pack / "mtplx_runtime.json").write_text("{}")
+        (pack / "model.safetensors").write_bytes(b"\0" * 2048)
+        return pack
+
+    def test_a_pack_is_listed_beside_the_ggufs_and_a_half_download_is_not(self):
+        self._pack("mlx/Qwen3.8-27B-MTPLX-Optimized-Speed")
+        self._pack("mlx/Qwen3.8-27B-MTPLX-Optimized-Quality.part")
+        self._pack("mlx/.cache/stale")
+        (self.models_dir / "a.gguf").write_bytes(b"GGUF" + b"\0" * 64)
+        with manager.app.test_client() as client:
+            listed = client.get("/api/gguf-files").get_json()
+        self.assertEqual([(f["name"], f["kind"]) for f in listed],
+                         [("a.gguf", "gguf"), ("Qwen3.8-27B-MTPLX-Optimized-Speed", "mtplx")])
+
+    def _browse(self, platform):
+        with (
+            platform(),
+            manager.app.test_client() as client,
+            patch.object(models, "parse_huggingface_repo_ref", return_value=dict(self.REPO)),
+            patch.object(models, "list_huggingface_repo_files", return_value=self.FILES),
+        ):
+            return client.post("/api/huggingface/repo-files", json={"repo_url": "x"}).get_json()
+
+    def test_a_pack_repo_is_offered_as_one_model_on_a_mac(self):
+        body = self._browse(platform_harness.as_darwin)
+        self.assertEqual(len(body["model_files"]), 1)
+        entry = body["model_files"][0]
+        self.assertEqual((entry["kind"], entry["size"]), ("mtplx", 500))
+        self.assertIn("Qwen3.8-27B-MTPLX-Optimized-Speed (MTPLX pack, 4 files)", entry["name"])
+
+    def test_linux_is_told_rather_than_offered_a_pack(self):
+        body = self._browse(platform_harness.as_linux)
+        self.assertEqual(body["model_files"], [])
+        self.assertIn("Apple silicon", body["note"])
+
+    def _download(self, fetched: list):
+        def fetch(url, dest, job_id=None, label=""):
+            fetched.append(label)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            size = next(f["size"] for f in self.FILES if f["path"] == label)
+            dest.write_bytes(b"\0" * size)
+            return {"ok": True, "sha256": ""}
+
+        with (
+            patch.object(models, "huggingface_repo_metadata", return_value={"revision_sha": "abc123"}),
+            patch.object(models, "list_huggingface_repo_files", return_value=self.FILES),
+            patch.object(models, "stream_download_to_path", side_effect=fetch),
+        ):
+            return models.download_mtplx_pack(dict(self.REPO))
+
+    def test_a_pack_downloads_whole_into_models_mlx_at_a_pinned_commit(self):
+        fetched = []
+        result = self._download(fetched)
+        pack = self.models_dir / "mlx" / "Qwen3.8-27B-MTPLX-Optimized-Speed"
+        self.assertEqual(result["model_path"], str(pack))
+        self.assertEqual(result["revision"], "abc123")
+        self.assertTrue((pack / "mtp.safetensors").is_file())
+        self.assertFalse(pack.with_name(pack.name + ".part").exists())
+        self.assertNotIn(".gitattributes", fetched)
+
+    def test_an_interrupted_pack_resumes_without_refetching_finished_files(self):
+        staging = self.models_dir / "mlx" / "Qwen3.8-27B-MTPLX-Optimized-Speed.part"
+        staging.mkdir(parents=True)
+        (staging / "model-00001-of-00002.safetensors").write_bytes(b"\0" * 400)
+        fetched = []
+        self._download(fetched)
+        self.assertNotIn("model-00001-of-00002.safetensors", fetched)
+        self.assertIn("mtp.safetensors", fetched)
+
+    def test_a_pack_already_present_is_not_downloaded_again(self):
+        self._pack("mlx/Qwen3.8-27B-MTPLX-Optimized-Speed")
+        fetched = []
+        self.assertTrue(self._download(fetched)["already_present"])
+        self.assertEqual(fetched, [])
+
+    def test_a_pack_download_request_runs_the_pack_job(self):
+        with (
+            platform_harness.as_darwin(),
+            manager.app.test_client() as client,
+            patch.object(models, "run_hf_mtplx_download_job") as pack_job,
+            patch.object(models, "run_hf_download_job") as gguf_job,
+        ):
+            resp = client.post("/api/huggingface/downloads", json={
+                "repo_url": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
+                "model_file": "mtplx_runtime.json", "kind": "mtplx"})
+            for _ in range(50):
+                if pack_job.called:
+                    break
+                threading.Event().wait(0.01)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(pack_job.called)
+        self.assertFalse(gguf_job.called)
+
+
 class CustomModelApiTests(unittest.TestCase):
     def test_add_custom_model_derives_names_from_model_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -452,15 +570,22 @@ class ModelSwitchEngineTests(unittest.TestCase):
             self.assertEqual(client.post("/api/switch/m").status_code, 200)
         return written
 
-    def test_an_mtplx_pack_switches_the_slot_to_mtplx(self):
+    def test_an_mtplx_pack_needs_no_engine_key(self):
+        # `auto` reads the model, so choosing the pack is the whole switch.
         with tempfile.TemporaryDirectory() as pack:
             pathlib.Path(pack, "mtplx_runtime.json").write_text("{}")
             written = self._switch(pack, {})
-        self.assertEqual(written["LLM_A_ENGINE"], "mtplx")
+        self.assertNotIn("LLM_A_ENGINE", written)
 
-    def test_a_gguf_switches_an_mtplx_slot_back(self):
+    def test_an_engine_forced_to_llamacpp_is_cleared_for_a_pack(self):
+        with tempfile.TemporaryDirectory() as pack:
+            pathlib.Path(pack, "mtplx_runtime.json").write_text("{}")
+            written = self._switch(pack, {"LLM_A_ENGINE": "llamacpp"})
+        self.assertEqual(written["LLM_A_ENGINE"], "auto")
+
+    def test_an_engine_forced_to_mtplx_is_cleared_for_a_gguf(self):
         written = self._switch("/models/a.gguf", {"LLM_A_ENGINE": "mtplx"})
-        self.assertEqual(written["LLM_A_ENGINE"], "llamacpp")
+        self.assertEqual(written["LLM_A_ENGINE"], "auto")
 
     def test_a_llamacpp_host_gains_no_engine_key(self):
         self.assertNotIn("LLM_A_ENGINE", self._switch("/models/a.gguf", {}))

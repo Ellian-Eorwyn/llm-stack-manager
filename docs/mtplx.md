@@ -1,14 +1,15 @@
 # MTPLX: a chat slot on Apple silicon without llama.cpp
 
-`LLM_A_ENGINE=mtplx` (or `LLM_B_ENGINE`) serves that chat slot with
-[MTPLX](https://github.com/youssofal/mtplx) instead of llama-server. MTPLX is
+Point a chat slot's model at an MTPLX pack and it is served by
+[MTPLX](https://github.com/youssofal/mtplx) instead of llama-server; point it
+back at a GGUF and llama-server serves it again. MTPLX is
 an MLX server that drafts from the model's own multi-token-prediction head and
 verifies the draft in one batched pass. llama.cpp's `draft-mtp` does the same
 thing; MTPLX does it in a runtime written for Apple silicon, and on the Studio
 that is the difference below.
 
-Linux is untouched. The engine is opt-in per slot, defaults to `llamacpp`, and
-refuses to build a command on anything but macOS.
+Linux is untouched: its models are GGUFs, and the engine refuses to build a
+command on anything but macOS.
 
 ## Measured on the Studio (M5 Ultra, 96 GB)
 
@@ -47,13 +48,36 @@ is launched with.
   vision tower inside (so `*_MMPROJ_PATH` is not read). A fine-tune needs its
   own pack, built from its safetensors with `mtplx forge build`.
 - **Settings that carry over:** model alias (served as `--model-id`), context
-  size, temperature / top-p / top-k, reasoning effort, preserve-thinking, and
+  size, temperature / top-p / top-k, reasoning effort, preserve-thinking,
   `CACHE_RAM`, which caps MTPLX's warm-conversation cache
-  (`MTPLX_SESSION_BANK_MAX_BYTES`). Left alone that cache takes half the memory
-  the weights leave -- about 37 GB on this machine.
-- **Settings that do not:** placement, KV cache types, batch sizes, the
-  `SPEC_*` draft settings, `CUSTOM_ARGS_JSON` (llama-server flags). MTPLX's
-  own flags go in `LLM_A_MTPLX_ARGS_JSON`, same format.
+  (`MTPLX_SESSION_BANK_MAX_BYTES`; left alone it takes half the memory the
+  weights leave, ~37 GB on this machine).
+- **Settings that do not:** placement, batch sizes, the `SPEC_*` draft
+  settings, `CUSTOM_ARGS_JSON` (llama-server flags), and the KV cache types
+  (below). MTPLX's own flags go in `LLM_A_MTPLX_ARGS_JSON`, same format.
+
+## KV cache quantization
+
+Its own setting, `LLM_A_MTPLX_KV_QUANT` (`off`, `q8`, `q4`; LLM A MTPLX KV
+Cache in the UI), off by default -- deliberately not `CACHE_TYPE_K/V`. The
+27B's cache is 64 KiB a token unquantized, 16 GiB at 262k context, and q8
+halves it. But measured on the Studio with the Speed pack:
+
+| | off | q8 |
+|---|---|---|
+| Code, short context | 84.6 tok/s | 80.0 tok/s |
+| Decode at ~100k context | 67.9 tok/s | 22.2 tok/s |
+
+Past a context threshold MTPLX 2.12 verifies a quantized cache on a slow,
+uncompiled path (its per-request stats say `compiled_verify.fallback_reasons:
+context_above_threshold` on every step), so q8 turns long sessions back into
+llama.cpp speeds. Carrying the GGUF slot's q8_0 over would have done that
+silently. Worth trying again when MTPLX says the long-context lane is fixed.
+
+What sets memory at long context instead: the conversation itself -- the
+cache is paged and grows with it, 64 KiB a token, so `LLM_A_CTX_SIZE` is the
+ceiling on how far it can grow -- the pack (Speed is 8.6 GB lighter than
+Quality), and `CACHE_RAM`, the warm-conversation cache.
 - **The proxy is unchanged.** think / nothink / code, reasoning separated into
   `reasoning_content`, and streamed tool calls all work through it as they do
   against llama-server.
@@ -67,22 +91,32 @@ is launched with.
 
 ## Setting it up
 
+Once per Mac, the runtime:
+
 ```bash
 bash scripts/install-mtplx-runtime.sh
 ```
 
-Creates `deps/mtplx-venv` (its own, because MTPLX pins mlx 0.32 and
-transformers < 5.15, which the MLX runtime's mlx-audio has moved past) and
-downloads the pack at a pinned revision into `models/mlx/`. Then, in
-`config/llm-stack.env` or under Apple Silicon (MLX) in the UI:
+It creates `deps/mtplx-venv` -- its own, because MTPLX pins mlx 0.32 and
+transformers < 5.15, which the MLX runtime's mlx-audio has moved past -- and
+downloads the Optimized Speed pack at a pinned revision into `models/mlx/`
+(`--no-pack` skips that; `--pack REPO@REVISION` picks another).
 
-```sh
-LLM_A_ENGINE=mtplx
-LLM_A_MODEL_PATH=${STACK_DIR}/models/mlx/Qwen3.8-27B-MTPLX-Optimized-Speed
-```
+## Getting and switching packs
 
-and restart LLM A. No reinstall: `start-backend.sh` chooses the engine each
-time the slot starts. To go back, save the current config first (Saved
-Configs), or set the engine to `llamacpp` and the model path to the GGUF.
-Switching llm-a to a custom model does this for you: an MTPLX pack sets the
-engine to `mtplx`, a GGUF sets it back.
+The same way as GGUFs:
+
+- **Download** from the Models page. Give it a pack repo, such as
+  `Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality`, and it offers the whole
+  pack as one model. It lands in `models/mlx/<repo name>/`, pinned to the
+  commit the repo was at when the download started. It is staged in
+  `<name>.part/` until every file is in, so the pickers never offer half a
+  pack, and an interrupted download resumes.
+- **Switch** by choosing the pack wherever a GGUF would be chosen: LLM A's or
+  LLM B's model path in Configuration (packs are marked MTPLX, and offered
+  only there), or a custom model, then restart the slot. No reinstall.
+
+The slot's engine setting, `LLM_A_ENGINE` (LLM A Server in the UI), is `auto`
+by default: a pack runs on MTPLX and a GGUF on llama.cpp, so the model is the
+whole switch. Setting it to `llamacpp` or `mtplx` forces one, and a model that
+contradicts a forced engine is refused at start with the reason.
