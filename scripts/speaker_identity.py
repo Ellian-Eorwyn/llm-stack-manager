@@ -265,13 +265,25 @@ def evaluate(people, sessions, vectors, query_clips=(None, 3), max_wrong=0.02):
     # Tuned on every query size at once: a speaker who says three sentences
     # must not be misnamed any more often than one who talks all meeting.
     full = [row for rows in lookups.values() for row in rows]
-    best = (DEFAULT_THRESHOLD, DEFAULT_MARGIN, -1)
+    # Most right names first, then fewest wrong. Many settings usually tie on
+    # both; the middle of that range is kept rather than either edge, since
+    # the lowest threshold is nearest to naming a stranger and the highest
+    # to leaving a quiet speaker unnamed in a recording not seen here.
+    grid = []
     for threshold in np.arange(0.40, 0.96, 0.01):
         for margin in np.arange(0.0, 0.31, 0.01):
             right, wrong = outcome(full, threshold, margin)
-            if wrong <= max_wrong * len(full) and right > best[2]:
-                best = (round(float(threshold), 2), round(float(margin), 2), right)
-    threshold, margin, _ = best
+            if wrong <= max_wrong * len(full):
+                grid.append((right, -wrong, round(float(threshold), 2), round(float(margin), 2)))
+    if grid:
+        top = max(g[:2] for g in grid)
+        tied = [g for g in grid if g[:2] == top]
+        threshold = float(np.median(sorted({g[2] for g in tied})))
+        threshold = min({g[2] for g in tied}, key=lambda t: abs(t - threshold))
+        margins = sorted(g[3] for g in tied if g[2] == threshold)
+        margin = margins[len(margins) // 2]
+    else:
+        threshold, margin = DEFAULT_THRESHOLD, DEFAULT_MARGIN
 
     summary = {}
     for q, rows in lookups.items():

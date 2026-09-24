@@ -85,15 +85,21 @@ strangers: any name they get is wrong.
 Every lookup is then replayed through the matching rule over a grid of
 thresholds and margins. The pair kept names the most people correctly while
 wrong names (a known person misnamed, or a stranger named at all) stay under
-2% of lookups. Being left unnamed is not counted as wrong: the transcript keeps
-`speaker_N`, which a person can correct.
+2% of lookups, then the fewest wrong names. Being left unnamed is not counted
+as wrong: the transcript keeps `speaker_N`, which a person can correct. Many
+settings usually tie. The middle of the tied range is kept, not its edges:
+the lowest threshold is the one nearest to naming a stranger, and the
+highest is nearest to leaving a quiet speaker unnamed in a recording the
+evaluation never saw.
 
 The margin is what handles two labels that are one voice. If the same person
 is enrolled under two names, every lookup of them is a near-tie between the
 two, and the margin leaves them unnamed. `profiles.json` records how similar
 every pair of profiles is to each other. Any pair above ~0.8 is worth checking,
 and is either one person (merge them with `--same-person`) or a mislabelled
-recording.
+recording. `--exclude LABEL` leaves a label out of the profiles until its
+lines are fixed. Its clips stay in `samples.npz`, so a later `rebuild`
+brings it back without decoding audio.
 
 ## Verifying the embedding
 
@@ -109,21 +115,27 @@ the log floor is set to torchaudio's (float32 eps, not 1e-8).
 
 ## Measured
 
-On a personal MacWhisper library of about 140 transcripts: 3,529 clips from 40
-people after merging the labels that were one voice (47 labels before).
+On a personal MacWhisper library of about 140 transcripts: 47 labels became
+39 people once the labels that were one voice were merged. One label whose
+lines in one recording were someone else's was excluded. That left 3,489
+clips.
 
-| | all of a speaker's clips | 3 clips |
+Before any merging, 78% of held-out lookups ranked the right person first,
+and the chosen threshold (0.994) named nobody. Every "error" was one voice
+under two labels. That's why `similar_pairs` is printed at the end of every
+enrollment.
+
+After merging, with threshold 0.50 and margin 0.11 (84 recognition lookups,
+24 strangers, each with all of a speaker's clips and with 3):
+
+| | all clips | 3 clips |
 |---|---|---|
-| right person ranked first | 96.5% | 94.2% |
-| named, and right | 90.7% | 90.7% |
-| named, and wrong | 1.8% | 1.8% |
+| right person ranked first | 100% | 100% |
+| named, and right | 100% | 100% |
+| named, and wrong | 0% | 0% |
 
-(threshold 0.47, margin 0.04; 86 recognition lookups and 23 strangers.)
-
-Individual clips of the same person across recordings score a median of 0.71,
-and clips of different people score 0.05. Profile-to-profile, unrelated people
-top out around 0.53. Every pair above 0.8 turned out to be one voice under two
-labels, or one recording with its labels mixed up.
+Individual clips of one person across recordings score a median of 0.71
+against each other; clips of different people score 0.05.
 
 End to end on recordings **left out of enrollment**:
 
@@ -132,6 +144,6 @@ End to end on recordings **left out of enrollment**:
   others present. The whole request (transcription, diarization, naming)
   took 2 min 55 s.
 - **A 45-minute, 5-person call:** three were named correctly. The longest
-  speaker had never been enrolled and stayed unnamed (0.34). One stayed
-  unnamed on a tie (0.772 against 0.770) with a profile that turned out to
-  be built from his own mislabelled lines in another recording.
+  speaker had never been enrolled and stayed unnamed (0.34). The fifth stayed
+  unnamed on a tie with a profile that turned out to be built from his own
+  mislabelled lines in another recording. That label is now excluded.

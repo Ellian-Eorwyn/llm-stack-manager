@@ -136,16 +136,22 @@ def main():
     parser.add_argument("--out", type=Path, default=STACK / "models/voiceprints")
     parser.add_argument("--same-person", action="append", default=[], metavar="NAME=VARIANT[,VARIANT]",
                         help="labels that are one voice, e.g. 'Dana=Dana (Acme)'")
+    parser.add_argument("--exclude", action="append", default=[], metavar="LABEL",
+                        help="leave a label out entirely, e.g. one whose lines are known to be mislabelled")
     parser.add_argument("--evaluate", action="store_true",
                         help="leave-one-recording-out accuracy, and pick the match threshold from it")
     args = parser.parse_args()
 
     if args.source == "rebuild":
-        saved = np.load(args.out / "samples.npz")
-        samples = list(zip(saved["names"].tolist(), saved["sessions"].tolist(),
-                           saved["starts"].tolist(), saved["vectors"]))
+        stored = np.load(args.out / "samples.npz")
+        samples = list(zip(stored["names"].tolist(), stored["sessions"].tolist(),
+                           stored["starts"].tolist(), stored["vectors"]))
     else:
         samples = enroll(args)
+    # Excluded labels are left out of the profiles but kept in samples.npz,
+    # so a later rebuild can bring them back without decoding audio.
+    saved = samples
+    samples = [s for s in samples if s[0] not in set(args.exclude)]
     names = [s[0] for s in samples]
     sessions = [s[1] for s in samples]
     vectors = np.stack([s[3] for s in samples])
@@ -156,7 +162,7 @@ def main():
     for person, variants in speaker_identity.variants_of(aliases).items():
         if person in profiles:
             profiles[person]["labels"] = variants
-    result = {"model": args.model.name, "source": "macwhisper", "same_person": args.same_person, "built": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    result = {"model": args.model.name, "source": "macwhisper", "same_person": args.same_person, "excluded": args.exclude, "built": time.strftime("%Y-%m-%dT%H:%M:%S"),
               "profiles": profiles, "enrollment": report,
               "similar_pairs": speaker_identity.similar_pairs(profiles)}
     if args.evaluate:
@@ -166,12 +172,12 @@ def main():
 
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "profiles.json").write_text(json.dumps(result, indent=1))
-    np.savez_compressed(args.out / "samples.npz", vectors=vectors, names=np.array(names),
-                        people=np.array(people), sessions=np.array(sessions),
-                        starts=np.array([s[2] for s in samples]))
+    np.savez_compressed(args.out / "samples.npz", vectors=np.stack([s[3] for s in saved]),
+                        names=np.array([s[0] for s in saved]), sessions=np.array([s[1] for s in saved]),
+                        starts=np.array([s[2] for s in saved]))
     for pair in result["similar_pairs"]:
         print(f"  check: {pair['a']!r} and {pair['b']!r} sound alike ({pair['similarity']})")
-    print(json.dumps({"profiles": len(profiles), "clips": len(samples),
+    print(json.dumps({"profiles": len(profiles), "clips": len(samples), "excluded": args.exclude,
                       **({"evaluation": {k: v for k, v in result["evaluation"].items() if k != "confusions"}}
                          if args.evaluate else {})}, indent=1))
 
