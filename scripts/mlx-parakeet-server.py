@@ -113,7 +113,8 @@ def _identify(payload: dict, path: str) -> None:
     for entry in payload["speakers"]:
         m = matches.get(entry["id"])
         if m:
-            entry.update(name=labels.get(entry["id"]), voice_match=m["name"], voice_score=m["score"],
+            entry.update(name=labels.get(entry["id"]), voice_match=m["name"], closest_voice=m["closest"],
+                         voice_score=m["score"],
                          runner_up=m["runner_up"], runner_up_score=m["runner_up_score"])
     for segment in payload["segments"]:
         segment["speaker_name"] = labels.get(segment["speaker"])

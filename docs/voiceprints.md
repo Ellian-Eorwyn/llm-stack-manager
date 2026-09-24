@@ -52,6 +52,24 @@ curl -F file=@meeting.m4a -F diarize=true -F response_format=verbose_json \
 The server re-reads `profiles.json` whenever it changes, so there's no restart
 after re-enrolling. `identify=false` turns naming off for a single request.
 
+`--same-person` and `--exclude` are saved in `models/voiceprints/config.json`,
+so a later `rebuild` or `macwhisper` run applies them without being told
+again. `VOICEPRINT_STORE` points every tool at another store, e.g. a test
+copy.
+
+### Enrolling from any recording
+
+`scripts/voiceprint_store.py` is the store's API for tools that name
+speakers in new recordings. `replace_cluster(samples, recording, "speaker_2",
+name, starts, vectors)` enrolls one diarized speaker's clips, and first
+drops whatever that speaker was enrolled as before, so correcting a wrong
+name moves the clips rather than duplicating them. `rebuild()` then rewrites
+`profiles.json` atomically. A `macwhisper` re-enrollment replaces only the
+clips that came from MacWhisper; speakers enrolled from recordings are kept.
+
+An unnamed speaker in the response carries `closest_voice`, the nearest
+profile, even when it isn't a match.
+
 `speakers[]` in the response gains `name` (the label to display), `voice_match`
 (the profile), `voice_score`, and the `runner_up` with its score. So an
 unnamed speaker still tells you who it sounded most like and by how much.

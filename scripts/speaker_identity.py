@@ -45,9 +45,10 @@ def load(path: str | Path) -> dict:
 
 def match(clusters: dict, profiles: dict, threshold: float = DEFAULT_THRESHOLD,
           margin: float = DEFAULT_MARGIN) -> dict:
-    """{cluster_id: vector} -> {cluster_id: {"name", "score", "runner_up", "runner_up_score"}}.
+    """{cluster_id: vector} -> {cluster_id: {"name", "score", "closest", "runner_up", "runner_up_score"}}.
 
-    Every cluster gets an entry; `name` is None where no profile qualifies.
+    Every cluster gets an entry; `name` is None where no profile qualifies,
+    and `closest` is the nearest profile either way.
     """
     scored = {}
     for cid, vec in clusters.items():
@@ -55,6 +56,7 @@ def match(clusters: dict, profiles: dict, threshold: float = DEFAULT_THRESHOLD,
         scored[cid] = sorted(((_dot(vec, p["centroid"]), name) for name, p in profiles.items()),
                              reverse=True)
     out = {cid: {"name": None, "score": round(s[0][0], 4) if s else 0.0,
+                 "closest": s[0][1] if s else None,
                  "runner_up": s[1][1] if len(s) > 1 else None,
                  "runner_up_score": round(s[1][0], 4) if len(s) > 1 else 0.0}
            for cid, s in scored.items()}

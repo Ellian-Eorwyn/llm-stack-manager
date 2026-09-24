@@ -34,6 +34,7 @@ class MatchTests(unittest.TestCase):
         out = si.match({"speaker_0": [0.4, 0.4, 0.4]}, PEOPLE, threshold=0.7, margin=0.05)
         self.assertIsNone(out["speaker_0"]["name"])
         self.assertGreater(out["speaker_0"]["score"], 0.5)
+        self.assertIn(out["speaker_0"]["closest"], PEOPLE)
 
     def test_two_similar_candidates_are_not_a_coin_toss(self):
         out = si.match({"speaker_0": [0.7, 0.68, 0]}, PEOPLE, threshold=0.5, margin=0.08)

@@ -6,7 +6,8 @@
     python scripts/enroll-voiceprints.py rebuild [--same-person ...] [--evaluate]
 
 `rebuild` regroups the clips already in samples.npz — after deciding two
-labels are one person, say — without decoding any audio.
+labels are one person, say — without decoding any audio. --same-person and
+--exclude are saved in config.json, so later runs need not repeat them.
 
 Reads MacWhisper's library read-only: every transcript line assigned to a
 named speaker is a sample of that person's voice, at a known time in a known
@@ -21,6 +22,9 @@ about other people and never leave this machine):
                  rests on, and the threshold `--evaluate` chose.
 - samples.npz    every accepted clip's embedding, so a profile can be rebuilt
                  or audited without decoding audio again.
+- config.json    the --same-person and --exclude decisions.
+
+See voiceprint_store.py for the layout.
 
 Runs in the MLX runtime venv. See docs/voiceprints.md.
 """
@@ -40,7 +44,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import speaker_identity  # noqa: E402
+import voiceprint_store  # noqa: E402
 from speaker_embedding import SAMPLE_RATE, SpeakerEmbedder, decode  # noqa: E402
 
 STACK = Path(__file__).resolve().parents[1]
@@ -133,53 +137,51 @@ def main():
     parser.add_argument("source", choices=["macwhisper", "rebuild"])
     parser.add_argument("--db", type=Path, default=MACWHISPER / "main.sqlite")
     parser.add_argument("--model", type=Path, default=STACK / "models/mlx/wespeaker-voxceleb-resnet34-LM")
-    parser.add_argument("--out", type=Path, default=STACK / "models/voiceprints")
-    parser.add_argument("--same-person", action="append", default=[], metavar="NAME=VARIANT[,VARIANT]",
-                        help="labels that are one voice, e.g. 'Dana=Dana (Acme)'")
-    parser.add_argument("--exclude", action="append", default=[], metavar="LABEL",
-                        help="leave a label out entirely, e.g. one whose lines are known to be mislabelled")
+    parser.add_argument("--out", type=Path, default=voiceprint_store.DEFAULT_DIR)
+    parser.add_argument("--same-person", action="append", default=None, metavar="NAME=VARIANT[,VARIANT]",
+                        help="labels that are one voice, e.g. 'Dana=Dana (Acme)'. Saved in config.json; "
+                             "given at all, it replaces the saved list")
+    parser.add_argument("--exclude", action="append", default=None, metavar="LABEL",
+                        help="leave a label out, e.g. one whose lines are known to be mislabelled. "
+                             "Saved like --same-person")
     parser.add_argument("--evaluate", action="store_true",
                         help="leave-one-recording-out accuracy, and pick the match threshold from it")
     args = parser.parse_args()
 
-    if args.source == "rebuild":
-        stored = np.load(args.out / "samples.npz")
-        samples = list(zip(stored["names"].tolist(), stored["sessions"].tolist(),
-                           stored["starts"].tolist(), stored["vectors"]))
-    else:
-        samples = enroll(args)
-    # Excluded labels are left out of the profiles but kept in samples.npz,
-    # so a later rebuild can bring them back without decoding audio.
-    saved = samples
-    samples = [s for s in samples if s[0] not in set(args.exclude)]
-    names = [s[0] for s in samples]
-    sessions = [s[1] for s in samples]
-    vectors = np.stack([s[3] for s in samples])
-    aliases = speaker_identity.parse_same_person(args.same_person)
-    people = [aliases.get(n, n) for n in names]
+    config = voiceprint_store.load_config(args.out)
+    if args.same_person is not None:
+        config["same_person"] = args.same_person
+    if args.exclude is not None:
+        config["exclude"] = args.exclude
+    voiceprint_store.save_config(config, args.out)
 
-    profiles, report = speaker_identity.build_profiles(people, sessions, vectors.tolist())
-    for person, variants in speaker_identity.variants_of(aliases).items():
-        if person in profiles:
-            profiles[person]["labels"] = variants
-    result = {"model": args.model.name, "source": "macwhisper", "same_person": args.same_person, "excluded": args.exclude, "built": time.strftime("%Y-%m-%dT%H:%M:%S"),
-              "profiles": profiles, "enrollment": report,
-              "similar_pairs": speaker_identity.similar_pairs(profiles)}
-    if args.evaluate:
-        result["evaluation"] = speaker_identity.evaluate(people, sessions, vectors.tolist())
-        result["threshold"] = result["evaluation"]["threshold"]
-        result["margin"] = result["evaluation"]["margin"]
+    if args.source == "macwhisper":
+        fresh = enroll(args)
+        stored = voiceprint_store.load_samples(args.out)
+        # Replace only what came from labelled transcripts; speakers named in
+        # diarized recordings (a non-empty cluster) are kept.
+        keep = stored["clusters"] != ""
+        samples = {k: stored[k][keep] for k in voiceprint_store.FIELDS}
+        if fresh:
+            samples = {
+                "vectors": np.concatenate([samples["vectors"], np.stack([f[3] for f in fresh])]),
+                "names": np.concatenate([samples["names"], np.array([f[0] for f in fresh])]),
+                "sessions": np.concatenate([samples["sessions"], np.array([f[1] for f in fresh])]),
+                "starts": np.concatenate([samples["starts"], np.array([f[2] for f in fresh], float)]),
+                "clusters": np.concatenate([samples["clusters"], np.array([""] * len(fresh))]),
+            }
+        voiceprint_store.save_samples(samples, args.out)
 
-    args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "profiles.json").write_text(json.dumps(result, indent=1))
-    np.savez_compressed(args.out / "samples.npz", vectors=np.stack([s[3] for s in saved]),
-                        names=np.array([s[0] for s in saved]), sessions=np.array([s[1] for s in saved]),
-                        starts=np.array([s[2] for s in saved]))
+    result = voiceprint_store.rebuild(args.out, evaluate=args.evaluate, model=args.model.name,
+                                      source=args.source)
     for pair in result["similar_pairs"]:
         print(f"  check: {pair['a']!r} and {pair['b']!r} sound alike ({pair['similarity']})")
-    print(json.dumps({"profiles": len(profiles), "clips": len(samples), "excluded": args.exclude,
-                      **({"evaluation": {k: v for k, v in result["evaluation"].items() if k != "confusions"}}
-                         if args.evaluate else {})}, indent=1))
+    summary = {"profiles": len(result["profiles"]),
+               "clips": sum(p["clips"] for p in result["profiles"].values()),
+               "same_person": config["same_person"], "excluded": config["exclude"]}
+    if "evaluation" in result:
+        summary["evaluation"] = {k: v for k, v in result["evaluation"].items() if k != "confusions"}
+    print(json.dumps(summary, indent=1))
 
 
 if __name__ == "__main__":
