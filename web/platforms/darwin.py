@@ -40,6 +40,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 
 from . import base
 
@@ -339,10 +340,29 @@ class DarwinPlatform(base.Platform):
             domain, plist = self._domain_and_plist(name)
         self._expect_change(name)
         target = f"{domain}/{self.label_for(name)}"
+        running = self._job_facts(name)["pid"]
         # Undo a Stop: a disabled job refuses to bootstrap.
         self.run_cmd(["launchctl", "enable", target])
         self.run_cmd(["launchctl", "bootout", target])
+        if running:
+            self._wait_until_unloaded(target, timeout)
         return self.run_cmd(["launchctl", "bootstrap", domain, plist], timeout=timeout)
+
+    def _wait_until_unloaded(self, target: str, timeout: float) -> None:
+        """Until launchd has let go of `target`, or `timeout` has passed.
+
+        `bootout` returns once the unload has *begun* -- in milliseconds --
+        while the job is still handling SIGTERM, and bootstrapping the same
+        label in that window fails with "5: Input/output error". A model server
+        freeing tens of GB takes seconds, so restarting llm-a (which is how a
+        saved config is applied) failed and left the slot unloaded.
+        `launchctl print` answers for the job until it has actually gone.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.run_cmd(["launchctl", "print", target], timeout=5).returncode != 0:
+                return
+            time.sleep(0.25)
 
     def service_stop(self, name: str, timeout: int = 30):
         """Stop the job, and keep it stopped across logins.

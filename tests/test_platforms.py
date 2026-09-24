@@ -629,6 +629,42 @@ class DarwinStopPersistsTests(unittest.TestCase):
         self.assertLess(calls.index(["launchctl", "enable"]),
                         calls.index(["launchctl", "bootstrap"]))
 
+    def test_a_running_job_is_gone_before_it_is_bootstrapped_again(self):
+        # bootout returns while the job is still exiting, and a bootstrap in
+        # that window fails "5: Input/output error" -- which is how applying a
+        # saved config left llm-a unloaded while it freed 44 GB.
+        calls, still_there = [], [0, 0]
+
+        def run(cmd, timeout=30):
+            calls.append(cmd[:2])
+            if cmd[1] == "list":
+                return _completed('{\n\t"PID" = 4242;\n};')
+            if cmd[1] == "print":
+                return _completed("", 0 if still_there and still_there.pop() == 0 else 113)
+            return _completed("")
+
+        with (
+            platform_harness.as_darwin(run_cmd=run) as platform,
+            patch("platforms.darwin.os.path.exists", return_value=True),
+            patch("platforms.darwin.time.sleep"),
+        ):
+            self.assertEqual(platform.service_start("llm-a").returncode, 0)
+        self.assertEqual(calls[-4:], [["launchctl", "print"]] * 3 + [["launchctl", "bootstrap"]])
+
+    def test_a_job_that_was_not_running_is_not_waited_for(self):
+        calls = []
+
+        def run(cmd, timeout=30):
+            calls.append(cmd[:2])
+            return _completed("", 113) if cmd[1] == "list" else _completed("")
+
+        with (
+            platform_harness.as_darwin(run_cmd=run) as platform,
+            patch("platforms.darwin.os.path.exists", return_value=True),
+        ):
+            platform.service_start("rerank")
+        self.assertNotIn(["launchctl", "print"], calls)
+
 
 class UnifiedMemoryBreakdownTests(unittest.TestCase):
     def test_gpu_info_reports_wired_and_compressed(self):
