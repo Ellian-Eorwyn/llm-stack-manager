@@ -52,8 +52,8 @@ Options:
   --manager-only     Fast path: pull, regenerate units, restart only the manager
                      and proxies. Skips dependency builds (no llama.cpp rebuild)
                      and leaves model backends running with their warm caches.
-  --release          Update to the latest GitHub release/tag (default)
-  --branch [name]    Update from a branch instead of release tags (default: main)
+  --release          Update to the latest GitHub release/tag
+  --branch [name]    Update from a branch (the default; branch: main)
   --remote [name]    Git remote to fetch from (default: origin)
   --skip-deps        Do not rebuild/update external dependencies
   --skip-install     Do not run install.sh even when root
@@ -61,7 +61,8 @@ Options:
   -h, --help         Show this help
 
 Environment:
-  LLM_STACK_UPDATE_CHANNEL=release|branch
+  LLM_STACK_UPDATE_CHANNEL=release|branch   (default branch; read from the
+                                            environment, not config/llm-stack.env)
   LLM_STACK_UPDATE_BRANCH=main
   LLM_STACK_UPDATE_REMOTE=origin
 EOF

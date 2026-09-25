@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -560,6 +563,64 @@ class PooledUnitTests(unittest.TestCase):
                     if re.search(rf"^\s*\[{m}\]=\"\$\{{\w+:-\}}\"", block.group(1), re.M)
                     and m == "ASR"}
         self.assertEqual(portless, {"ASR"})
+
+    def _render_nginx(self, env_lines: list[str]) -> str:
+        """The config install-model-router-nginx.sh writes, generated only.
+
+        Run from a scratch tree so the host's own config/llm-stack.env -- which
+        the script sources, and which would override the test's settings --
+        is not the one read.
+        """
+        probe = subprocess.run(["bash", "-c", "declare -A x=([a]=1)"], capture_output=True)
+        if probe.returncode != 0:
+            self.skipTest("bash has no associative arrays (macOS ships 3.2); the script runs on Linux")
+        repo = pathlib.Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "config").mkdir()
+            shutil.copy(repo / "scripts" / "install-model-router-nginx.sh", root / "scripts")
+            (root / "scripts" / "lib").symlink_to(repo / "scripts" / "lib")
+            (root / "web").symlink_to(repo / "web")
+            (root / "config" / "llm-stack.env").write_text("\n".join(env_lines) + "\n")
+            conf = root / "router.conf"
+            result = subprocess.run(
+                ["bash", str(root / "scripts" / "install-model-router-nginx.sh")],
+                env={"PATH": os.environ["PATH"], "GENERATE_ONLY": "1", "CONF_PATH": str(conf)},
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return conf.read_text()
+
+    @staticmethod
+    def _listens(conf: str) -> dict[str, list[str]]:
+        blocks = re.split(r"^# (\w+) -> model router$", conf, flags=re.M)[1:]
+        return {member: re.findall(r"^\s*listen ([^;]+);", body, re.M)
+                for member, body in zip(blocks[::2], blocks[1::2])}
+
+    def test_a_member_front_binds_where_its_own_host_says(self):
+        """Tailscale Serve holds a published port on the tailnet address, and
+        Linux then refuses nginx a wildcard listener on it -- which left 8009
+        unserved and the GLM-OCR SDK restarting every five minutes."""
+        conf = self._render_nginx([
+            "MODEL_ROUTER_ENABLED=on", "MODEL_ROUTER_MEMBERS=EMBED,OCR,TASK",
+            "EMBED_PORT=8005", "OCR_PORT=8009", "TASK_PORT=8007",
+            "LISTEN_HOST=0.0.0.0", "EMBED_HOST=127.0.0.1", "OCR_HOST=127.0.0.1"])
+        self.assertEqual(self._listens(conf), {
+            "EMBED": ["127.0.0.1:8005"],
+            "OCR": ["127.0.0.1:8009"],
+            "TASK": ["8007", "[::]:8007"],
+        })
+
+    def test_without_member_hosts_every_front_keeps_the_shared_address(self):
+        wildcard = self._render_nginx([
+            "MODEL_ROUTER_ENABLED=on", "MODEL_ROUTER_MEMBERS=EMBED,OCR",
+            "EMBED_PORT=8005", "OCR_PORT=8009", "LISTEN_HOST=0.0.0.0"])
+        self.assertEqual(self._listens(wildcard),
+                         {"EMBED": ["8005", "[::]:8005"], "OCR": ["8009", "[::]:8009"]})
+        pinned = self._render_nginx([
+            "MODEL_ROUTER_ENABLED=on", "MODEL_ROUTER_MEMBERS=OCR", "OCR_PORT=8009",
+            "LISTEN_HOST=0.0.0.0", "MODEL_ROUTER_NGINX_LISTEN_ADDR=127.0.0.1"])
+        self.assertEqual(self._listens(pinned), {"OCR": ["127.0.0.1:8009"]})
 
     def test_the_audio_model_is_pooled_only_when_asked_for(self):
         """ASR is opt-in: being in MEMBERS is not the same as being in the pool."""

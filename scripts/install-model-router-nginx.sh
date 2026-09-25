@@ -34,8 +34,7 @@ CONF_PATH="${CONF_PATH:-/etc/nginx/sites-available/${CONF_NAME}}"
 LINK_PATH="${LINK_PATH:-/etc/nginx/sites-enabled/${CONF_NAME}}"
 
 ROUTER_PORT="${MODEL_ROUTER_PORT:-8013}"
-LISTEN_ADDR="${MODEL_ROUTER_NGINX_LISTEN_ADDR:-${LISTEN_HOST:-0.0.0.0}}"
-[[ "${LISTEN_ADDR}" == "0.0.0.0" ]] && LISTEN_ADDR=""
+DEFAULT_LISTEN_ADDR="${MODEL_ROUTER_NGINX_LISTEN_ADDR:-${LISTEN_HOST:-0.0.0.0}}"
 
 remove_conf() {
     rm -f "${LINK_PATH}" "${CONF_PATH}"
@@ -69,10 +68,25 @@ declare -A MEMBER_PORTS=(
 
 MEMBERS="$(STACK_DIR="${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}" python3 "${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/lib/router-members.py")"
 
+# Where a member's front binds: the member's own *_HOST -- where its slot binds
+# when it runs as a unit -- else the shared address. Tailscale Serve publishes
+# a port by holding it on the tailnet address, and Linux then refuses a
+# wildcard listener on the same port: nginx logged `bind() to 0.0.0.0:8009
+# failed (98: Address already in use)` and served nothing there, so the GLM-OCR
+# SDK timed out against 8009 and restarted every five minutes for three days.
+# A member Tailscale publishes wants its front on loopback, as EMBED_HOST and
+# TASK_HOST already put the units themselves.
+member_listen_addr() {
+    local var="${1}_HOST"
+    local addr="${!var:-${DEFAULT_LISTEN_ADDR}}"
+    [[ "${addr}" == "0.0.0.0" || "${addr}" == "::" ]] && addr=""
+    printf '%s' "${addr}"
+}
+
 listen_line() {
-    local port="$1"
-    if [[ -n "${LISTEN_ADDR}" ]]; then
-        printf '    listen %s:%s;\n' "${LISTEN_ADDR}" "${port}"
+    local port="$1" addr="$2"
+    if [[ -n "${addr}" ]]; then
+        printf '    listen %s:%s;\n' "${addr}" "${port}"
     else
         printf '    listen %s;\n' "${port}"
         printf '    listen [::]:%s;\n' "${port}"
@@ -84,7 +98,7 @@ server_block() {
     cat <<NGINX
 # ${member} -> model router
 server {
-$(listen_line "${port}")
+$(listen_line "${port}" "$(member_listen_addr "${member}")")
     server_name _;
 
     # A request can wait out a cold model load before any tokens are produced,
