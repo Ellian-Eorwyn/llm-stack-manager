@@ -45,6 +45,10 @@ ARGS_KEYS = ("MTPLX_ARGS_JSON",)
 #: MTPLX 2.12 has a fast path for a quantized cache only at short context.
 KV_QUANT_MODES = ("q8", "q4")
 
+#: Seconds an idle conversation stays live (MTPLX's own default is 3600). See
+#: `build`; `{PREFIX}_MTPLX_SESSION_TTL` overrides, and 0 means never expire.
+DEFAULT_SESSION_TTL_S = "300"
+
 
 def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> str:
     return lookup(env, keys, prefixes) or ""
@@ -103,6 +107,16 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     cache_ram = _first(env, ("CACHE_RAM",), prefixes)
     if cache_ram.isdigit() and int(cache_ram) > 0:
         argv.append(f"MTPLX_SESSION_BANK_MAX_BYTES={cache_ram}M")
+    # How long an idle conversation keeps its state in memory. MTPLX holds an
+    # agent's conversation (one with tools) fully live, outside the cache cap
+    # above, for an hour by default -- so each time Hermes compacted at 100k it
+    # stranded ~8 GB of a conversation it would never return to, and three of
+    # those put a 96 GB Mac under the memory pressure that turned MTPLX's
+    # output to nonsense. Five minutes keeps a working agent warm between
+    # turns; an older conversation still restores from MTPLX's SSD copy.
+    ttl = _first(env, ("MTPLX_SESSION_TTL",), prefixes) or DEFAULT_SESSION_TTL_S
+    if ttl.isdigit():
+        argv.append(f"MTPLX_SESSION_BANK_IDLE_TTL_S={ttl}")
 
     argv += [f"{venv}/bin/mtplx", "serve",
              "--model", model,

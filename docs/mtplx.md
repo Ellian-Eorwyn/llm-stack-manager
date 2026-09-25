@@ -101,17 +101,38 @@ Quality), and `CACHE_RAM`, the warm-conversation cache.
 
 ## Known issue: nonsense under memory pressure
 
-Once, on the Optimized Quality pack, a long Hermes session came back as
-strings of zeros at 107-109k tokens. MTPLX logged no error. What preceded it,
-in `logs/llm-a.stdout.log`: two `memory pressure guard` events at macOS level
-2 (MTPLX at 58 GB, 14 GB free system-wide), a reply that stalled 94 s mid
-stream (`mtplx_stream_silence`), and a `retokenized_history_mismatch`.
+Twice MTPLX's output turned to nonsense mid-session -- strings of zeros on the
+Quality pack at ~107k tokens, repeated half-sentences on the Speed pack at
+~127k -- with no error logged. Both times the Mac was under memory pressure:
+MTPLX's `memory pressure guard` events in `logs/llm-a.stdout.log` show it at
+58-83 GB with 8-14 GB free, and replies slowed to under 20 tok/s first.
 
-The same shape of session on the Speed pack, grown turn by turn to 194k
-tokens with memory healthy, stayed coherent throughout. So the trigger looks
-like memory pressure rather than context length. Keep the pack and context
-within what the machine has room for beside its other services, and if replies
-turn to nonsense, look for those events first.
+Where the memory goes, measured by replaying Hermes' shape (two agents with
+tools, compacting at 100k) on the Quality pack:
+
+- **Working memory for each live conversation**, beyond the conversation
+  state MTPLX reports: two agents near 100k took MTPLX from 33 GB idle to
+  60-73 GB at the end of a turn, with brief peaks to 75-79 GB during long
+  replies. None of it leaks; it comes back when the conversation does.
+- **Conversations abandoned by compaction**, which MTPLX keeps live for an
+  hour by default: after each 100k compaction the old ~8 GB conversation sat
+  unreturned-to until the hour ran out. The engine now releases an idle
+  conversation after five minutes (`MTPLX_SESSION_BANK_IDLE_TTL_S`, from
+  `LLM_A_MTPLX_SESSION_TTL`, default 300), and eight minutes after the last
+  request MTPLX was back to 41 GB: weights, reusable cache, nothing held. A
+  working agent's turns come seconds apart and stay warm; an older
+  conversation restores from MTPLX's SSD copy.
+
+Across 79 requests in those runs, nine of them compactions at 100-117k, no
+reply was corrupted. The Speed pack under the same two agents, with 24 GB
+held by another process to stand in for other apps, peaked at 57 GB rather
+than 73-79, logged pressure on 9 of 17 turns, and still answered correctly
+through compactions at 114k and 116k. What makes the difference is headroom: macOS swapped
+out up to 16 GB to keep a quarter of the Mac free, and with less to spare --
+other apps open, a third agent -- MTPLX is starved instead, and corrupts its
+output rather than refusing. So on the Quality pack, run one long agent at a
+time or compact earlier; the Speed pack is 8.6 GB lighter. That MTPLX fails
+this way under pressure is its own bug.
 
 ## Setting it up
 

@@ -226,10 +226,11 @@ class MtplxEngineTests(unittest.TestCase):
 
     def test_the_slot_settings_become_mtplx_flags(self):
         argv = self.build()
-        self.assertEqual(argv[:4], ["/usr/bin/env", "PYTHONUNBUFFERED=1",
+        self.assertEqual(argv[:5], ["/usr/bin/env", "PYTHONUNBUFFERED=1",
                                     "MTPLX_SESSION_BANK_MAX_BYTES=8192M",
+                                    "MTPLX_SESSION_BANK_IDLE_TTL_S=300",
                                     "/stack/deps/mtplx-venv/bin/mtplx"])
-        self.assertEqual(argv[4], "serve")
+        self.assertEqual(argv[5], "serve")
         got = flags(argv)
         self.assertEqual(got["--model"], str(self.pack))
         self.assertEqual(got["--model-id"], "qwen3.8-27b")
@@ -281,6 +282,14 @@ class MtplxEngineTests(unittest.TestCase):
                           LLM_A_MTPLX_ARGS_JSON='["--profile sustained"]')
         self.assertNotIn("--no-warmup", argv)
         self.assertEqual(argv[-2:], ["--profile", "sustained"])
+
+    def test_an_idle_conversation_is_released_after_five_minutes(self):
+        # An hour, MTPLX's default, stranded ~8 GB per compacted agent session.
+        self.assertIn("MTPLX_SESSION_BANK_IDLE_TTL_S=300", self.build())
+        self.assertIn("MTPLX_SESSION_BANK_IDLE_TTL_S=900",
+                      self.build(LLM_A_MTPLX_SESSION_TTL="900"))
+        self.assertIn("MTPLX_SESSION_BANK_IDLE_TTL_S=0",
+                      self.build(LLM_A_MTPLX_SESSION_TTL="0"))
 
     def test_a_zero_cache_ram_leaves_the_cache_to_mtplx(self):
         argv = self.build(LLM_A_CACHE_RAM="0")
