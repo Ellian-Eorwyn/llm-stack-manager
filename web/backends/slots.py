@@ -206,6 +206,7 @@ SLOTS = {
         probe_host_keys=("!EMBED_BACKEND_HOST",),
         prefix="EMBED",
         model_keys=("!EMBEDDING_MODEL_PATH",),
+        host_keys=("HOST", "!LISTEN_HOST"),
         alias_default="embed",
         port_default="8005",
         # No mmproj: an embedding model has no projector, and the setup wizard
@@ -250,6 +251,7 @@ SLOTS = {
         probe_host_keys=("!TASK_BACKEND_HOST",),
         prefix="TASK",
         model_keys=("!TASK_MODEL_PATH",),
+        host_keys=("HOST", "!LISTEN_HOST"),
         alias_default="task",
         port_default="8007",
         defaults={"CTX_SIZE": "32000", "BATCH_SIZE": "2048", "FLASH_ATTN": "auto"},

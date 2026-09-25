@@ -80,6 +80,20 @@ class FallbackChainTests(unittest.TestCase):
             f = flags(backends.build_command("embed", dict(BASE, EMBED_N_GPU_LAYERS="")))
         self.assertEqual(f["--n-gpu-layers"], "-1")
 
+    def test_auxiliary_bind_hosts_override_the_shared_host_on_both_platforms(self):
+        # Tailscale Serve owns the tailnet address on these ports, while other
+        # services may still need the shared wildcard listener.
+        for platform in (as_linux, as_darwin):
+            with platform():
+                for slot in ("embed", "task"):
+                    with self.subTest(platform=platform.__name__, slot=slot):
+                        key = f"{slot.upper()}_HOST"
+                        self.assertEqual(flags(backends.build_command(slot, BASE))["--host"],
+                                         "0.0.0.0")
+                        self.assertEqual(flags(backends.build_command(
+                            slot, dict(BASE, **{key: "127.0.0.1"})))["--host"],
+                            "127.0.0.1")
+
 
 class SlotIdentityTests(unittest.TestCase):
 
