@@ -677,7 +677,8 @@ def validate_installation(components: list[str] | None = None) -> dict[str, Any]
         ok, detail = probe_json(f"http://127.0.0.1:{env.get('GLMOCR_SDK_PORT', '5002')}/health", attempts=30)
         endpoint_checks["glmocr_sdk"] = {"ok": ok, "detail": detail}
     if "searxng" in components:
-        ok, detail = probe_json(f"http://127.0.0.1{env.get('SEARXNG_URL_PATH', '/searxng')}/search?q=setup&format=json", attempts=12)
+        searxng_url = (env.get("SEARXNG_BASE_URL") or f"http://127.0.0.1{env.get('SEARXNG_URL_PATH', '/searxng')}/").rstrip("/")
+        ok, detail = probe_json(f"{searxng_url}/search?q=setup&format=json", attempts=12)
         endpoint_checks["searxng"] = {"ok": ok and "results" in detail, "detail": detail}
     if "playwright" in components:
         try:

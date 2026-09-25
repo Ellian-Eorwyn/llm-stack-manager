@@ -34,11 +34,32 @@ config_env = sys.modules["config_env"]
 config_fields = sys.modules["config_fields"]
 models = sys.modules["models"]
 
+
 # Imported after the app, for the same reason: it reaches the `platforms`
 # module app.py already put in sys.modules, so a substituted adapter is the one
 # the application sees.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import platform_harness  # noqa: E402
+
+
+class SearxngEndpointTests(unittest.TestCase):
+    def test_health_probe_uses_configured_base_url_with_port(self):
+        env = {
+            "SEARXNG_BASE_URL": "http://127.0.0.1:8082/searxng/",
+            "SEARXNG_PUBLIC_URL": "http://llms:8082/searxng/",
+        }
+        with (
+            manager.app.test_client() as client,
+            patch.object(config_env, "read_env", return_value=env),
+            patch.object(core, "http_json", return_value={"results": []}) as probe,
+            patch.object(manager, "get_service_status", return_value="active"),
+        ):
+            result = client.get("/api/searxng/status").get_json()
+        self.assertTrue(result["checks"]["search_api"]["ok"])
+        self.assertEqual(result["config"]["local_url"], env["SEARXNG_BASE_URL"])
+        self.assertEqual(result["config"]["public_url"], env["SEARXNG_PUBLIC_URL"])
+        probe.assert_called_once_with(
+            "http://127.0.0.1:8082/searxng/search?q=llm-stack&format=json", timeout=8)
 
 
 class ConfigSectionTests(unittest.TestCase):

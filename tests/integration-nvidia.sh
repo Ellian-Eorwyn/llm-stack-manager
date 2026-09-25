@@ -16,6 +16,9 @@ if has ocr; then
   curl -fsS "http://127.0.0.1:${LLM_MANAGER_PORT}/api/ocr/extract" -H 'Content-Type: application/json' -d "{\"image_base64\":\"${PIXEL}\",\"mime_type\":\"image/png\"}" | grep -q '"ok"'
 fi
 has glmocr-sdk && curl -fsS "http://127.0.0.1:${GLMOCR_SDK_PORT}/health" | grep -q '"status"'
-has searxng && curl -fsS "http://127.0.0.1${SEARXNG_URL_PATH}/search?q=test&format=json" | grep -q '"results"'
+if has searxng; then
+  SEARXNG_SEARCH_BASE="${SEARXNG_BASE_URL:-http://127.0.0.1${SEARXNG_URL_PATH}/}"
+  curl -fsS "${SEARXNG_SEARCH_BASE%/}/search?q=test&format=json" | grep -q '"results"'
+fi
 has playwright && PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH}" node "${ROOT}/playwright/test-remote.js"
 echo "NVIDIA integration checks passed"

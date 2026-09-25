@@ -1827,7 +1827,8 @@ def searxng_config(env: dict | None = None) -> dict:
     url_path = env.get("SEARXNG_URL_PATH", "/searxng") or "/searxng"
     if not url_path.startswith("/"):
         url_path = "/" + url_path
-    configured_public_url = env.get("SEARXNG_PUBLIC_URL") or env.get("SEARXNG_BASE_URL") or f"http://127.0.0.1{url_path}/"
+    base_url = (env.get("SEARXNG_BASE_URL") or f"http://127.0.0.1{url_path}/").rstrip("/") + "/"
+    configured_public_url = env.get("SEARXNG_PUBLIC_URL") or base_url
     public_url = browser_tool_url(configured_public_url, url_path)
     if not public_url.endswith("/"):
         public_url += "/"
@@ -1841,8 +1842,8 @@ def searxng_config(env: dict | None = None) -> dict:
     return {
         "enabled": env.get("SEARXNG_ENABLED", "on"),
         "public_url": public_url,
-        "base_url": env.get("SEARXNG_BASE_URL", public_url),
-        "local_url": f"http://127.0.0.1{url_path}/",
+        "base_url": base_url,
+        "local_url": base_url,
         "url_path": url_path,
         "settings_path": env.get("SEARXNG_SETTINGS_PATH", "/etc/searxng/settings.yml"),
         "uwsgi_ini": env.get("SEARXNG_UWSGI_INI", "/etc/uwsgi/apps-available/searxng.ini"),
