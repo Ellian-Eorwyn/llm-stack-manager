@@ -166,9 +166,25 @@ fi
 
 echo ""
 echo "--- OCR (port ${OCR_PORT:-8009}) and OCR SDK (port ${GLMOCR_SDK_PORT:-5002}) ---"
+# With the model router pooling OCR, the ocr unit is off on purpose and nginx
+# fronts OCR_PORT onto the router; the SDK uses that port either way. Asked of
+# the router's own member list rather than a copy of its default here.
+ocr_pooled() {
+    [[ "${MODEL_ROUTER_ENABLED:-off}" == "on" ]] || return 1
+    (set -a; source "${CONFIG}"; STACK_DIR="${STACK_DIR}" \
+        python3 "${STACK_DIR}/scripts/lib/router-members.py" --list) 2>/dev/null | grep -qx OCR
+}
+OCR_SERVED_BY=""
 if should_check ocr; then
+    OCR_SERVED_BY="unit"
+elif ocr_pooled && should_check llama-router; then
+    OCR_SERVED_BY="router"
+fi
+if [[ -n "${OCR_SERVED_BY}" ]]; then
     OCR_RESP=$(curl -sf "${BASE}:${OCR_PORT:-8009}/v1/models" 2>&1 || true)
-    check "GET :${OCR_PORT:-8009}/v1/models returns JSON" "${OCR_RESP}" '"object"'
+    OCR_VIA=""
+    [[ "${OCR_SERVED_BY}" == "router" ]] && OCR_VIA=" (via the model router)"
+    check "GET :${OCR_PORT:-8009}/v1/models returns JSON${OCR_VIA}" "${OCR_RESP}" '"object"'
 else
     skip "OCR backend"
 fi
@@ -177,7 +193,7 @@ if should_check glmocr-sdk; then
     check "OCR SDK health endpoint responds" "${SDK_RESP}" '"ok"'
     # The SDK answers /health from its own process, so a healthy SDK says
     # nothing about the backend it hands every document to.
-    if ! should_check ocr; then
+    if [[ -z "${OCR_SERVED_BY}" ]]; then
         echo "  [WARN] OCR SDK is running but its OCR backend is not — documents will fail"
     fi
 else

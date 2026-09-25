@@ -154,6 +154,50 @@ class ValidateOnDarwinTests(unittest.TestCase):
 
 
 
+class ValidateRouterOcrTests(unittest.TestCase):
+    """With the router pooling OCR, the ocr unit is off on purpose and the port
+    is the router's. validate.sh judged OCR by the unit, so on llms it warned
+    "documents will fail" beside a GLM-OCR SDK that was parsing them."""
+
+    def _run(self, members: str, running: tuple[str, ...]) -> str:
+        mac = _FakeMac(running=running, installed=running)
+        self.addCleanup(mac.cleanup)
+        tree = mac.dir / "stack"
+        (tree / "scripts").mkdir(parents=True)
+        (tree / "config").mkdir()
+        shutil.copy(ROOT / "validate.sh", tree / "validate.sh")
+        shutil.copy(ROOT / "scripts" / "cross-platform.sh", tree / "scripts" / "cross-platform.sh")
+        # The router's member list is asked of its own helper, which reads web/.
+        (tree / "scripts" / "lib").symlink_to(ROOT / "scripts" / "lib")
+        (tree / "web").symlink_to(ROOT / "web")
+        (tree / "config" / "llm-stack.env").write_text(textwrap.dedent(f'''\
+            THINK_PORT=8003
+            NOTHINK_PORT=8004
+            CODE_PORT=8008
+            EMBED_PORT=8005
+            RERANK_PORT=8006
+            TASK_PORT=8007
+            CHAT_BACKEND_PORT=8010
+            OCR_PORT=8009
+            GLMOCR_SDK_PORT=5002
+            TRANSCRIPT_ENABLED=off
+            MODEL_ROUTER_ENABLED=on
+            MODEL_ROUTER_MEMBERS={members}
+        '''))
+        return subprocess.run(["bash", str(tree / "validate.sh")], env=mac.env(),
+                              capture_output=True, text=True, timeout=60).stdout
+
+    def test_ocr_pooled_in_the_router_is_checked_at_its_port(self):
+        out = self._run("OCR", ("llm-manager", "glmocr-sdk", "llama-router"))
+        self.assertIn("[PASS] GET :8009/v1/models returns JSON (via the model router)", out)
+        self.assertNotIn("documents will fail", out)
+
+    def test_an_sdk_with_nothing_behind_it_still_warns(self):
+        out = self._run("EMBED", ("llm-manager", "glmocr-sdk", "llama-router"))
+        self.assertIn("[SKIP] OCR backend", out)
+        self.assertIn("documents will fail", out)
+
+
 class InstallLaunchdServiceTests(unittest.TestCase):
     """Start on a Mac installs a missing LaunchAgent through this script, so a
     component left out at setup can still be started from the manager."""
