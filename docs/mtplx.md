@@ -85,6 +85,12 @@ Quality), and `CACHE_RAM`, the warm-conversation cache.
   llama-server took both. A client with a base URL lacking `/v1` (Hermes had
   four) went down when llm-a moved, so the proxy now sends the `/v1` spelling
   upstream either way. Talking to 8010 directly still needs `/v1`.
+- **Structured output** (`response_format` `json_object` and `json_schema`)
+  needs llguidance, MTPLX's `server` extra, which the installer asks for.
+  Without it MTPLX refuses those requests rather than answer unconstrained.
+  With it a schema's enum is enforced during generation: asked for
+  "critical" against `low|medium|high`, it answers `high`, thinking or not,
+  streamed or not, direct or through the proxy.
 - **Health** reads MTPLX's `/health` (`"ok": true`) instead of `/props`.
   `validate.sh` does the same.
 - **Telemetry** has less to say: the slot, context and Prometheus panels are

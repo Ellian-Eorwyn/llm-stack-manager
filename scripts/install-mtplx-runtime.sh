@@ -34,7 +34,11 @@ CONFIG_FILE="${STACK_DIR}/config/llm-stack.env"
 [[ -f "${CONFIG_FILE}" ]] && { set -a; source "${CONFIG_FILE}"; set +a; }
 
 VENV_DIR="${MTPLX_VENV:-${STACK_DIR}/deps/mtplx-venv}"
-MTPLX_SPEC="${MTPLX_SPEC:-mtplx==2.12.0}"
+# The `server` extra is llguidance, which MTPLX needs for response_format
+# json_object / json_schema. Without it those requests are refused outright
+# ("refusing to silently return unconstrained output"), which pushed clients
+# into validating allowed values themselves.
+MTPLX_SPEC="${MTPLX_SPEC:-mtplx[server]==2.12.0}"
 # Qwen 3.8 27B Optimized Speed: 5.8 bits/weight, 19 GiB, 25 GiB peak. The 8-bit
 # pack, 9-16% slower and near-lossless (docs/mtplx.md), is
 #   --pack Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality@300a4ac6c6058585e80571ff6c910819711843ec
