@@ -1286,9 +1286,10 @@ def _inject_thinking(
     # A caller may ask for a level either the OpenAI way (top-level
     # `reasoning_effort`) or the template way (inside chat_template_kwargs).
     # Take whichever arrived, normalize it, and leave the result only in
-    # chat_template_kwargs: the top-level field is consumed here so an
-    # out-of-range value can never reach the template and raise. The endpoint
-    # default applies when the caller said nothing.
+    # chat_template_kwargs: the caller's top-level field is consumed here so an
+    # out-of-range value can never reach the template and raise, and only the
+    # normalized level is put back. The endpoint default applies when the
+    # caller said nothing.
     if reasoning_effort is not None:
         requested = payload.pop("reasoning_effort", None)
         if requested is None:
@@ -1308,7 +1309,14 @@ def _inject_thinking(
             requested = None
 
         if enabled:
-            kwargs["reasoning_effort"] = _normalize_reasoning_effort(requested, reasoning_effort)
+            level = _normalize_reasoning_effort(requested, reasoning_effort)
+            kwargs["reasoning_effort"] = level
+            # The normalized level also goes back on top: MTPLX reads only the
+            # top-level field and ignored the template kwarg, so every level
+            # ran at its default. llama.cpp copies a top-level level into the
+            # template kwargs, so the same value in both places is identical
+            # there, and a normalized level can never make the template raise.
+            payload["reasoning_effort"] = level
         else:
             # The template ignores the level when thinking is off, and sending
             # one anyway only risks tripping its validation.

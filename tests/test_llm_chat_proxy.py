@@ -190,13 +190,22 @@ class ReasoningEffortTests(unittest.TestCase):
             with self.subTest(key):
                 self.assertIn(f"{key}=medium", example)
 
-    def test_top_level_field_is_consumed_rather_than_forwarded(self):
+    def test_the_caller_level_is_normalized_before_it_is_forwarded(self):
         """llama.cpp 7e4c0a9 forwards a top-level reasoning_effort straight into
-        the template, so leaving one on the payload is what would raise."""
+        the template, so the caller's raw value must never go on unchanged."""
         payload = {"reasoning_effort": "high"}
         proxy._inject_thinking(payload, True, True, "xhigh")
-        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload["reasoning_effort"], "xhigh")
         self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "xhigh")
+
+    def test_the_level_is_sent_on_top_as_well_for_mtplx(self):
+        """MTPLX reads only the top-level field: with the level in the template
+        kwargs alone, low and xhigh both ran at MTPLX's default (2026-09-27)."""
+        for asked, sent in (("low", "low"), ("xhigh", "xhigh"), (None, "medium")):
+            payload = {} if asked is None else {"reasoning_effort": asked}
+            proxy._inject_thinking(payload, True, True, "medium")
+            self.assertEqual(payload["reasoning_effort"], sent, asked)
+            self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], sent, asked)
 
     def test_a_level_supplied_via_template_kwargs_is_normalized_too(self):
         payload = {"chat_template_kwargs": {"reasoning_effort": "minimal"}}
