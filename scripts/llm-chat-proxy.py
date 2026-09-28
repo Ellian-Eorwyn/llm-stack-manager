@@ -20,6 +20,7 @@ without requiring tool calls or client integration changes.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import sys
@@ -271,6 +272,85 @@ def _filtered_upstream_headers(headers: Any) -> dict[str, str]:
             continue
         filtered[key] = value
     return filtered
+
+
+# Fallback to another proxy when this one's backend is down. Used when the GPU is
+# lent to something else (scripts/gpu-lease.py) and when the backend has simply
+# crashed or is still loading: every client of this proxy keeps working, served
+# by the other machine, instead of each client needing its own failover. Only
+# generation requests fall back, and only before a byte has gone to the client,
+# so a request is never answered twice. The fallback is the other proxy's
+# aggregate endpoint, which applies its own persona for the alias it is sent.
+CHAT_FALLBACK_URL = os.environ.get("CHAT_FALLBACK_URL", "").strip().rstrip("/")
+CHAT_FALLBACK_TOKEN = os.environ.get("CHAT_FALLBACK_TOKEN", "").strip()
+CHAT_FALLBACK_CONNECT_TIMEOUT_SEC = _parse_timeout_env("CHAT_FALLBACK_CONNECT_TIMEOUT_SEC", "10")
+# While this file exists the backend is lent out: go straight to the fallback.
+# /run/user is tmpfs, so a reboot clears a lease that was never released.
+CHAT_FALLBACK_LEASE_FILE = os.environ.get("CHAT_FALLBACK_LEASE_FILE", "").strip() or (
+    f"/run/user/{os.getuid()}/gpu1-lease.json" if hasattr(os, "getuid") else ""
+)
+FALLBACK_HOP_HEADER = "X-LLM-Fallback-Hop"
+SERVED_BY_HEADER = "X-LLM-Served-By"
+_FALLBACK_STATE = {"active": False}
+_FALLBACK_STATE_LOCK = threading.Lock()
+
+
+class _BackendNotReady(Exception):
+    """The backend answered 503 (still loading) before anything reached the client."""
+
+
+def _fallback_target() -> tuple[str, int, str] | None:
+    if not CHAT_FALLBACK_URL:
+        return None
+    parsed = urllib.parse.urlsplit(CHAT_FALLBACK_URL)
+    if parsed.scheme != "http" or not parsed.hostname:
+        return None
+    return parsed.hostname, parsed.port or 80, parsed.path.rstrip("/")
+
+
+def _lease_active() -> bool:
+    return bool(CHAT_FALLBACK_LEASE_FILE) and os.path.exists(CHAT_FALLBACK_LEASE_FILE)
+
+
+def _note_fallback(active: bool, reason: str = ""):
+    """Log the switch to and from the fallback once, not once per request."""
+    with _FALLBACK_STATE_LOCK:
+        if _FALLBACK_STATE["active"] == active:
+            return
+        _FALLBACK_STATE["active"] = active
+    if active:
+        _log(f"fallback on: serving generation from {CHAT_FALLBACK_URL} ({reason})")
+    else:
+        _log("fallback off: backend serving again")
+
+
+# The other side of a fallback: when set, a client that is not on this machine
+# must send `Authorization: Bearer <token>`. Local clients never need it. This is
+# what lets a proxy listen on its tailnet address for the other machine's
+# fallback without opening the model to everything on the tailnet.
+PROXY_AUTH_TOKEN = os.environ.get("PROXY_AUTH_TOKEN", "").strip()
+# Extra addresses the aggregate endpoint listens on, e.g. a tailnet address
+# while LISTEN_HOST stays 127.0.0.1. Comma separated.
+AGGREGATE_EXTRA_LISTEN_HOSTS = [
+    h.strip() for h in os.environ.get("AGGREGATE_EXTRA_LISTEN_HOSTS", "").split(",") if h.strip()
+]
+
+
+def _client_authorized(client_ip: str, authorization: str | None) -> bool:
+    if not PROXY_AUTH_TOKEN:
+        return True
+    if client_ip in {"127.0.0.1", "::1"} or client_ip.startswith("::ffff:127."):
+        return True
+    expected = f"Bearer {PROXY_AUTH_TOKEN}"
+    return authorization is not None and hmac.compare_digest(authorization.strip(), expected)
+
+
+def _with_served_by(raw_head: bytes) -> bytes:
+    """Add the served-by header right after the status line."""
+    line_end = raw_head.find(b"\r\n")
+    if line_end == -1:
+        return raw_head
+    return raw_head[: line_end + 2] + f"{SERVED_BY_HEADER}: fallback\r\n".encode() + raw_head[line_end + 2 :]
 
 
 def _graphiti_is_suspended() -> bool:
@@ -1472,6 +1552,17 @@ def make_handler(
         _max_tokens = max_tokens
         _strip_tools = strip_tools
         _reasoning_stream_mode = _normalize_reasoning_stream_mode(reasoning_stream_mode)
+        # The aggregate handler keeps the client's model alias on fallback; a
+        # per-port handler sends its own alias, since its port is its persona.
+        _is_aggregate = False
+
+        def parse_request(self) -> bool:
+            if not super().parse_request():
+                return False
+            if _client_authorized(self.client_address[0], self.headers.get("Authorization")):
+                return True
+            self._gateway_error(401, "unauthorized", "A bearer token is required from this address")
+            return False
 
         def do_GET(self):
             kind = _request_kind(self.path)
@@ -1519,6 +1610,15 @@ def make_handler(
             kind = _request_kind(self.path)
             is_generation_request = method == "POST" and _is_generation_kind(kind)
             is_embeddings_request = method == "POST" and kind == "embeddings"
+            client_body = body
+            can_fall_back = (
+                is_generation_request
+                and _fallback_target() is not None
+                and self.headers.get(FALLBACK_HOP_HEADER) is None
+            )
+            if can_fall_back and _lease_active():
+                self._forward_to_fallback(method, client_body, "backend lent out")
+                return
 
             payload = _safe_json_loads(body) if (is_generation_request or is_embeddings_request) else None
             request_user_text = ""
@@ -1653,6 +1753,11 @@ def make_handler(
                             raw_head = bytes(header_buf[:idx])
                             body_part = bytes(header_buf[idx + 4 :])
                             status_code, resp_headers = _parse_status_and_headers(raw_head)
+                            if status_code == 503 and can_fall_back:
+                                # llama-server answers 503 while it loads the model.
+                                raise _BackendNotReady()
+                            if can_fall_back:
+                                _note_fallback(False)
                             response_streaming = (
                                 "text/event-stream" in resp_headers.get("content-type", "").lower()
                             )
@@ -1746,11 +1851,19 @@ def make_handler(
 
                     if is_generation_request and group_id and status_code and status_code < 500:
                         _enqueue_ingest(group_id, request_user_text, assistant_text)
+            except _BackendNotReady:
+                self._forward_to_fallback(method, client_body, "backend loading")
             except ConnectionRefusedError:
-                self._backend_unavailable(upstream_host, upstream_port)
+                if can_fall_back:
+                    self._forward_to_fallback(method, client_body, "backend refused the connection")
+                else:
+                    self._backend_unavailable(upstream_host, upstream_port)
             except TimeoutError as exc:
                 if backend_phase == "connect":
-                    self._backend_unavailable(upstream_host, upstream_port, f"Timed out connecting to backend: {exc}")
+                    if can_fall_back:
+                        self._forward_to_fallback(method, client_body, "backend connect timed out")
+                    else:
+                        self._backend_unavailable(upstream_host, upstream_port, f"Timed out connecting to backend: {exc}")
                 else:
                     self._gateway_error(
                         504,
@@ -1761,7 +1874,69 @@ def make_handler(
                         ),
                     )
             except OSError as exc:
-                self._backend_unavailable(upstream_host, upstream_port, str(exc))
+                if can_fall_back and backend_phase == "connect":
+                    self._forward_to_fallback(method, client_body, f"backend unreachable: {exc}")
+                else:
+                    self._backend_unavailable(upstream_host, upstream_port, str(exc))
+
+        def _forward_to_fallback(self, method: str, client_body: bytes, reason: str):
+            """Send the client's own request to the fallback proxy and relay its answer.
+
+            The client's body goes, not this proxy's rewrite of it: the fallback
+            proxy applies its own persona for the alias, as it would for a direct
+            client. The answer is relayed byte for byte with one header added.
+            """
+            target = _fallback_target()
+            assert target is not None
+            host, port, prefix = target
+            payload = _safe_json_loads(client_body)
+            if payload is not None and not self._is_aggregate:
+                payload["model"] = self._model_name
+                client_body = _body_from_json(payload, client_body)
+            headers = _filtered_upstream_headers(self.headers)
+            headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+            if CHAT_FALLBACK_TOKEN:
+                headers["Authorization"] = f"Bearer {CHAT_FALLBACK_TOKEN}"
+            headers["Content-Length"] = str(len(client_body))
+            headers["Connection"] = "close"
+            headers["Host"] = f"{host}:{port}"
+            headers[FALLBACK_HOP_HEADER] = "1"
+            request_line = f"{method} {prefix}{_upstream_path(self.path)} HTTP/1.1\r\n"
+            raw_request = (
+                request_line + "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n"
+            ).encode("utf-8") + client_body
+            _note_fallback(True, reason)
+            wrote_any = False
+            try:
+                with socket.create_connection((host, port), timeout=CHAT_FALLBACK_CONNECT_TIMEOUT_SEC) as sock:
+                    sock.settimeout(BACKEND_READ_TIMEOUT_SEC)
+                    sock.sendall(raw_request)
+                    head = bytearray()
+                    seen_header = False
+                    while True:
+                        chunk = sock.recv(65536)
+                        if not chunk:
+                            break
+                        if not seen_header:
+                            head.extend(chunk)
+                            idx = head.find(b"\r\n\r\n")
+                            if idx == -1:
+                                continue
+                            seen_header = True
+                            chunk = _with_served_by(bytes(head[:idx])) + bytes(head[idx:])
+                        try:
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                            wrote_any = True
+                        except (BrokenPipeError, ConnectionResetError):
+                            break
+            except OSError as exc:
+                if not wrote_any:
+                    self._backend_unavailable(
+                        BACKEND_HOST,
+                        BACKEND_PORT,
+                        f"{reason}; the fallback {CHAT_FALLBACK_URL} failed too: {exc}",
+                    )
 
         def _gateway_error(self, status_code: int, err_type: str, message: str):
             msg = json.dumps({"error": {"message": message, "type": err_type}}).encode("utf-8")
@@ -1786,7 +1961,6 @@ def make_handler(
                 ("Content-Type", "application/json"),
                 ("Content-Length", str(len(msg))),
             ], msg)
-            _write_response_safely(self, msg)
 
         def log_message(self, fmt, *args):  # noqa: ANN001
             return
@@ -1808,6 +1982,8 @@ def make_aggregate_handler():
     )
 
     class AggregateProxyHandler(base_handler):
+        _is_aggregate = True
+
         def do_GET(self):
             kind = _request_kind(self.path)
             if kind == "models":
@@ -1867,9 +2043,10 @@ def make_aggregate_handler():
     return AggregateProxyHandler
 
 
-def serve(port: int, handler_class, label: str):
-    server = ProxyHTTPServer((LISTEN_HOST, port), handler_class)
-    _log(f"{label} listening on {LISTEN_HOST}:{port} -> backend {BACKEND_HOST}:{BACKEND_PORT}")
+def serve(port: int, handler_class, label: str, host: str | None = None):
+    host = host or LISTEN_HOST
+    server = ProxyHTTPServer((host, port), handler_class)
+    _log(f"{label} listening on {host}:{port} -> backend {BACKEND_HOST}:{BACKEND_PORT}")
     server.serve_forever()
 
 
@@ -1939,6 +2116,12 @@ if __name__ == "__main__":
     code_thread.start()
     if aggregate_thread is not None:
         aggregate_thread.start()
+        for extra_host in AGGREGATE_EXTRA_LISTEN_HOSTS:
+            threading.Thread(
+                target=serve,
+                args=(AGGREGATE_PORT, aggregate_handler, "aggregate (extra address)", extra_host),
+                daemon=True,
+            ).start()
 
     _log(
         "All ports active. "
