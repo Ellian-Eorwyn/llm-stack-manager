@@ -167,11 +167,26 @@ class LeaseTests(unittest.TestCase):
             lease.acquire("two", 30, False)
 
     def test_busy_comfy_queue_is_refused_before_anything_changes(self):
-        self.fake.comfy_queue = 2
+        self.fake.comfy_queue = 2  # never drains
         with self.assertRaises(lease.LeaseError):
             lease.acquire("test", 30, False)
         self.assertTrue(self.fake.backend_up)
         self.assertFalse(lease.LEASE_FILE.exists())
+
+    def test_someone_elses_job_is_waited_for(self):
+        self.fake.comfy_queue = 1
+        real = self.fake.http_json
+        polls = {"n": 0}
+
+        def draining(url, data=None, timeout=5.0):
+            if url.endswith("/queue") and data is None:
+                polls["n"] += 1
+                if polls["n"] > 3:
+                    self.fake.comfy_queue = 0
+            return real(url, data, timeout)
+
+        with mock.patch.object(lease, "http_json", draining):
+            self.assertTrue(lease.acquire("test", 30, False)["ok"])
 
     def test_backend_that_stays_busy_gives_up_and_restores(self):
         self.fake.backend_busy_polls = 10**6

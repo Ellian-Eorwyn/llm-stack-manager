@@ -233,11 +233,15 @@ def acquire(holder: str, max_minutes: int, force: bool) -> dict:
     existing = read_lease()
     if existing is not None:
         raise LeaseError(f"a lease is already held: {json.dumps(existing)}")
-    queued = comfy_queue_len()
-    if queued is None:
+    if comfy_queue_len() is None:
         raise LeaseError(f"ComfyUI is not answering at {COMFY_URL}")
-    if queued:
-        raise LeaseError(f"ComfyUI has {queued} job(s) queued; restarting it would drop them")
+    # Someone else's job (the UI, another Hermes run) finishes first: moving
+    # ComfyUI to GPU 1 restarts it, which would drop the job.
+    try:
+        wait_until(lambda: comfy_queue_len() == 0, COMFY_QUEUE_TIMEOUT, "ComfyUI's current jobs to finish")
+    except LeaseError:
+        raise LeaseError(f"ComfyUI still has {comfy_queue_len()} job(s) after {int(COMFY_QUEUE_TIMEOUT)} s; "
+                         "restarting it would drop them") from None
 
     lease = {
         "holder": holder,
