@@ -40,12 +40,19 @@ Some details:
 **Proxy.** In `config/llm-stack.env` on llms:
 
 ```
-CHAT_FALLBACK_URL=http://<studio tailnet address>:8012
-CHAT_FALLBACK_TOKEN=<the Studio's PROXY_AUTH_TOKEN>
+CHAT_FALLBACK_URL=http://studio.tailfad058.ts.net:8012
 ```
 
-On the Studio, `PROXY_AUTH_TOKEN=<same token>` and
-`AGGREGATE_EXTRA_LISTEN_HOSTS=<studio tailnet address>`.
+The Studio's proxy listens on 127.0.0.1 only. `tailscale serve` publishes it on
+the tailnet as `studio.tailfad058.ts.net:8012` (tailnet only), and llms reaches
+it there. Use the MagicDNS name, not the 100.x address: `tailscale serve`
+routes by Host header and answers a bare IP with 404.
+
+`AGGREGATE_EXTRA_LISTEN_HOSTS` must stay unset on the Studio. `tailscale serve`
+already holds `<tailnet address>:8012`, so a second listener fails to bind.
+Behind `tailscale serve` every client looks local (127.0.0.1) to the proxy, so
+`PROXY_AUTH_TOKEN` does not restrict tailnet clients there. It only takes effect
+for a proxy that listens on a non-loopback address itself.
 
 **ComfyUI** (`~/.config/systemd/user/comfyui.service`) takes its GPU from a
 runtime env file that the lease writes:
