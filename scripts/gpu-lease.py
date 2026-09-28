@@ -60,7 +60,7 @@ QUIET_WINDOW = os.environ.get("GPU_LEASE_QUIET", "23:00-06:30")
 WATCHDOG_UNIT = "gpu1-lease-watchdog"
 
 DRAIN_TIMEOUT = float(os.environ.get("GPU_LEASE_DRAIN_SECONDS", "600"))
-COMFY_READY_TIMEOUT = float(os.environ.get("GPU_LEASE_COMFY_READY_SECONDS", "180"))
+COMFY_READY_TIMEOUT = float(os.environ.get("GPU_LEASE_COMFY_READY_SECONDS", "300"))
 COMFY_QUEUE_TIMEOUT = float(os.environ.get("GPU_LEASE_COMFY_QUEUE_SECONDS", "300"))
 BACKEND_READY_TIMEOUT = float(os.environ.get("GPU_LEASE_BACKEND_READY_SECONDS", "300"))
 POLL = float(os.environ.get("GPU_LEASE_POLL_SECONDS", "2"))
@@ -156,17 +156,38 @@ def comfy_queue_len() -> int | None:
     return len(q.get("queue_running", [])) + len(q.get("queue_pending", []))
 
 
-def comfy_device() -> str | None:
-    """The CUDA index ComfyUI reports, e.g. '1'; None while it is not answering."""
+def comfy_gpus() -> set[str]:
+    """Physical GPU indices the ComfyUI unit's processes hold, from nvidia-smi.
+
+    ComfyUI's own /system_stats cannot say: `--cuda-device 1` hides the other
+    cards, so it names physical GPU 1 "cuda:0".
+    """
+    cg = run(["systemctl", "--user", "show", "-p", "ControlGroup", "--value", COMFY_UNIT], check=False).stdout.strip()
     try:
-        stats = http_json(f"{COMFY_URL}/system_stats")
+        pids = set(Path(f"/sys/fs/cgroup{cg}/cgroup.procs").read_text().split()) if cg else set()
+    except OSError:
+        pids = set()
+    gpus = run(["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"], check=False).stdout
+    index_of = {u.strip(): i.strip() for i, u in (line.split(",", 1) for line in gpus.splitlines() if "," in line)}
+    apps = run(["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader"], check=False).stdout
+    held = set()
+    for line in apps.splitlines():
+        if "," not in line:
+            continue
+        pid, uuid = (x.strip() for x in line.split(",", 1))
+        if pid in pids and uuid in index_of:
+            held.add(index_of[uuid])
+    return held
+
+
+def comfy_device() -> str | None:
+    """The physical GPU ComfyUI runs on, e.g. '1'; None while it is not answering."""
+    try:
+        http_json(f"{COMFY_URL}/system_stats")
     except (urllib.error.URLError, OSError, ValueError):
         return None
-    for dev in stats.get("devices", []):
-        name = str(dev.get("name", ""))
-        if name.startswith("cuda:"):
-            return name.split(":", 1)[1].split()[0]
-    return None
+    held = comfy_gpus()
+    return next(iter(held)) if len(held) == 1 else None
 
 
 def wait_until(predicate, timeout: float, what: str):
@@ -186,7 +207,7 @@ def restart_comfy(device: str | None):
         COMFY_DEVICE_FILE.write_text(f"COMFY_CUDA_DEVICE={device}\n")
     run(["systemctl", "--user", "restart", COMFY_UNIT])
     want = device or "0"
-    wait_until(lambda: comfy_device() == want, COMFY_READY_TIMEOUT, f"ComfyUI on cuda:{want}")
+    wait_until(lambda: comfy_device() == want, COMFY_READY_TIMEOUT, f"ComfyUI on GPU {want}")
 
 
 def clear_watchdog():

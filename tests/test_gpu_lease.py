@@ -48,6 +48,13 @@ class FakeLlms:
             self.backend_up = False
         elif cmd[:4] == ["sudo", "-n", "systemctl", "start"]:
             self.backend_up = True
+        elif cmd[:4] == ["systemctl", "--user", "show", "-p"]:
+            return mock.Mock(returncode=0, stdout="/user.slice/app.slice/comfyui.service\n", stderr="")
+        elif cmd[:2] == ["nvidia-smi", "--query-gpu=index,uuid"]:
+            return mock.Mock(returncode=0, stdout="0, GPU-aaa\n1, GPU-bbb\n", stderr="")
+        elif cmd[:2] == ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid"]:
+            uuid = {"0": "GPU-aaa", "1": "GPU-bbb"}[self.comfy_device]
+            return mock.Mock(returncode=0, stdout=f"4242, {uuid}\n999, GPU-bbb\n", stderr="")
         elif cmd[:3] == ["systemctl", "--user", "restart"]:
             dev_file = lease.COMFY_DEVICE_FILE
             self.comfy_device = dev_file.read_text().strip().split("=")[1] if dev_file.exists() else "0"
@@ -64,7 +71,8 @@ class FakeLlms:
         if url.endswith("/queue") and data is None:
             return {"queue_running": [[1]] * self.comfy_queue, "queue_pending": []}
         if url.endswith("/system_stats"):
-            return {"devices": [{"name": f"cuda:{self.comfy_device} NVIDIA GeForce RTX 3090 : cudaMallocAsync"}]}
+            # ComfyUI names whatever card it sees cuda:0, whichever it is.
+            return {"devices": [{"name": "cuda:0 NVIDIA GeForce RTX 3090 : cudaMallocAsync"}]}
         return {}
 
     def http_status(self, url, timeout=5.0):
@@ -84,6 +92,7 @@ class LeaseTests(unittest.TestCase):
             LOG_FILE=tmp / "gpu-lease.jsonl",
             RUNTIME_DIR=tmp,
             run=self.fake.run,
+            Path=self._fake_path,
             http_json=self.fake.http_json,
             http_status=self.fake.http_status,
             sleep=lambda s: None,
@@ -95,6 +104,14 @@ class LeaseTests(unittest.TestCase):
             POLL=0.01,
         )
         self.patches.start()
+
+    def _fake_path(self, p, *rest):
+        # The cgroup's process list: ComfyUI is pid 4242 (999 is someone else).
+        if str(p).endswith("cgroup.procs"):
+            fake = mock.Mock()
+            fake.read_text.return_value = "4242\n"
+            return fake
+        return pathlib.Path(p, *rest)
 
     def tearDown(self):
         self.patches.stop()
