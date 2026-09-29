@@ -50,6 +50,9 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
 - **Carried over:** the alias, context size (capped at Splash's 256K), the
   reasoning level (as `--default-reasoning-effort`), and the SSD-offload RAM
   budget (as `--max-memory`).
+- **Vision** (images and PDFs) is on by default; Splash downloads the repo's
+  `mmproj` (~0.9 GB) on first start. `LLM_A_SPLASH_VISION=off` serves text
+  only and saves that memory.
 - **Not carried over:** llama.cpp placement, cache types, draft settings (Splash
   picks its own drafter) and `CUSTOM_ARGS_JSON`. Splash's own flags go in
   `LLM_A_SPLASH_ARGS_JSON`.

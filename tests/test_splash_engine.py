@@ -38,7 +38,11 @@ class SplashEngineTests(unittest.TestCase):
         self.assertEqual(flag(argv, "--served-model-name"), "qwen3.8-27b")
         self.assertEqual(flag(argv, "--max-context"), "256K")
         self.assertIn("--no-webui", argv)
-        self.assertIn("--language-only", argv)
+        self.assertNotIn("--language-only", argv)
+
+    def test_vision_is_on_unless_turned_off(self):
+        self.assertIn("--language-only", build(LLM_B_SPLASH_VISION="off"))
+        self.assertNotIn("--language-only", build(LLM_B_SPLASH_VISION="on"))
 
     def test_the_kv_cache_is_lossless_unless_asked(self):
         self.assertEqual(flag(build(), "--kv-format"), "bf16")

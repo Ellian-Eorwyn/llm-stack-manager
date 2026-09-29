@@ -14,7 +14,8 @@ because its model is a Hugging Face reference (`owner/repo:VARIANT`, e.g.
 wants. It downloads into the ordinary Hugging Face cache on first start.
 
 What carries over from the slot: alias, context size, reasoning level, the SSD
-offload RAM budget. What does not: llama.cpp placement and cache types, the
+offload RAM budget. Vision is on unless `{PREFIX}_SPLASH_VISION=off`; Splash
+fetches the model repo's `mmproj` itself. What does not: llama.cpp placement and cache types, the
 draft settings (Splash picks its own drafter), CUSTOM_ARGS_JSON.
 
 Two differences from the other engines a client has to know about. Splash
@@ -99,8 +100,11 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     if effort in EFFORTS:
         argv += ["--default-reasoning-effort", effort]
 
-    vision = _first(env, ("SPLASH_VISION",), prefixes) or "off"
-    if vision != "on":
+    # On unless turned off: Qwen3.8-27B sees images and PDFs, and a client that
+    # was told the model does (Hermes's supports_vision) would otherwise get a
+    # 400 for every image. Off saves the ~1 GB vision tower.
+    vision = _first(env, ("SPLASH_VISION",), prefixes) or "on"
+    if vision == "off":
         argv.append("--language-only")
 
     memory = offload.settings(slot, env)
