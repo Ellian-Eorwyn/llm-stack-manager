@@ -560,9 +560,41 @@ def get_gpu_processes(uuid_by_index: dict[int, str]) -> dict[int, list[dict]]:
             "model": model,
             "alias": alias,
         })
-    for items in processes.values():
-        items.sort(key=lambda item: item.get("used_memory", 0), reverse=True)
+    for index, items in processes.items():
+        processes[index] = _merge_service_processes(items)
+        processes[index].sort(key=lambda item: item.get("used_memory", 0), reverse=True)
     return processes
+
+
+def _merge_service_processes(items: list[dict]) -> list[dict]:
+    """One row per service and model, not per process.
+
+    A server may be several processes -- Splash is a Python front end and an
+    engine worker, both under `llm-a` -- and a row each showed two `llm-a`
+    entries, one of them near zero. Rows for the same service are summed.
+    The router's children stay apart: each holds a different model, which is
+    the point of listing them. A row that names no model (a front end, a
+    helper) joins its service's row.
+    """
+    merged: list[dict] = []
+    for item in items:
+        target = next((row for row in merged if row["name"] == item["name"]
+                       and (not row.get("model") or not item.get("model")
+                            or row.get("model") == item.get("model"))), None)
+        if target is None:
+            merged.append(dict(item, pids=[item["pid"]], _largest=item.get("used_memory", 0)))
+            continue
+        target["used_memory"] += item.get("used_memory", 0)
+        target["pids"].append(item["pid"])
+        if not target.get("model") and item.get("model"):
+            target["model"], target["alias"] = item.get("model"), item.get("alias")
+        # Keep the pid of whichever process holds the most.
+        if item.get("used_memory", 0) > target.get("_largest", 0):
+            target["pid"], target["process_name"] = item["pid"], item.get("process_name")
+            target["_largest"] = item.get("used_memory", 0)
+    for row in merged:
+        row.pop("_largest", None)
+    return merged
 
 
 @core.ttl_cache(2.0)

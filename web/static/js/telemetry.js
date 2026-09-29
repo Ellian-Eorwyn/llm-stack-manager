@@ -259,24 +259,31 @@ function applyGpus(gpus) {
       });
     }
     
-    // Unified memory: show what is actually pressing on RAM -- the models,
-    // plus wired memory the models do not account for (kernel, GPU driver,
-    // WindowServer). Compressed pages and the file cache are left out: macOS
+    // Unified memory: show what is actually pressing on RAM -- the models, and
+    // everything else resident: the kernel, GPU driver and WindowServer, and
+    // the other apps. Compressed pages and the file cache are left out: macOS
     // gives them back when anything needs the room, and counting them made an
     // idle Mac look 25 GB fuller than it was. The low-memory alerts still read
     // the host's real available memory, so leaving them off the bar hides no
     // warning.
+    //
+    // The remainder used to be wired memory minus the models. That only held
+    // while models were under-counted: macOS gives no per-process wired
+    // figure, a model's weights can be wired on its behalf (Splash) and a
+    // model's other memory need not be wired at all, so once the models were
+    // counted fully the subtraction went to zero and hid the kernel.
     const pressureView = unified && g.wired_mib != null;
     let otherUsed = Math.max(0, used - knownUsed);
     if (pressureView && total > 0) {
-      const system = Math.max(0, Math.min(Number(g.wired_mib) - knownUsed, used - knownUsed));
+      const compressed = Number(g.compressed_mib || 0);
+      const system = Math.max(0, used - compressed - knownUsed);
       otherUsed = 0;
       shownUsed = knownUsed + system;
       if (system > 0) {
-        segmentsHtml += `<div class="bar-segment" style="width:${system / total * 100}%; background-color:var(--dim);" title="macOS: ${formatG(system)}"></div>`;
-        itemsHtml += `<div class="gpu-process-item" title="Kernel, GPU driver and WindowServer: memory macOS keeps locked. Compressed memory and the file cache are not shown; macOS reclaims them on demand.">
+        segmentsHtml += `<div class="bar-segment" style="width:${system / total * 100}%; background-color:var(--dim);" title="macOS & apps: ${formatG(system)}"></div>`;
+        itemsHtml += `<div class="gpu-process-item" title="The kernel, GPU driver and WindowServer, and every other app. Not shown: ${formatG(compressed)} compressed and the file cache, which macOS reclaims on demand. Wired (locked) in total, models included: ${formatG(Number(g.wired_mib))}.">
           <span class="gpu-process-dot" style="background-color:var(--dim);"></span>
-          <span style="color:var(--text);">macOS</span>
+          <span style="color:var(--text);">macOS &amp; apps</span>
           <span style="font-family:var(--mono);">${formatG(system)}</span>
         </div>`;
       }

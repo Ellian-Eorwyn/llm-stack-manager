@@ -102,6 +102,84 @@ _VNODE_INFO_BYTES = 152
 _REGION_BUFFER_BYTES = 4096
 #: Model weight files a server may map rather than copy in.
 _WEIGHT_SUFFIXES = (".gguf", ".safetensors")
+#: Weight caches whose files carry no suffix, keyed by a path fragment. Splash
+#: repacks a GGUF into ~80 hash-named files under its cache and hands them to
+#: Metal without copying, which keeps the pages resident on its behalf -- so
+#: the process's own resident count for those regions reads ~0 while ~29 GB is
+#: held. Their residency is read from the file side instead (`_file_resident_bytes`).
+_WEIGHT_CACHE_MARKERS = (b"/Library/Caches/Splash/weights/",)
+
+_libc = None
+_ODD_BYTES = bytes(range(1, 256, 2))
+
+
+def _libc_handle():
+    global _libc
+    if _libc is None:
+        _libc = ctypes.CDLL(None, use_errno=True)
+        _libc.mmap.restype = ctypes.c_void_p
+        _libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                               ctypes.c_int, ctypes.c_longlong]
+        _libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        _libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
+    return _libc
+
+
+#: path -> (monotonic time, resident bytes). `mincore` over a 29 GB mapping
+#: costs ~0.4 s of kernel time, and a model's residency changes on load and
+#: under memory pressure, not between two refreshes of the panel.
+_RESIDENT_CACHE: dict[bytes, tuple[float, int]] = {}
+_RESIDENT_TTL_S = 15.0
+
+
+def _file_resident_bytes(path: bytes) -> int:
+    now = time.monotonic()
+    hit = _RESIDENT_CACHE.get(path)
+    if hit and now - hit[0] < _RESIDENT_TTL_S:
+        return hit[1]
+    value = _measure_file_resident_bytes(path)
+    _RESIDENT_CACHE[path] = (now, value)
+    if len(_RESIDENT_CACHE) > 4096:
+        _RESIDENT_CACHE.clear()
+    return value
+
+
+def _measure_file_resident_bytes(path: bytes) -> int:
+    """How much of a file is in memory right now, whoever holds it.
+
+    Maps the file read-only (no pages are touched) and asks `mincore` which
+    of its pages are resident. That is the page cache's view, so it counts a
+    weight file that Metal keeps resident for another process, which the
+    owning process's region counters do not.
+    """
+    libc = _libc_handle()
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return 0
+    try:
+        size = os.fstat(fd).st_size
+        if size <= 0:
+            return 0
+        prot_read, map_shared = 0x1, 0x1
+        addr = libc.mmap(None, size, prot_read, map_shared, fd, 0)
+        if addr in (None, ctypes.c_void_p(-1).value):
+            return 0
+        try:
+            page = os.sysconf("SC_PAGE_SIZE")
+            vec = ctypes.create_string_buffer((size + page - 1) // page)
+            if libc.mincore(addr, size, vec) != 0:
+                return 0
+            # Bit 0 is "in core"; the others say referenced/modified. Deleting
+            # every odd byte in C leaves the not-resident ones, which is what
+            # makes this ~2 ms for a 29 GB model instead of half a second.
+            raw = vec.raw
+            resident = len(raw) - len(raw.translate(None, _ODD_BYTES))
+            return min(size, resident * page)
+        finally:
+            libc.munmap(addr, size)
+    finally:
+        os.close(fd)
 
 
 def _libproc_handle():
@@ -127,6 +205,7 @@ def _mapped_weights_mib(pid: int) -> int:
     head = ctypes.sizeof(_RegionInfo)
     page = os.sysconf("SC_PAGE_SIZE")
     address, pages = 0, 0
+    cached_files: set[bytes] = set()
     # Bounded: a process has a few thousand regions, not millions.
     for _ in range(100_000):
         if lib.proc_pidinfo(int(pid), _PROC_PIDREGIONPATHINFO, address, buf,
@@ -134,10 +213,14 @@ def _mapped_weights_mib(pid: int) -> int:
             break
         info = _RegionInfo.from_buffer_copy(buf.raw[:head])
         path = buf.raw[head + _VNODE_INFO_BYTES:].split(b"\0", 1)[0]
-        if path.endswith(tuple(s.encode() for s in _WEIGHT_SUFFIXES)):
+        if any(marker in path for marker in _WEIGHT_CACHE_MARKERS):
+            cached_files.add(path)
+        elif path.endswith(tuple(s.encode() for s in _WEIGHT_SUFFIXES)):
             pages += info.pri_pages_resident
         address = info.pri_address + info.pri_size
-    return pages * page // (1024 * 1024)
+    # Once per file, however many regions map it.
+    cached = sum(_file_resident_bytes(path) for path in cached_files)
+    return (pages * page + cached) // (1024 * 1024)
 
 
 def _process_memory_mib(pid: int) -> int | None:
