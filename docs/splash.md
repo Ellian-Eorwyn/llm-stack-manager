@@ -47,15 +47,38 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
 
 ## How settings carry over
 
-- **Carried over:** the alias, context size (capped at Splash's 256K), the
-  reasoning level (as `--default-reasoning-effort`), and the SSD-offload RAM
-  budget (as `--max-memory`).
+- **Carried over:** the alias, context size (capped at Splash's 256K) and the
+  reasoning level (as `--default-reasoning-effort`).
+- **Memory is always capped** with `--max-memory`: `LLM_A_SPLASH_MAX_MEMORY_GB`
+  if set, else the SSD-offload RAM budget, else 5/8 of RAM (60 GiB on 96 GB).
+  See [Memory](#memory).
 - **Vision** (images and PDFs) is on by default; Splash downloads the repo's
   `mmproj` (~0.9 GB) on first start. `LLM_A_SPLASH_VISION=off` serves text
   only and saves that memory.
 - **Not carried over:** llama.cpp placement, cache types, draft settings (Splash
   picks its own drafter) and `CUSTOM_ARGS_JSON`. Splash's own flags go in
   `LLM_A_SPLASH_ARGS_JSON`.
+
+## Memory
+
+Left to itself (`--max-memory auto`), Splash may use Metal's recommended
+working set: 85% of RAM, 78 GiB on the 96 GB Studio. It keeps the KV cache and
+recurrent state of every finished conversation, and evicts only when that limit
+is reached. A benchmark run never gets there. A day of Hermes sessions does:
+70 kept conversations held 35 GiB of KV and 13 GiB of state on top of the
+weights, 80 GiB in all. With macOS and the other services on top, the Mac ran
+out of swap and froze.
+
+The stack therefore passes a cap. At 60 GiB the 27B Q8_0 plan is about 30 GiB
+of weights, drafter and vision, plus about 30 GiB for KV and state. That fits a
+full 256K bf16 context (16 GiB) and keeps about 220K tokens of older
+conversations warm. Past that, Splash evicts the oldest instead of growing.
+`auto` restores Splash's own limit.
+
+Splash reports its plan and live use on `/status` (`memory_plan.budget`,
+`memory_actual`) and `/metrics` (`splash_memory_current_bytes`,
+`splash_state_evictions_total`). The manager's memory panel counts the
+KV pages too; `footprint` does not.
 
 ## Thinking
 

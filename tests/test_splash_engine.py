@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from platform_harness import as_darwin, as_linux  # noqa: E402
@@ -58,10 +59,16 @@ class SplashEngineTests(unittest.TestCase):
         self.assertEqual(flag(build(LLM_B_CTX_SIZE="1048576"), "--max-context"), "256K")
         self.assertEqual(flag(build(LLM_B_CTX_SIZE="131072"), "--max-context"), "128K")
 
-    def test_an_offload_budget_caps_metal_memory(self):
-        argv = build(LLM_B_MEMORY_MODE="ssd-offload", LLM_B_RAM_BUDGET_GB="56")
-        self.assertEqual(flag(argv, "--max-memory"), "56G")
-        self.assertNotIn("--max-memory", build(LLM_B_RAM_BUDGET_GB="56"))
+    def test_memory_is_capped_below_splash_auto(self):
+        with mock.patch.object(backends.splash, "physical_gib", return_value=96.0):
+            self.assertEqual(flag(build(), "--max-memory"), "60G")
+            self.assertEqual(flag(build(LLM_B_RAM_BUDGET_GB="56"), "--max-memory"), "60G")
+            argv = build(LLM_B_MEMORY_MODE="ssd-offload", LLM_B_RAM_BUDGET_GB="56")
+            self.assertEqual(flag(argv, "--max-memory"), "56G")
+            argv = build(LLM_B_MEMORY_MODE="ssd-offload", LLM_B_RAM_BUDGET_GB="56",
+                         LLM_B_SPLASH_MAX_MEMORY_GB="48")
+            self.assertEqual(flag(argv, "--max-memory"), "48G")
+            self.assertNotIn("--max-memory", build(LLM_B_SPLASH_MAX_MEMORY_GB="auto"))
 
     def test_a_local_path_or_gguf_is_refused_with_the_reason(self):
         for model in ("/models/q.gguf", "q.gguf", ""):

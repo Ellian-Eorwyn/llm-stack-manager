@@ -13,8 +13,8 @@ because its model is a Hugging Face reference (`owner/repo:VARIANT`, e.g.
 `unsloth/Qwen3.8-27B-GGUF:Q8_0`), not a file whose shape says which engine it
 wants. It downloads into the ordinary Hugging Face cache on first start.
 
-What carries over from the slot: alias, context size, reasoning level, the SSD
-offload RAM budget. Vision is on unless `{PREFIX}_SPLASH_VISION=off`; Splash
+What carries over from the slot: alias, context size, reasoning level, a memory
+cap (below). Vision is on unless `{PREFIX}_SPLASH_VISION=off`; Splash
 fetches the model repo's `mmproj` itself. What does not: llama.cpp placement and cache types, the
 draft settings (Splash picks its own drafter), CUSTOM_ARGS_JSON.
 
@@ -24,10 +24,22 @@ turns thinking off with `reasoning_effort: "none"`, and ignores the
 default is passed as `--default-reasoning-effort`, and the chat proxy sends
 `reasoning_effort` per request. And its KV cache defaults to int8, which is
 not lossless; this passes bf16 unless the slot says otherwise.
+
+Memory is always capped. Splash's own limit (`--max-memory auto`) is Metal's
+recommended working set -- 85% of RAM, about 78 GiB on the 96 GB Studio -- and
+it keeps the KV and recurrent state of every finished conversation until that
+limit forces an eviction. One conversation at a time never gets there; a day of
+Hermes sessions does, and 78 GiB of model on top of macOS and the other
+services swaps the Mac to a standstill. So the slot's
+`{PREFIX}_SPLASH_MAX_MEMORY_GB` is passed, else the SSD offload RAM budget,
+else 5/8 of RAM (60 GiB on 96): the 27B's ~31 GiB of weights, a full 256K
+bf16 context (16 GiB), and ~12 GiB of older conversations kept warm.
+`auto` hands the choice back to Splash.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 
 import platforms
@@ -52,6 +64,9 @@ MAX_CONTEXT = 256 * 1024
 
 ARGS_KEYS = ("SPLASH_ARGS_JSON",)
 
+#: Share of RAM Splash may hold when the slot names no cap.
+DEFAULT_MEMORY_FRACTION = 0.625
+
 
 def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> str:
     return (lookup(env, keys, prefixes) or "").strip()
@@ -59,6 +74,28 @@ def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> str:
 
 def binary(env: dict) -> str:
     return str(env.get("SPLASH_BIN") or shutil.which("splash") or "/opt/homebrew/bin/splash")
+
+
+def physical_gib() -> float:
+    return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1024**3
+
+
+def max_memory(slot: Slot, env: dict) -> str | None:
+    """`--max-memory` for the slot, or None to leave Splash on its own `auto`."""
+    value = _first(env, ("SPLASH_MAX_MEMORY_GB",), slot.prefixes).lower()
+    if value == "auto":
+        return None
+    try:
+        gib = int(float(value))
+    except ValueError:
+        gib = 0
+    if gib <= 0:
+        memory = offload.settings(slot, env)
+        if memory.active and memory.ram_budget_gb:
+            gib = int(float(memory.ram_budget_gb))
+    if gib <= 0:
+        gib = int(physical_gib() * DEFAULT_MEMORY_FRACTION)
+    return f"{gib}G"
 
 
 def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
@@ -107,9 +144,9 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     if vision == "off":
         argv.append("--language-only")
 
-    memory = offload.settings(slot, env)
-    if memory.active and memory.ram_budget_gb:
-        argv += ["--max-memory", f"{int(float(memory.ram_budget_gb))}G"]
+    cap = max_memory(slot, env)
+    if cap:
+        argv += ["--max-memory", cap]
 
     argv += custom_args(env, ARGS_KEYS, prefixes)
     argv += list(extra or [])
