@@ -40,6 +40,9 @@ BACKEND_PORT = int(os.environ.get("CHAT_BACKEND_PORT", "8010"))
 #: The engine behind the backend port (`backends/proxies.py`). Only Splash
 #: changes anything here: see `_inject_thinking`.
 BACKEND_ENGINE = os.environ.get("CHAT_BACKEND_ENGINE", "").strip()
+#: The name the backend itself serves. Splash refuses any other with a 404,
+#: where llama.cpp and MTPLX answer whatever a request calls them.
+BACKEND_MODEL = os.environ.get("CHAT_BACKEND_MODEL", "").strip()
 THINK_PORT = int(os.environ.get("THINK_PORT", "8003"))
 NOTHINK_PORT = int(os.environ.get("NOTHINK_PORT", "8004"))
 CODE_PORT = int(os.environ.get("CODE_PORT", "8008"))
@@ -1697,6 +1700,8 @@ def make_handler(
                                 self._gateway_error(500, "memory_gateway_error", "Memory gateway failed")
                                 return
 
+                if BACKEND_ENGINE == "splash" and BACKEND_MODEL and "model" in payload:
+                    payload["model"] = BACKEND_MODEL
                 body = _body_from_json(payload, body)
 
             headers = _filtered_upstream_headers(self.headers)

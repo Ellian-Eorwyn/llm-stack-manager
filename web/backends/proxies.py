@@ -182,6 +182,11 @@ def resolve(proxy: Proxy, env: dict) -> dict[str, str]:
     # different switch from the others, and the proxy has to send it.
     from .slots import SLOTS
     out["CHAT_BACKEND_ENGINE"] = SLOTS[proxy.slot].engine(env) if proxy.slot in SLOTS else ""
+    if proxy.slot in SLOTS:
+        from .spec import lookup
+        slot = SLOTS[proxy.slot]
+        out["CHAT_BACKEND_MODEL"] = (lookup(env, slot.alias_keys, slot.prefixes)
+                                     or slot.alias_default)
 
     for persona in PERSONAS:
         port_key, port_default = proxy.ports[persona]

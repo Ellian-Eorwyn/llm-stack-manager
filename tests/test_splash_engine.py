@@ -80,6 +80,15 @@ class SplashEngineTests(unittest.TestCase):
         spec = health.ENGINE_PROBES[("llm-b", "splash")]
         self.assertEqual((spec["path"], spec["expect_field"]), ("/ready", ("status", "ready")))
 
+    def test_the_proxy_learns_the_engine_and_the_served_name(self):
+        from backends.proxies import PROXIES, resolve
+        env = dict(BASE, LLM_A_ENGINE="splash", LLM_A_MODEL_PATH="unsloth/Qwen3.8-27B-GGUF:Q8_0",
+                   LLM_A_MODEL_NAME="qwen3.8-27b")
+        with as_darwin():
+            out = resolve(PROXIES["llm-a-proxy"], env)
+        self.assertEqual((out["CHAT_BACKEND_ENGINE"], out["CHAT_BACKEND_MODEL"]),
+                         ("splash", "qwen3.8-27b"))
+
     def test_the_ui_offers_it(self):
         field = next(f for f in config_fields.CONFIG_FIELDS if f["key"] == "LLM_A_ENGINE")
         self.assertIn("splash", field["options"])
