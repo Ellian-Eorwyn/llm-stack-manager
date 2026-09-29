@@ -124,6 +124,13 @@ if [[ "${ENGINE}" == "llamacpp" ]]; then
         ${FACT_PREFLIGHT[@]+"${FACT_PREFLIGHT[@]}"} || true
 fi
 
+# NInfer keeps one model on one card and is told `--device 0`, the first card
+# it can see, so the slot's visible list is the whole of the choice -- the same
+# renumbering as llama.cpp above. docs/ninfer.md.
+if [[ "${ENGINE}" == "ninfer" && "${LLM_ABSOLUTE_GPU_INDICES:-off}" != "on" ]]; then
+    [[ -n "${FACT_VISIBLE}" ]] && export CUDA_VISIBLE_DEVICES="${FACT_VISIBLE}"
+fi
+
 echo "${PREFIX} engine: ${ENGINE}"
 
 # Build the command, then exec it. A failure here is fatal on purpose: unlike

@@ -97,6 +97,10 @@ if should_check llm-a || should_check chat-backend; then
         # Splash's /health is up before the model is; /ready waits for it.
         READY=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/ready" 2>&1 || true)
         check "GET :${CHAT_BACKEND_PORT:-8010}/ready reports the Splash model loaded" "${READY}" '"status": *"ready"'
+    elif [[ "${LLM_A_SERVED_BY}" == "ninfer" ]]; then
+        # NInfer's /health is 503 until the engine has loaded.
+        HEALTH=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/health" 2>&1 || true)
+        check "GET :${CHAT_BACKEND_PORT:-8010}/health reports the NInfer model loaded" "${HEALTH}" '"status": *"ok"'
     else
         PROPS=$(curl -sf "${BASE}:${CHAT_BACKEND_PORT:-8010}/props" 2>&1 || true)
         check "GET :${CHAT_BACKEND_PORT:-8010}/props returns slot geometry" "${PROPS}" '"total_slots"'

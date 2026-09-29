@@ -138,6 +138,8 @@ def build_cmake(dep: dict, jobs: int) -> None:
             if not any(existing.startswith(flag) for existing in cmake_args):
                 cmake_args.append(arg)
         print(f"Accelerator: {' '.join(accelerator_args)}", flush=True)
+    if dep.get("cuda_toolchain"):
+        cmake_args.extend(cuda_toolchain_args(cmake_args))
     build_dir.mkdir(parents=True, exist_ok=True)
     run(["cmake", "-S", str(source), "-B", str(build_dir), *cmake_args])
     build_cmd = ["cmake", "--build", str(build_dir)]
@@ -150,6 +152,44 @@ def build_cmake(dep: dict, jobs: int) -> None:
         raise SystemExit(f"Expected dependency binary was not built: {binary}")
     if dep.get("require_gpu"):
         verify_gpu_binary(binary)
+    elif dep.get("verify_help"):
+        verify_runs(binary)
+
+
+def cuda_toolchain_args(cmake_args: list[str]) -> list[str]:
+    """nvcc and a host compiler for a CUDA project that is not llama.cpp.
+
+    `require_gpu` means llama.cpp: it adds -DGGML_CUDA=ON and probes the result
+    with `--list-devices`. A project such as NInfer names its own CUDA
+    architectures in the manifest and needs only the compilers -- the newest
+    toolkit under /usr/local, which the PATH nvcc often is not, and GCC 13 when
+    it is installed, the host compiler those projects are built with.
+    """
+    from platforms.linux import newest_nvcc
+
+    nvcc = newest_nvcc() if platforms.active().name == "linux" else ""
+    if not nvcc:
+        raise SystemExit("CUDA toolkit compiler nvcc was not found; "
+                         "run the setup system-dependencies stage")
+    wanted = {"-DCMAKE_CUDA_COMPILER": nvcc}
+    if Path("/usr/bin/g++-13").exists():
+        wanted.update({"-DCMAKE_C_COMPILER": "/usr/bin/gcc-13",
+                       "-DCMAKE_CXX_COMPILER": "/usr/bin/g++-13",
+                       "-DCMAKE_CUDA_HOST_COMPILER": "/usr/bin/g++-13"})
+    return [f"{flag}={value}" for flag, value in wanted.items()
+            if not any(existing.startswith(flag + "=") for existing in cmake_args)]
+
+
+def verify_runs(binary: Path) -> None:
+    """Refuse a binary that cannot even print its usage -- a missing shared
+    library or a CUDA runtime mismatch shows up here rather than at service start."""
+    try:
+        result = subprocess.run([str(binary), "--help"], capture_output=True, text=True, timeout=30)
+    except Exception as exc:
+        raise SystemExit(f"Unable to run {binary}: {exc}") from exc
+    if result.returncode != 0:
+        raise SystemExit(f"{binary} --help exited {result.returncode}:\n"
+                         f"{(result.stdout + result.stderr).strip()}")
 
 
 def verify_gpu_binary(binary: Path) -> None:

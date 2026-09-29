@@ -47,6 +47,28 @@
       ],
       "require_gpu": true,
       "enabled_env": "LLAMACPP_MOE_STREAM_ENABLED"
+    },
+    {
+      "name": "ninfer-3090",
+      "type": "git-cmake",
+      "repo": "https://github.com/ashalliants/ninfer-3090.git",
+      "ref": "da0f15c25d",
+      "path": "deps/ninfer-3090",
+      "build_dir": "deps/ninfer-3090/build-sm86",
+      "target": "ninfer-serve",
+      "binary": "deps/ninfer-3090/build-sm86/apps/ninfer-serve",
+      "cmake_args": [
+        "-G",
+        "Ninja",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_CUDA_ARCHITECTURES=86",
+        "-DNINFER_BUILD_APPS=ON",
+        "-DBUILD_TESTING=OFF",
+        "-DNINFER_BUILD_BENCHMARKS=OFF"
+      ],
+      "cuda_toolchain": true,
+      "verify_help": true,
+      "enabled_env": "NINFER_ENABLED"
     }
   ]
 }

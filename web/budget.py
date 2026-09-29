@@ -921,6 +921,15 @@ def budget_for(env: dict, backend: str = "llm-a",
         result["error"] = "an MTPLX pack, which MTPLX sizes itself at load; no GGUF estimate"
         result["pack"] = pack_sizes(model_path)
         return result
+    if model_path.endswith(".ninfer"):
+        # NInfer's own container, not a GGUF. It sizes the KV pool against the
+        # card at load and refuses to start when it cannot fit; the artifact
+        # size is the one fixed number, and the whole card is its to spend.
+        result["error"] = ("a NInfer artifact, which NInfer sizes against its GPU at load; "
+                           "no GGUF estimate")
+        if Path(model_path).is_file():
+            result["artifact_gib"] = round(Path(model_path).stat().st_size / 1024**3, 2)
+        return result
     if not model_path or not Path(model_path).is_file():
         result["error"] = f"model not found: {model_path or '(unset)'}"
         return result

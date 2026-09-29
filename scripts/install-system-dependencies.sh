@@ -112,3 +112,13 @@ NVCC_PATH="$(find "/usr/local/cuda-${DESIRED_RELEASE}" /usr/local/cuda -maxdepth
 [[ -n "${NVCC_PATH}" ]] || NVCC_PATH="$(command -v nvcc || true)"
 [[ -x "${NVCC_PATH}" ]] || { echo "CUDA toolkit installed but nvcc was not found." >&2; exit 1; }
 echo "CUDA compiler: ${NVCC_PATH}"
+
+# NInfer (docs/ninfer.md) decodes images with FFmpeg and fetches media with
+# curl, and is built with GCC 13. Only for a stack that turned it on: nothing
+# else here needs the FFmpeg headers.
+STACK_CONFIG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/llm-stack.env"
+if [[ "${NINFER_ENABLED:-}" == "on" ]] || grep -qE '^NINFER_ENABLED="?on"?$' "${STACK_CONFIG}" 2>/dev/null; then
+  apt-get install -y --no-install-recommends gcc-13 g++-13 libcurl4-openssl-dev \
+    libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+  echo "NInfer build prerequisites installed."
+fi

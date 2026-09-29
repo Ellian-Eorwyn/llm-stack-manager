@@ -221,8 +221,8 @@ class Slot:
     def engine(self, env: dict) -> str:
         """The engine that serves this slot, with `auto` already decided.
 
-        `auto` reads the model: an MTPLX pack directory runs on MTPLX and
-        anything else on llama.cpp. It is what lets a chat slot switch between
+        `auto` reads the model: an MTPLX pack directory runs on MTPLX, a
+        `.ninfer` artifact on NInfer, and anything else on llama.cpp. It is what lets a chat slot switch between
         a GGUF and a pack by choosing the model alone, the way it always
         switched between two GGUFs.
         """
@@ -231,4 +231,6 @@ class Slot:
         if chosen != "auto":
             return chosen
         model = lookup(env, self.model_keys, self.prefixes)
-        return "mtplx" if is_mtplx_pack(model) else "llamacpp"
+        if is_mtplx_pack(model):
+            return "mtplx"
+        return "ninfer" if str(model or "").strip().endswith(".ninfer") else "llamacpp"

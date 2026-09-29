@@ -352,9 +352,7 @@ class LinuxPlatform(base.Platform):
         import shutil
 
         args = ["-DGGML_CUDA=ON"]
-        candidates = sorted(Path("/usr/local").glob("cuda-*/bin/nvcc"),
-                            key=_cuda_path_version, reverse=True)
-        nvcc = str(candidates[0]) if candidates else (shutil.which("nvcc") or "")
+        nvcc = newest_nvcc()
         if not nvcc:
             raise RuntimeError(
                 "CUDA toolkit compiler nvcc was not found; "
@@ -394,6 +392,18 @@ class LinuxPlatform(base.Platform):
                 return f"the build reports: {marker}"
         return ""
 
+
+
+def newest_nvcc() -> str:
+    """The newest /usr/local/cuda-*/bin/nvcc, else nvcc on PATH, else "".
+
+    Newest rather than PATH first: Ubuntu's own nvidia-cuda-toolkit package
+    puts an older nvcc on PATH beside the NVIDIA toolkits in /usr/local."""
+    import shutil
+
+    candidates = sorted(Path("/usr/local").glob("cuda-*/bin/nvcc"),
+                        key=_cuda_path_version, reverse=True)
+    return str(candidates[0]) if candidates else (shutil.which("nvcc") or "")
 
 
 def _cuda_path_version(path: Path) -> tuple[int, ...]:

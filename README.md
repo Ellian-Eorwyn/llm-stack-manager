@@ -208,6 +208,8 @@ Before a new model replaces one, measure it: `scripts/eval-run.py` serves each c
 
 Qwen3.8-27B can also be served by [Splash](docs/splash.md) (`LLM_A_ENGINE=splash`): same answers as MTPLX at 8-bit, about twice as fast on code at 128k-200k context, in ~48 GiB at 200k.
 
+On an NVIDIA RTX 3090 it can be served by [NInfer](docs/ninfer.md) (`LLM_A_ENGINE=ninfer`, or `auto` with a `.ninfer` model): about twice llama.cpp's decode speed on prose and 1.6-2x on code at 131K context, with vision, on one 24 GB card.
+
 ## Model router (on-demand auxiliary models)
 
 `embed`, `ocr`, `rerank` and `task` each hold VRAM from the moment they start, though none is busy for more than seconds at a time. Setting `MODEL_ROUTER_ENABLED=on` replaces those four units with a single `llama-router` running llama.cpp's router mode: models load on the first request that names them and evict each other once `MODEL_ROUTER_MAX` are resident.

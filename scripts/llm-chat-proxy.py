@@ -37,10 +37,10 @@ import socket
 
 BACKEND_HOST = os.environ.get("CHAT_BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("CHAT_BACKEND_PORT", "8010"))
-#: The engine behind the backend port (`backends/proxies.py`). Only Splash
-#: changes anything here: see `_inject_thinking`.
+#: The engine behind the backend port (`backends/proxies.py`). Splash and
+#: NInfer change what is sent: see `_inject_thinking` and `_adapt_for_ninfer`.
 BACKEND_ENGINE = os.environ.get("CHAT_BACKEND_ENGINE", "").strip()
-#: The name the backend itself serves. Splash refuses any other with a 404,
+#: The name the backend itself serves. Splash and NInfer refuse any other,
 #: where llama.cpp and MTPLX answer whatever a request calls them.
 BACKEND_MODEL = os.environ.get("CHAT_BACKEND_MODEL", "").strip()
 THINK_PORT = int(os.environ.get("THINK_PORT", "8003"))
@@ -1466,6 +1466,82 @@ def _normalize_json_object_response_format(payload: dict[str, Any]):
     payload["response_format"] = {**fmt, "schema": {"type": "object"}}
 
 
+#: What NInfer's OpenAI Responses route accepts at top level. It refuses
+#: anything else with `unknown_parameter` (openai_responses_request.cpp), so the
+#: sampler and llama.cpp fields the proxy adds for every engine are dropped.
+_NINFER_RESPONSES_FIELDS = frozenset({
+    "background", "chat_template_kwargs", "client_metadata", "context_management",
+    "conversation", "graft", "include", "input", "instructions", "max_output_tokens",
+    "max_tool_calls", "metadata", "model", "moderation", "parallel_tool_calls",
+    "previous_response_id", "preserve_thinking", "prompt", "prompt_cache_key",
+    "prompt_cache_options", "prompt_cache_retention", "reasoning", "safety_identifier",
+    "service_tier", "store", "stream", "stream_options", "temperature", "text",
+    "tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user",
+})
+
+
+def _adapt_for_ninfer(payload: dict[str, Any], kind: str | None, is_generation: bool):
+    """Reshape a request for NInfer, which refuses what it cannot honour
+    instead of ignoring it (docs/ninfer.md).
+
+    It serves exactly one model name. On a generation request it rejects a
+    non-neutral `repetition_penalty`, nonzero `logit_bias`, requested log
+    probabilities and `tool_choice: "required"`, none of which it can provide;
+    a client that asked for them gets the nearest thing it can do rather than
+    a 400 -- tools stay offered, sampling stays as sent -- and the proxy log
+    says what was dropped. `top_k` is capped at 20, its top-k window.
+    """
+    if BACKEND_MODEL and "model" in payload:
+        payload["model"] = BACKEND_MODEL
+    if not is_generation:
+        return
+    dropped: list[str] = []
+    if kind == "responses":
+        # Responses carries the level under `reasoning`, and the thinking
+        # switch it takes from chat_template_kwargs.
+        effort = payload.pop("reasoning_effort", None)
+        kwargs = payload.get("chat_template_kwargs")
+        if isinstance(kwargs, dict) and kwargs.get("enable_thinking") is False:
+            effort = "none"
+        if isinstance(effort, str) and effort:
+            reasoning = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else {}
+            payload["reasoning"] = {**reasoning, "effort": effort}
+        for key in [key for key in payload if key not in _NINFER_RESPONSES_FIELDS]:
+            payload.pop(key)
+            dropped.append(key)
+    else:
+        # A level beside `enable_thinking: false` is a 400
+        # (`conflicting_template_option`); "none" beside it is the same
+        # request said consistently.
+        kwargs = payload.get("chat_template_kwargs")
+        if isinstance(kwargs, dict) and kwargs.get("enable_thinking") is False:
+            kwargs.pop("reasoning_effort", None)
+            if payload.get("reasoning_effort") not in (None, "none"):
+                payload["reasoning_effort"] = "none"
+        penalty = payload.get("repetition_penalty")
+        if isinstance(penalty, (int, float)) and penalty != 1:
+            payload.pop("repetition_penalty")
+            dropped.append("repetition_penalty")
+        bias = payload.get("logit_bias")
+        if isinstance(bias, dict) and any(value for value in bias.values()):
+            payload.pop("logit_bias")
+            dropped.append("logit_bias")
+        if payload.get("logprobs") is True:
+            payload.pop("logprobs")
+            dropped.append("logprobs")
+        if payload.get("top_logprobs"):
+            payload.pop("top_logprobs")
+            dropped.append("top_logprobs")
+        top_k = payload.get("top_k")
+        if isinstance(top_k, (int, float)) and not 0 <= top_k <= 20:
+            payload["top_k"] = 20 if top_k > 20 else 0
+    if payload.get("tool_choice") == "required":
+        payload["tool_choice"] = "auto"
+        dropped.append("tool_choice=required")
+    if dropped:
+        _log(f"ninfer-adapt kind={kind or 'chat'} dropped={','.join(dropped)}")
+
+
 def _requested_model_id_from_path(path: str) -> str:
     normalized = _normalized_path(path)
     prefix = "/v1/models/"
@@ -1702,6 +1778,8 @@ def make_handler(
 
                 if BACKEND_ENGINE == "splash" and BACKEND_MODEL and "model" in payload:
                     payload["model"] = BACKEND_MODEL
+                elif BACKEND_ENGINE == "ninfer":
+                    _adapt_for_ninfer(payload, kind, is_generation_request)
                 body = _body_from_json(payload, body)
 
             headers = _filtered_upstream_headers(self.headers)

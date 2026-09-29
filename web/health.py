@@ -263,6 +263,18 @@ ENGINE_PROBES = {
         "host_key": "CHAT2_BACKEND_HOST", "port_key": "CHAT2_BACKEND_PORT",
         "default_port": "8020", "expect_field": ("status", "ready"),
     },
+    # NInfer's `/health` is 503 "unavailable" until the engine has loaded and
+    # 200 "ok" after -- the gate gpu-lease waits on too.
+    ("llm-a", "ninfer"): {
+        "kind": "http", "path": "/health",
+        "host_key": "CHAT_BACKEND_HOST", "port_key": "CHAT_BACKEND_PORT",
+        "default_port": "8010", "expect_field": ("status", "ok"),
+    },
+    ("llm-b", "ninfer"): {
+        "kind": "http", "path": "/health",
+        "host_key": "CHAT2_BACKEND_HOST", "port_key": "CHAT2_BACKEND_PORT",
+        "default_port": "8020", "expect_field": ("status", "ok"),
+    },
 }
 
 #: Which env key names the engine for a service, and what it defaults to. A
