@@ -178,6 +178,10 @@ def resolve(proxy: Proxy, env: dict) -> dict[str, str]:
     host = pick(proxy.backend_host_key, "CHAT_BACKEND_HOST") or "127.0.0.1"
     out["CHAT_BACKEND_HOST"] = host
     out["CHAT_BACKEND_PORT"] = pick(proxy.backend_port_key) or proxy.backend_port_default
+    # Which engine answers behind this proxy: Splash turns thinking off by a
+    # different switch from the others, and the proxy has to send it.
+    from .slots import SLOTS
+    out["CHAT_BACKEND_ENGINE"] = SLOTS[proxy.slot].engine(env) if proxy.slot in SLOTS else ""
 
     for persona in PERSONAS:
         port_key, port_default = proxy.ports[persona]

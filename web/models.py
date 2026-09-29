@@ -153,6 +153,20 @@ def list_chat_templates() -> list[dict]:
     return templates
 
 
+#: Above this share of the machine's memory a model is marked as one to run
+#: with SSD offload. Past it the weights leave too little for KV, the rest of
+#: the stack and macOS itself -- a 72 GB trunk is already that on a 96 GB Mac.
+OFFLOAD_SUGGESTED_SHARE = 0.7
+
+
+def _offload_suggested(resident_bytes: int) -> bool:
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return False
+    return total > 0 and resident_bytes > total * OFFLOAD_SUGGESTED_SHARE
+
+
 def list_gguf_files() -> list:
     """Return all .gguf files in the models directory."""
     files = []
@@ -169,6 +183,7 @@ def list_gguf_files() -> list:
                 "relative": str(f.relative_to(core.MODELS_DIR)),
                 "is_mmproj": is_mmproj_gguf(f.name, f.stat().st_size),
                 "kind": "gguf",
+                "offload_suggested": _offload_suggested(f.stat().st_size),
             })
     return files
 
@@ -192,8 +207,12 @@ def list_mtplx_packs() -> list:
         relative = pack.relative_to(core.MODELS_DIR)
         if any(part.startswith('.') or part.endswith('.part') for part in relative.parts):
             continue
-        size = sum(f.stat().st_size for f in pack.rglob('*')
-                   if f.is_file() and not f.relative_to(pack).parts[0].startswith('.'))
+        files = [f for f in pack.rglob('*')
+                 if f.is_file() and not f.relative_to(pack).parts[0].startswith('.')]
+        size = sum(f.stat().st_size for f in files)
+        # A Flash-Next pack's n-gram table is streamed from the SSD whatever the
+        # setting, so it does not count towards what the pack holds.
+        held = size - sum(f.stat().st_size for f in files if f.name == "ngram-table.safetensors")
         packs.append({
             "path": str(pack),
             "name": pack.name,
@@ -201,6 +220,7 @@ def list_mtplx_packs() -> list:
             "relative": str(relative),
             "is_mmproj": False,
             "kind": "mtplx",
+            "offload_suggested": _offload_suggested(held),
         })
     return packs
 

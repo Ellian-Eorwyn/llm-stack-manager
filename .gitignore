@@ -82,3 +82,7 @@ unsloth_compiled_cache/
 # Which services this box is meant to be running. Recorded by the manager as
 # they are started and stopped, so it is per-install state, not configuration.
 /config/service-expectations.json
+
+# Model evaluation: the local candidate list and every result (docs/model-evals.md)
+/config/eval-candidates.json
+/benchmarks/

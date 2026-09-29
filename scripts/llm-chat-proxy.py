@@ -37,6 +37,9 @@ import socket
 
 BACKEND_HOST = os.environ.get("CHAT_BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("CHAT_BACKEND_PORT", "8010"))
+#: The engine behind the backend port (`backends/proxies.py`). Only Splash
+#: changes anything here: see `_inject_thinking`.
+BACKEND_ENGINE = os.environ.get("CHAT_BACKEND_ENGINE", "").strip()
 THINK_PORT = int(os.environ.get("THINK_PORT", "8003"))
 NOTHINK_PORT = int(os.environ.get("NOTHINK_PORT", "8004"))
 CODE_PORT = int(os.environ.get("CODE_PORT", "8008"))
@@ -1406,6 +1409,11 @@ def _inject_thinking(
 
     kwargs["enable_thinking"] = enabled
     payload["chat_template_kwargs"] = kwargs
+    # Splash ignores enable_thinking and thinks at its default level unless
+    # told `reasoning_effort: "none"`. llama.cpp and MTPLX never see this: the
+    # Qwen template raises on a level it does not know, and "none" is one.
+    if not enabled and BACKEND_ENGINE == "splash":
+        payload["reasoning_effort"] = "none"
 
 
 def _strip_tool_fields(payload: dict[str, Any]):

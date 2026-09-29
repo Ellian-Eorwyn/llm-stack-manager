@@ -165,3 +165,8 @@ The slot's engine setting, `LLM_A_ENGINE` (LLM A Server in the UI), is `auto`
 by default: a pack runs on MTPLX and a GGUF on llama.cpp, so the model is the
 whole switch. Setting it to `llamacpp` or `mtplx` forces one, and a model that
 contradicts a forced engine is refused at start with the reason.
+
+A pack too big to hold whole -- Qwen 3.8 Flash-Next, whose n-gram table MTPLX
+streams from the SSD -- runs with the slot's Memory Mode at `ssd-offload`,
+which sets MTPLX's memory budget and n-gram pre-read. See
+[ssd-offload.md](ssd-offload.md).

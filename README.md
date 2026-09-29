@@ -202,6 +202,12 @@ Model files stay outside git. The wizard supports the primary, secondary, embedd
 
 The CUDA build no longer assumes CUDA 13.3, compute capability 8.6, two GPUs, or GPU 1. Setup queries every GPU through `nvidia-smi`, selects a driver-compatible toolkit, builds a pinned llama.cpp revision for the detected compute capabilities, reserves 10% of reported free VRAM, and generates placement for the chosen model files. GLM-OCR layout processing is always restricted to one GPU.
 
+A model bigger than the memory it may use runs with SSD offload: set the chat slot's Memory Mode to `ssd-offload` and give it a RAM budget, and the weights (or the parts of them the engine can stream, such as Flash-Next's n-gram table or, on a streaming build, MoE experts) stay on the SSD. See [docs/ssd-offload.md](docs/ssd-offload.md).
+
+Before a new model replaces one, measure it: `scripts/eval-run.py` serves each candidate in turn and runs speed, general-quality and workload suites (long-document synthesis, coding passages against a scheme, grounding, classification, prose), and `scripts/eval-report.py` puts them side by side. See [docs/model-evals.md](docs/model-evals.md).
+
+Qwen3.8-27B can also be served by [Splash](docs/splash.md) (`LLM_A_ENGINE=splash`): same answers as MTPLX at 8-bit, about twice as fast on code at 128k-200k context, in ~48 GiB at 200k.
+
 ## Model router (on-demand auxiliary models)
 
 `embed`, `ocr`, `rerank` and `task` each hold VRAM from the moment they start, though none is busy for more than seconds at a time. Setting `MODEL_ROUTER_ENABLED=on` replaces those four units with a single `llama-router` running llama.cpp's router mode: models load on the first request that names them and evict each other once `MODEL_ROUTER_MAX` are resident.

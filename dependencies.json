@@ -17,6 +17,36 @@
         "-DCMAKE_BUILD_TYPE=Release"
       ],
       "require_gpu": true
+    },
+    {
+      "name": "llama.cpp-next",
+      "type": "git-cmake",
+      "repo": "https://github.com/ggml-org/llama.cpp.git",
+      "ref": "66e665c4276ee46f3ec9872dd7e5a496842bc44f",
+      "path": "deps/llama.cpp-next",
+      "build_dir": "deps/llama.cpp-next/build",
+      "target": "llama-server",
+      "binary": "deps/llama.cpp-next/build/bin/llama-server",
+      "cmake_args": [
+        "-DCMAKE_BUILD_TYPE=Release"
+      ],
+      "require_gpu": true,
+      "enabled_env": "LLAMACPP_NEXT_ENABLED"
+    },
+    {
+      "name": "llama.cpp-moe-stream",
+      "type": "git-cmake",
+      "repo": "https://github.com/npanj/llama.cpp.git",
+      "ref": "f507d75f8dfeb90ad96c3e6a08129dbb1999d17a",
+      "path": "deps/llama.cpp-moe-stream",
+      "build_dir": "deps/llama.cpp-moe-stream/build",
+      "target": "llama-server",
+      "binary": "deps/llama.cpp-moe-stream/build/bin/llama-server",
+      "cmake_args": [
+        "-DCMAKE_BUILD_TYPE=Release"
+      ],
+      "require_gpu": true,
+      "enabled_env": "LLAMACPP_MOE_STREAM_ENABLED"
     }
   ]
 }

@@ -1,0 +1,14 @@
+{
+  "name": "flash-next-experts4-rest8",
+  "body_bits": 8,
+  "body_group_size": 64,
+  "body_mode": "affine",
+  "module_overrides": [
+    {"suffix": "switch_mlp.gate_proj", "bits": 4, "group_size": 64},
+    {"suffix": "switch_mlp.up_proj",   "bits": 4, "group_size": 64},
+    {"suffix": "switch_mlp.down_proj", "bits": 4, "group_size": 64}
+  ],
+  "ngram": {"bits": 4, "group_size": 32},
+  "qwen4_mtp_bits": 4,
+  "qwen4_qsa_8bit": true
+}

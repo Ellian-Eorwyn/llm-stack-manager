@@ -856,6 +856,8 @@ _SETTING_SUFFIXES = {
     "spec_method": "SPEC_METHOD",
     "spec_draft_type_k": "SPEC_DRAFT_TYPE_K",
     "spec_draft_type_v": "SPEC_DRAFT_TYPE_V",
+    "memory_mode": "MEMORY_MODE",
+    "ram_budget_gb": "RAM_BUDGET_GB",
 }
 
 
@@ -913,8 +915,11 @@ def budget_for(env: dict, backend: str = "llm-a",
     }
     if backends.spec.is_mtplx_pack(model_path):
         # Not a GGUF, so there is nothing here to read -- and MTPLX plans its
-        # own memory from the pack at load, reported by its /health.
+        # own memory from the pack at load, reported by its /health. What the
+        # files do say is how much of the pack is weights and how much is an
+        # n-gram table MTPLX streams from the SSD instead of holding.
         result["error"] = "an MTPLX pack, which MTPLX sizes itself at load; no GGUF estimate"
+        result["pack"] = pack_sizes(model_path)
         return result
     if not model_path or not Path(model_path).is_file():
         result["error"] = f"model not found: {model_path or '(unset)'}"
@@ -931,10 +936,61 @@ def budget_for(env: dict, backend: str = "llm-a",
         settings["projector_mib"] = Path(projector).stat().st_size / MIB
 
     prediction = predict(geometry, settings)
+    offload = offload_weights(geometry, settings, prediction)
+    if offload:
+        # Priced at what it holds, not at what it has on disk: the verdict for
+        # a 111 GB GGUF capped at 64 GB is about the 64.
+        settings["weights_mib"] = offload["resident_weights_mib"]
+        prediction = predict(geometry, settings)
+        result["offload"] = offload
     result["geometry"] = geometry
     result["prediction"] = prediction
     result["verdict"] = evaluate(geometry, settings, prediction, gpus, host)
     return result
+
+
+#: The file an MTPLX pack keeps its n-gram table in, streamed from the SSD.
+_NGRAM_SIDECAR = "ngram-table.safetensors"
+
+
+def pack_sizes(path) -> dict:
+    """How much of an MTPLX pack is held, and how much is streamed."""
+    held = streamed = 0
+    for item in Path(path).glob("*.safetensors"):
+        size = item.stat().st_size
+        if item.name == _NGRAM_SIDECAR:
+            streamed += size
+        else:
+            held += size
+    return {"weights_mib": round(held / MIB), "ssd_streamed_mib": round(streamed / MIB)}
+
+
+def offload_weights(geometry: dict, settings: dict, prediction: dict) -> dict | None:
+    """How much of an SSD-offloaded model is resident, or None when it is not.
+
+    With a RAM budget, the weights get what the budget leaves after the KV,
+    compute and overhead `predict` already priced, and the rest is on the SSD.
+    Without one there is no ceiling to price against: mmap holds what macOS
+    lets it, so the weights are priced whole and the note says why.
+    """
+    if str(settings.get("memory_mode") or "") != "ssd-offload":
+        return None
+    file_mib = float(geometry["file_size_mib"])
+    vram = prediction["vram"]
+    around_weights = vram["total_mib"] - vram["weights_mib"]
+    try:
+        budget_mib = float(settings.get("ram_budget_gb") or 0) * 1024
+    except (TypeError, ValueError):
+        budget_mib = 0.0
+    if budget_mib <= 0:
+        return {"ram_budget_mib": None, "file_weights_mib": round(file_mib),
+                "resident_weights_mib": round(file_mib), "on_ssd_mib": 0,
+                "note": "no RAM budget set, so the weights are priced as if all resident"}
+    resident = max(0.0, min(file_mib, budget_mib - around_weights))
+    return {"ram_budget_mib": round(budget_mib), "file_weights_mib": round(file_mib),
+            "resident_weights_mib": round(resident), "on_ssd_mib": round(file_mib - resident),
+            "note": ("the budget leaves no room for weights after KV and compute"
+                     if resident <= 0 else "")}
 
 
 # Terms of an existing configuration that change the footprint without being

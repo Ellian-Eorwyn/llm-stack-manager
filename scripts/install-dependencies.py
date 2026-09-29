@@ -254,11 +254,11 @@ def install_dependency(dep: dict, *, update: bool, force: bool, jobs: int) -> No
 
     print(f"\n== {name} ==", flush=True)
     path = install_git_checkout(dep, update=update, force=force)
-    # `git-uv` and `enabled_env` have no user in the shipped manifest since the
-    # local memory service was dropped -- llama.cpp is the only dependency, and
-    # it is unconditional. Both are kept as the manifest's extension points
-    # rather than deleted along with their one caller; named here so the next
-    # person knows they are untested by anything this repo installs.
+    # `git-uv` has no user in the shipped manifest since the local memory
+    # service was dropped; it is kept as an extension point rather than deleted
+    # along with its one caller, and is untested by anything this repo
+    # installs. `enabled_env` gates the optional llama.cpp builds that SSD
+    # offload uses (docs/ssd-offload.md), which nothing installs by default.
     if dep_type == "git-cmake":
         build_cmake(dep, jobs)
     elif dep_type == "git-uv":
@@ -272,15 +272,26 @@ def main() -> int:
     parser.add_argument("--update", action="store_true", help="fetch and fast-forward existing dependency checkouts")
     parser.add_argument("--force", action="store_true", help="allow updating dirty dependency checkouts")
     parser.add_argument("--jobs", type=int, default=max(1, min((os.cpu_count() or 2) - 1, 4)))
+    # So an optional build can be added without rebuilding the pinned one under
+    # a running stack. Naming a dependency is opting in to it: its enabled_env
+    # is not consulted.
+    parser.add_argument("--only", action="append", default=[], metavar="NAME",
+                        help="install just this dependency (repeatable)")
     args = parser.parse_args()
     if args.jobs < 1:
         raise SystemExit("--jobs must be >= 1")
     prepend_nvm_node()
     require_tool("git")
     data = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    if any(dep.get("type") == "git-cmake" for dep in data.get("dependencies", [])):
+    deps = data.get("dependencies", [])
+    if args.only:
+        unknown = set(args.only) - {dep["name"] for dep in deps}
+        if unknown:
+            raise SystemExit(f"Not in dependencies.json: {', '.join(sorted(unknown))}")
+        deps = [dict(dep, enabled_env=None) for dep in deps if dep["name"] in args.only]
+    if any(dep.get("type") == "git-cmake" for dep in deps):
         require_tool("cmake")
-    for dep in data.get("dependencies", []):
+    for dep in deps:
         install_dependency(dep, update=args.update, force=args.force, jobs=args.jobs)
     return 0
 

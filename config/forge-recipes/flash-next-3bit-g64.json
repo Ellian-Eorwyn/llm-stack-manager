@@ -1,0 +1,9 @@
+{
+  "name": "flash-next-3bit-g64",
+  "body_bits": 3,
+  "body_group_size": 64,
+  "body_mode": "affine",
+  "ngram": {"bits": 4, "group_size": 32},
+  "qwen4_mtp_bits": 4,
+  "qwen4_qsa_8bit": true
+}

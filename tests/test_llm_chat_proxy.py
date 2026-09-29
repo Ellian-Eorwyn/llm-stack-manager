@@ -153,6 +153,21 @@ class ReasoningEffortTests(unittest.TestCase):
     def test_case_and_surrounding_space_are_ignored(self):
         self.assertEqual(proxy._normalize_reasoning_effort("  XHigh "), "xhigh")
 
+    def test_splash_is_told_none_when_thinking_is_off(self):
+        original = proxy.BACKEND_ENGINE
+        self.addCleanup(setattr, proxy, "BACKEND_ENGINE", original)
+        proxy.BACKEND_ENGINE = "splash"
+        off = {}
+        proxy._inject_thinking(off, False, None, None)
+        self.assertEqual(off["reasoning_effort"], "none")
+        on = {}
+        proxy._inject_thinking(on, True, True, "medium")
+        self.assertEqual(on["reasoning_effort"], "medium")
+        proxy.BACKEND_ENGINE = "mtplx"
+        other = {}
+        proxy._inject_thinking(other, False, None, None)
+        self.assertNotIn("reasoning_effort", other)
+
     def test_endpoint_default_applies_when_the_caller_says_nothing(self):
         payload = {}
         proxy._inject_thinking(payload, True, True, "xhigh")

@@ -251,6 +251,18 @@ ENGINE_PROBES = {
         "host_key": "CHAT2_BACKEND_HOST", "port_key": "CHAT2_BACKEND_PORT",
         "default_port": "8020", "expect_field": ("ok", True),
     },
+    # Splash's `/health` answers ok as soon as the HTTP server is up, before the
+    # model has loaded; `/ready` is the one that waits for the model.
+    ("llm-a", "splash"): {
+        "kind": "http", "path": "/ready",
+        "host_key": "CHAT_BACKEND_HOST", "port_key": "CHAT_BACKEND_PORT",
+        "default_port": "8010", "expect_field": ("status", "ready"),
+    },
+    ("llm-b", "splash"): {
+        "kind": "http", "path": "/ready",
+        "host_key": "CHAT2_BACKEND_HOST", "port_key": "CHAT2_BACKEND_PORT",
+        "default_port": "8020", "expect_field": ("status", "ready"),
+    },
 }
 
 #: Which env key names the engine for a service, and what it defaults to. A

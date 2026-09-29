@@ -8,6 +8,7 @@ import shlex
 
 import platforms
 
+from . import offload
 from .options import Context
 from .slots import COMMON_FLAGS, COMMON_TOGGLES
 from .spec import Slot, lookup
@@ -112,7 +113,9 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None,
     messages are what one caller wants.
     """
     prefixes = slot.prefixes
-    argv = [str(env.get("LLAMA_SERVER_BIN") or "llama-server")]
+    binary = offload.server_bin(slot, env)
+    memory = offload.settings(slot, env)
+    argv = [binary]
 
     argv += ["--model", _first(env, slot.model_keys, prefixes)]
     argv += ["--alias", _first(env, slot.alias_keys, prefixes) or slot.alias_default]
@@ -145,7 +148,13 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None,
                   said=said if said is not None else [])
 
     for toggle in COMMON_TOGGLES:
+        # An offloaded slot's weights must stay pageable, which is what these
+        # two prevent; its own loading arguments take their place.
+        if memory.active and toggle.name in ("--no-mmap", "--mlock"):
+            continue
         argv += toggle.resolve(env, prefixes, ctx)
+    if memory.active:
+        argv += offload.llamacpp_args(memory, binary, ctx.custom_has)
     for option in slot.tail:
         argv += option.resolve(env, prefixes, ctx)
 

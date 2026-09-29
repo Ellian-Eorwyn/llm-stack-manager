@@ -119,7 +119,8 @@ function ggufFilesForTarget(targetId = '') {
 }
 
 function modelFileLabel(file) {
-  return `${file.name} (${file.size_gb} GB)${file.kind === 'mtplx' ? ' · MTPLX' : ''}`;
+  return `${file.name} (${file.size_gb} GB)${file.kind === 'mtplx' ? ' · MTPLX' : ''}`
+    + (file.offload_suggested ? ' · SSD offload suggested' : '');
 }
 
 function fillCustomModelIdentityFromPath(path = '', overwrite = false) {

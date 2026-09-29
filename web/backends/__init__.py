@@ -7,7 +7,7 @@ point where llama.cpp and MLX diverge is exactly the flag assembly, which was
 previously duplicated across ten launcher scripts.
 """
 
-from . import llamacpp, mlx, mtplx, options, slots, spec, speculative
+from . import llamacpp, mlx, mtplx, options, slots, spec, speculative, splash
 from .slots import SLOTS
 from .spec import Flag, Slot, Toggle
 
@@ -15,6 +15,7 @@ ENGINES = {
     "llamacpp": llamacpp,
     "mlx": mlx,
     "mtplx": mtplx,
+    "splash": splash,
 }
 
 
@@ -37,4 +38,4 @@ def build_command(slot_name: str, env: dict, extra=None, said=None) -> list[str]
 
 
 __all__ = ["ENGINES", "Flag", "SLOTS", "Slot", "Toggle", "build_command",
-           "llamacpp", "mlx", "mtplx", "options", "slots", "spec", "speculative"]
+           "llamacpp", "mlx", "mtplx", "options", "slots", "spec", "speculative", "splash"]

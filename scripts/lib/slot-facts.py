@@ -26,6 +26,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.environ.get("STACK_DIR", "."), "web"))
 
+from backends import offload  # noqa: E402
 from backends.slots import COMMON_FLAGS, SLOTS  # noqa: E402
 from backends.spec import lookup  # noqa: E402
 
@@ -64,6 +65,10 @@ def main() -> int:
         "FACT_VISIBLE": read(("GPU_VISIBLE_DEVICES",)),
         "FACT_SWA_FULL": read(("SWA_FULL",), "off"),
         "FACT_BUDGET_NAME": slot.budget,
+        # Which binary, so its libraries are the ones on the load path, and
+        # whether the weights may page: an offloaded slot must not be wired.
+        "FACT_LLAMA_SERVER_BIN": offload.server_bin(slot, env),
+        "FACT_MEMORY_MODE": offload.settings(slot, env).mode,
     }
     for key, value in facts.items():
         print(f"{key}={shlex.quote(value)}")
@@ -76,6 +81,10 @@ def main() -> int:
     for label, suffix in slot.preflight_fields:
         value = resolved[label] if not suffix else read((suffix,), defaults.get(suffix, ""))
         settings.append(f"{label}={value}")
+    # Only when on, so a resident slot's report is the one it always was.
+    memory = offload.settings(slot, env)
+    if memory.active:
+        settings += [f"memory_mode={memory.mode}", f"ram_budget_gb={memory.ram_budget_gb}"]
     print("FACT_PREFLIGHT=({})".format(" ".join(shlex.quote(s) for s in settings)))
     return 0
 

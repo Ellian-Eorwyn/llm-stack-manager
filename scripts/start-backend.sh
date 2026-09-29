@@ -41,7 +41,6 @@ set -a
 source "${STACK_DIR}/config/llm-stack.env"
 set +a
 source "${STACK_DIR}/scripts/lib/backend-preflight.sh"
-metal_keep_resident
 
 PREFIX="[${SLOT}]"
 PYTHON="${LLM_STACK_PYTHON:-python3}"
@@ -60,7 +59,19 @@ if [[ -z "${FACT_PREFIX:-}" ]]; then
 fi
 ENGINE="${FACT_ENGINE}"
 
+# Wiring every Metal buffer is what keeps a resident model fast, and exactly
+# what an SSD-offloaded one cannot have: pages that may never be evicted cannot
+# go back to the SSD. docs/ssd-offload.md.
+if [[ "${FACT_MEMORY_MODE:-resident}" == "ssd-offload" ]]; then
+    echo "${PREFIX} memory: ssd-offload (Metal buffers left unwired)"
+else
+    metal_keep_resident
+fi
+
 if [[ "${ENGINE}" == "llamacpp" ]]; then
+    # The slot's own build when it names one -- an expert-streaming fork, say --
+    # so the libraries loaded are that build's and not the pinned one's.
+    LLAMA_SERVER_BIN="${FACT_LLAMA_SERVER_BIN:-${LLAMA_SERVER_BIN:-}}"
     LLAMA_SERVER_DIR="${LLAMA_SERVER_BIN%/*}"
     export LD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${LD_LIBRARY_PATH:-}"
     export DYLD_LIBRARY_PATH="${LLAMA_SERVER_DIR}:${DYLD_LIBRARY_PATH:-}"

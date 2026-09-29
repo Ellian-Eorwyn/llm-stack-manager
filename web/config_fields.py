@@ -36,6 +36,7 @@ from collections import defaultdict
 
 import backends
 import platforms
+from backends.offload import MEMORY_MODES
 
 LLAMA_KV_CACHE_OPTIONS = ["q8_0", "f16", "f32", "bf16", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl"]
 
@@ -369,6 +370,7 @@ CORE_CONFIG_SECTIONS = {
     "Playwright",
     "Transcription",
     "Apple Silicon (MLX)",
+    "SSD Offload",
     "Ports",
     "State API",
     "Control API",
@@ -418,6 +420,8 @@ LLAMA_REASONING_EFFORT_OPTIONS = [
     {"value": "xhigh", "label": "xhigh — thorough"},
     {"value": "medium", "label": "medium — unsteered"},
     {"value": "low", "label": "low — brief"},
+    # Splash's way of turning thinking off; llama.cpp and MTPLX ignore it.
+    {"value": "none", "label": "none — thinking off (Splash)"},
 ]
 
 CONFIG_FIELDS = [
@@ -471,7 +475,7 @@ CONFIG_FIELDS = [
     {"section": "LLM B", "key": "LLM_B_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "LLM B", "key": "LLM_B_CACHE_REUSE",           "label": "Cache Reuse Chunk",       "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
     {"section": "LLM B", "key": "LLM_B_SPEC_METHOD",           "label": "Speculative Method",      "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
-    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",       "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
+    {"section": "LLM B", "key": "LLM_B_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",       "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod. Measured as no faster than MTP alone on MoE models, and on an SSD-offloaded one each extra draft is more experts to read: pick one"},
     {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",        "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
     {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",      "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
     {"section": "LLM B", "key": "LLM_B_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",           "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
@@ -536,7 +540,7 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_METRICS", "label": "Metrics Endpoint", "type": "select", "options": LLAMA_METRICS_OPTIONS, "hint": "Controls --metrics; enables the backend's Prometheus endpoint for the telemetry panel"},
     {"section": "Shared Backend", "key": "CHAT_CACHE_REUSE",           "label": "Cache Reuse Chunk",      "type": "number", "hint": "llama.cpp --cache-reuse minimum chunk size; 0 leaves llama.cpp default"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_METHOD",           "label": "Speculative Method",     "type": "select", "options": LLAMA_SPEC_METHOD_OPTIONS, "hint": "Base llama.cpp mode. draft-dflash requires an upstream DFlash draft GGUF with general.architecture=dflash;"},
-    {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod"},
+    {"section": "Shared Backend", "key": "CHAT_SPEC_NGRAM_MOD",        "label": "N-Gram Mod Assist",      "type": "select", "options": ["off", "on"], "hint": "When on, appends ngram-mod to MTP-style spec types, e.g. draft-mtp,ngram-mod. Measured as no faster than MTP alone on MoE models, and on an SSD-offloaded one each extra draft is more experts to read: pick one"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_MODEL_PATH", "label": "Draft Model Path",       "type": "path",   "hint": "Smaller GGUF used as the speculative draft model"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_N_GPU_LAYERS", "label": "Draft GPU Layers",     "type": "text",   "hint": "Draft-model --spec-draft-ngl value: auto, all, or an exact layer count"},
     {"section": "Shared Backend", "key": "CHAT_SPEC_DRAFT_DEVICES",    "label": "Draft Devices",          "type": "text",   "hint": "Optional --spec-draft-device override, e.g. 0,1 or none"},
@@ -556,6 +560,21 @@ CONFIG_FIELDS = [
     {"section": "Shared Backend", "key": "CHAT_LORA_SCALES",                 "label": "LoRA Scales",          "type": "text",   "hint": "One scale per adapter, comma separated, in the same order. Blank means 1.0. With preloading unapplied this is the strength the Services page restores when you switch an adapter on"},
     {"section": "Shared Backend", "key": "CHAT_LORA_INIT_WITHOUT_APPLY",     "label": "Preload Unapplied",    "type": "select", "options": ["on", "off"], "hint": "On: every adapter loads at scale 0 and is switched on from the Services page. Off: they all apply at their configured scale from startup, and stack"},
     {"section": "Shared Backend", "key": "CHAT_CUSTOM_ARGS_JSON",      "label": "Custom Arguments",       "type": "custom_args", "hint": "Extra llama.cpp flags applied to all shared chat backends"},
+    # SSD Offload. Written out per slot, as the MLX section's are, rather than
+    # cloned from the Shared Backend: these have no legacy `CHAT_*` spelling to
+    # inherit from. Everything but the mode is inert at `resident`, which is
+    # what keeps a slot's command line unchanged until it is switched on.
+    # docs/ssd-offload.md says what each engine does with them.
+    *[field
+      for slot, label in (("LLM_A", "LLM A"), ("LLM_B", "LLM B"))
+      for field in (
+        {"section": "SSD Offload", "key": f"{slot}_MEMORY_MODE",      "label": f"{label} Memory Mode",        "type": "select", "options": list(MEMORY_MODES), "hint": "resident: the whole model is held in memory, as before. ssd-offload: weights may live partly on the SSD -- for a model bigger than the RAM it may use. The settings below only apply here"},
+        {"section": "SSD Offload", "key": f"{slot}_RAM_BUDGET_GB",    "label": f"{label} RAM Budget (GiB)",    "type": "number", "hint": "Most the backend may hold resident: weights, KV and caches together. MTPLX refuses at load if the pack cannot fit it. Blank: the engine's own limit"},
+        {"section": "SSD Offload", "key": f"{slot}_NGRAM_PREWARM",    "label": f"{label} N-Gram Table Pre-read", "type": "text", "hint": "Flash-Next's n-gram table always streams from the SSD; this is how much of it MTPLX reads ahead at load. auto (MTPLX's default) fits what free memory allows, off reads on demand (~18% slower decode), all, or a GiB count"},
+        {"section": "SSD Offload", "key": f"{slot}_EXPERT_CACHE_GB",  "label": f"{label} Expert Cache (GiB)", "type": "number", "hint": "MoE experts kept in memory by a build that streams the rest from the SSD (--moe-stream). More is fewer SSD reads per token. Blank lets the build choose; ignored by builds without streaming, and by MTPLX"},
+        {"section": "SSD Offload", "key": f"{slot}_EXPERT_STREAM_IO_THREADS", "label": f"{label} Stream Reader Threads", "type": "number", "hint": "--moe-stream-io-threads on a streaming build (default 8)"},
+        {"section": "SSD Offload", "key": f"{slot}_LLAMA_SERVER_BIN", "label": f"{label} llama-server Binary", "type": "executable_path", "hint": "This slot's own llama-server, e.g. an expert-streaming build under deps/. Blank: the stack's LLAMA_SERVER_BIN"},
+      )],
     # Task Model
     {"section": "Task Model",  "key": "TASK_MODEL_NAME",            "label": "Model Name",           "type": "text",   "hint": "Advertised on /v1/models for the task endpoint"},
     {"section": "Task Model",  "key": "TASK_MODEL_PATH",            "label": "Task Model Path",      "type": "path"},
@@ -947,12 +966,15 @@ CONFIG_FIELDS = [
     {"section": "Transcription", "key": "TRANSCRIPT_ENGINES",           "label": "Installed Engines",      "type": "text",   "hint": "Comma-separated --engines tokens for scripts/install-transcribe.sh"},
     {"section": "Apple Silicon (MLX)", "key": "EMBED_ENGINE",      "label": "Embedding Server",   "type": "select", "options": ["llamacpp", "mlx"], "hint": "Which process serves the embedding slot. mlx is Apple silicon only"},
     {"section": "Apple Silicon (MLX)", "key": "TRANSCRIPT_ENGINE",  "label": "Transcription Server", "type": "select", "options": ["sidecar", "parakeet-mlx"], "hint": "Which server runs. Distinct from Active Engine above, which picks the runtime *inside* the sidecar"},
-    {"section": "Apple Silicon (MLX)", "key": "LLM_A_ENGINE",       "label": "LLM A Server",       "type": "select", "options": ["auto", "llamacpp", "mtplx"], "hint": "auto: follows LLM A's model -- an MTPLX pack runs on MTPLX (Apple silicon only), a GGUF on llama.cpp -- so switching models is all it takes. The other two force one"},
-    {"section": "Apple Silicon (MLX)", "key": "LLM_B_ENGINE",       "label": "LLM B Server",       "type": "select", "options": ["auto", "llamacpp", "mtplx"], "hint": "As LLM A Server, for the second chat slot"},
+    {"section": "Apple Silicon (MLX)", "key": "LLM_A_ENGINE",       "label": "LLM A Server",       "type": "select", "options": ["auto", "llamacpp", "mtplx", "splash"], "hint": "auto: follows LLM A's model -- an MTPLX pack runs on MTPLX (Apple silicon only), a GGUF on llama.cpp -- so switching models is all it takes. The others force one. splash serves Qwen3.8-27B / Qwen3.6-35B-A3B only, with the model path set to a Hugging Face reference such as unsloth/Qwen3.8-27B-GGUF:Q8_0"},
+    {"section": "Apple Silicon (MLX)", "key": "LLM_B_ENGINE",       "label": "LLM B Server",       "type": "select", "options": ["auto", "llamacpp", "mtplx", "splash"], "hint": "As LLM A Server, for the second chat slot"},
     {"section": "Apple Silicon (MLX)", "key": "LLM_A_MTPLX_KV_QUANT", "label": "LLM A MTPLX KV Cache", "type": "select", "options": ["off", "q8", "q4"], "hint": "Quantizes LLM A's KV cache when an MTPLX pack serves it (the GGUF cache types do not apply). q8 halves it, ~8 GiB saved at 262k context, but on the Studio it cut decode at ~100k context from 68 to 22 tok/s: MTPLX 2.12 is only fast with it at short context"},
     {"section": "Apple Silicon (MLX)", "key": "LLM_B_MTPLX_KV_QUANT", "label": "LLM B MTPLX KV Cache", "type": "select", "options": ["off", "q8", "q4"], "hint": "As LLM A MTPLX KV Cache, for the second chat slot"},
     {"section": "Apple Silicon (MLX)", "key": "LLM_A_MTPLX_SESSION_TTL", "label": "LLM A MTPLX Idle Release (s)", "type": "number", "hint": "Seconds an idle conversation keeps its state in memory when an MTPLX pack serves LLM A (default 300). MTPLX's own default, an hour, stranded ~8 GB per compacted agent session. 0 keeps them until memory pressure"},
     {"section": "Apple Silicon (MLX)", "key": "LLM_B_MTPLX_SESSION_TTL", "label": "LLM B MTPLX Idle Release (s)", "type": "number", "hint": "As LLM A MTPLX Idle Release, for the second chat slot"},
+    {"section": "Apple Silicon (MLX)", "key": "LLM_A_SPLASH_KV_FORMAT", "label": "LLM A Splash KV Cache", "type": "select", "options": ["bf16", "int8"], "hint": "KV cache precision when Splash serves LLM A. bf16 (default here) is lossless; Splash's own default, int8, is not"},
+    {"section": "Apple Silicon (MLX)", "key": "LLM_B_SPLASH_KV_FORMAT", "label": "LLM B Splash KV Cache", "type": "select", "options": ["bf16", "int8"], "hint": "As LLM A Splash KV Cache, for the second chat slot"},
+    {"section": "Apple Silicon (MLX)", "key": "SPLASH_BIN",         "label": "Splash Binary",      "type": "executable_path", "hint": "brew install incoai/tap/splash. Blank: splash on PATH"},
     {"section": "Apple Silicon (MLX)", "key": "MTPLX_VENV",         "label": "MTPLX Venv",         "type": "path",   "hint": "Created by scripts/install-mtplx-runtime.sh; separate from the MLX runtime because their mlx pins differ"},
     {"section": "Apple Silicon (MLX)", "key": "METAL_KEEP_MODELS_RESIDENT", "label": "Keep Models Wired", "type": "select", "options": ["on", "off"], "hint": "on: llama.cpp keeps each model's Metal buffers wired while idle, so macOS cannot compress or swap them. off: llama.cpp's default, which lets go 3 minutes after the last request"},
     {"section": "Apple Silicon (MLX)", "key": "MLX_RUNTIME_VENV",   "label": "Runtime Venv",       "type": "path",   "hint": "Kept apart from the manager's own venv, which depends on nothing but Flask"},

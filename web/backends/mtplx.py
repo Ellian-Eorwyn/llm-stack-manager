@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import platforms
 
+from . import offload
 from .llamacpp import custom_args
 from .options import REASONING_EFFORTS
 from .slots import COMMON_FLAGS
@@ -117,6 +118,12 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     ttl = _first(env, ("MTPLX_SESSION_TTL",), prefixes) or DEFAULT_SESSION_TTL_S
     if ttl.isdigit():
         argv.append(f"MTPLX_SESSION_BANK_IDLE_TTL_S={ttl}")
+    # SSD offload. MTPLX streams a pack's n-gram table from the SSD whatever
+    # this says; what an offloaded slot adds is a ceiling on everything else,
+    # and how much of the table to pre-read. It has no expert streaming, so
+    # EXPERT_CACHE_GB means nothing here -- see backends/offload.py.
+    memory = offload.settings(slot, env)
+    argv += offload.mtplx_env(memory)
 
     argv += [f"{venv}/bin/mtplx", "serve",
              "--model", model,
@@ -164,6 +171,7 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     if kv_quant in KV_QUANT_MODES:
         argv += ["--paged-kv-quantization", kv_quant]
 
+    argv += offload.mtplx_args(memory)
     argv += custom_args(env, ARGS_KEYS, prefixes)
     argv += list(extra or [])
     return argv

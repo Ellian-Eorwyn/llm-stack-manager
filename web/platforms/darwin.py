@@ -169,6 +169,23 @@ def _process_memory_mib(pid: int) -> int | None:
     return info.ri_phys_footprint // (1024 * 1024) + mapped
 
 
+def _process_disk_read_bytes(pid: int) -> int | None:
+    """Bytes the process has read from disk since it started.
+
+    Counts page-ins of mapped files as well as reads, which is what makes it
+    the measure of an SSD-offloaded model: the difference across one request
+    is how much of the model that request had to fetch.
+    """
+    try:
+        lib = _libproc_handle()
+        info = _RUsageInfoV2()
+        if lib.proc_pid_rusage(int(pid), _RUSAGE_INFO_V2, ctypes.byref(info)) != 0:
+            return None
+    except (OSError, AttributeError, ValueError):
+        return None
+    return int(info.ri_diskio_bytesread)
+
+
 class DarwinPlatform(base.Platform):
     name = "darwin"
     unit_noun = "service"
