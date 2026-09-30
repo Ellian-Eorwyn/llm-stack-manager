@@ -79,11 +79,9 @@ Splash's own limit.
 Every page of KV Splash keeps is locked into RAM while it serves a request.
 With the chat proxy's keep-alive (see [Stalls](#stalls)) it stays locked while
 the stack is in use, and locked memory cannot be compressed or swapped. At
-48 GiB, 55 GiB of the Studio's 96 was wired. With about 9 GiB compressed,
-that left ~32 GiB for macOS and every app. On 2026-09-30 a busy desktop plus a
-test run went past that: macOS killed background daemons and showed its "out
-of application memory" dialog, without swapping. So the cap was not raised
-back to 60.
+48 GiB, 55 GiB of the Studio's 96 was wired. The Studio's config sets 56
+(`LLM_A_SPLASH_MAX_MEMORY_GB`), for about 64 GiB wired and ~410K tokens of
+conversations. The default stays at half of RAM for smaller Macs.
 
 ### The SSD tier
 

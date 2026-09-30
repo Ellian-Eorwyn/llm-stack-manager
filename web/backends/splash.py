@@ -39,9 +39,9 @@ else half of RAM (48 GiB on 96): the 27B's ~33 GiB of weights and buffers and
 Why not more: every page of KV Splash keeps is locked into RAM while it serves
 a request, and giving it back afterwards stalls every app's new windows and
 tabs, so the chat proxy keeps it locked while the stack is in use
-(docs/splash.md#stalls). Locked memory cannot be compressed or swapped: at
-48 GiB, 55 GiB of the Studio's 96 was wired, and the Mac still ran out of
-application memory once under a busy desktop.
+(docs/splash.md#stalls). Locked memory cannot be compressed or swapped, so
+the cap is also what macOS can never reclaim while the stack is in use. The
+Studio's own config sets 56.
 
 Splash can also move conversations it evicts to an SSD tier
 (`--max-cache-disk`, `{PREFIX}_SPLASH_MAX_CACHE_DISK_GB`). It is off unless
