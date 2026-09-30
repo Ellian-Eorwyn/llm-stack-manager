@@ -277,6 +277,49 @@ class ReasoningEffortTests(unittest.TestCase):
             self.assertIsNone(proxy._reasoning_effort_env("THINK_REASONING_EFFORT", "xhigh"))
 
 
+class SplashKeepaliveTests(unittest.TestCase):
+    """Splash gives back its locked KV cache a second after the last request,
+    which stalls every app's new window buffers; the proxy pings to keep it."""
+
+    def setUp(self):
+        self.addCleanup(proxy._RESIDENCY.update, dict(proxy._RESIDENCY))
+        proxy._RESIDENCY.update(in_flight=0, last=0.0)
+        patcher = mock.patch.object(proxy, "_lease_active", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_nothing_is_due_before_any_request(self):
+        self.assertFalse(proxy._keepalive_due(1000.0))
+
+    def test_pings_follow_a_request_until_the_window_closes(self):
+        with mock.patch.object(proxy.time, "monotonic", return_value=1000.0):
+            proxy._residency_begin()
+            self.assertFalse(proxy._keepalive_due(1001.0), "a running request holds the cache")
+            proxy._residency_end()
+        window = proxy.SPLASH_KEEP_RESIDENT_MIN * 60
+        self.assertTrue(proxy._keepalive_due(1001.0))
+        self.assertTrue(proxy._keepalive_due(1000.0 + window - 1))
+        self.assertFalse(proxy._keepalive_due(1000.0 + window + 1))
+
+    def test_overlapping_requests_hold_until_the_last_ends(self):
+        proxy._residency_begin()
+        proxy._residency_begin()
+        proxy._residency_end()
+        self.assertFalse(proxy._keepalive_due(time_now()))
+        proxy._residency_end()
+        self.assertTrue(proxy._keepalive_due(time_now()))
+
+    def test_no_pings_while_the_backend_is_lent_out(self):
+        proxy._residency_begin()
+        proxy._residency_end()
+        with mock.patch.object(proxy, "_lease_active", return_value=True):
+            self.assertFalse(proxy._keepalive_due(time_now()))
+
+
+def time_now() -> float:
+    return proxy.time.monotonic()
+
+
 class ResponseHelpersTests(unittest.TestCase):
     def test_filtered_upstream_headers_removes_hop_by_hop_and_framing_headers(self):
         headers = {

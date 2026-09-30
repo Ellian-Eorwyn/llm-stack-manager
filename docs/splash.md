@@ -77,23 +77,64 @@ about 15 GiB for KV and state: one bf16 conversation of about 230K tokens.
 Past that, Splash evicts the oldest instead of growing. `auto` restores
 Splash's own limit.
 
-The cap was 60 GiB until 2026-09-30, and the Mac stalled for 5–10 s at the
-start of each large request. While it serves a request, Splash wires the KV of
-every conversation it keeps, not only the one it is answering. At 60 GiB,
-27 GiB of kept conversations took wired memory from 37 to 67 GiB. macOS then
-had to make room all at once: the pointer and window dragging kept working,
-but apps stopped redrawing (Chrome could not switch tabs). A small Metal probe
-running every 16 ms never waited more than 3 ms, so GPU time was not the cause.
+The cap was 60 GiB until 2026-09-30. Every page of KV Splash keeps is locked
+into RAM while it serves a request, so a smaller cap also means less memory
+changing hands at each request; see [Stalls](#stalls).
 
 Evicted conversations go to the SSD (`--max-cache-disk`, 40 GiB by default).
 Resuming an older Hermes session then reads its KV back from disk instead of
-processing its whole prompt again. With the 48 GiB cap and an empty cache, a
-63K-token request peaked at 40 GiB wired.
+processing its whole prompt again.
 
 Splash reports its plan and live use on `/status` (`memory_plan.budget`,
 `memory_actual`) and `/metrics` (`splash_memory_current_bytes`,
 `splash_state_evictions_total`). The manager's memory panel counts the
 KV pages too; `footprint` does not.
+
+## Stalls
+
+With Splash serving an agent, the Mac froze for 1–30 s after nearly every
+turn. The pointer and window dragging kept working, but apps could not
+navigate, Chrome could not switch tabs, and windows sometimes went blank. It
+was worst when one conversation grew toward 200K tokens and was compacted
+again and again.
+
+The cause, measured on 2026-09-30 with a probe that times what apps ask the
+system for:
+
+- Splash locks its whole KV cache into RAM (Metal residency) while it serves a
+  request: wired memory rises from 35 to 54 GiB at 48 GiB of cap.
+- About a second after the last request ends, it gives the cache back. While
+  the kernel unlocks those ~17 GiB, creating an IOSurface blocks. That is the
+  call every app makes for a new window buffer, tab or view. Stacks taken
+  during a stall show the call waiting in `IOSurfaceClientCreateChild` inside
+  the kernel, with Splash's own threads idle.
+- In a replay of a conversation growing from 105K to 195K tokens, then
+  compacted, this stalled new surfaces for 1.3–6.1 s, seven times in six
+  minutes. Each stall began 2–3 s after a turn ended, and they grew with the
+  conversation. GPU time, drawing into existing surfaces, WindowServer
+  round trips, page faults and disk writes stayed under 40 ms throughout.
+- Splash issue [#220](https://github.com/incoai/splash/issues/220) reports the
+  same family of stall at >180K context, severe enough that WindowServer's
+  watchdog logged users out. Its proposed patch covers KV unmapping; here
+  Splash reports no unmaps, only the residency release.
+
+Splash has no setting for how long it keeps the cache locked. So the chat
+proxy keeps it locked for Splash: from each generation request until
+`SPLASH_KEEP_RESIDENT_MIN` minutes (20 by default) after the last one, it
+sends Splash a one-token request every 0.7 s, skipping while a request runs.
+Replaying the same growing conversation with it on, no app waited more than
+9 ms, and turns took as long as before.
+
+What it costs:
+
+- Each ping is about 60 ms of GPU, roughly 8% of the GPU while the window is
+  open.
+- 54 GiB stays wired for those 20 minutes instead of 35.
+- The pings show up in Splash's request counts and its TTFT percentiles.
+- When the window closes, Splash gives the cache back once, and that can
+  stall apps once.
+
+`0` turns it off. `always` is not offered: the GPU would never idle.
 
 ## Thinking
 

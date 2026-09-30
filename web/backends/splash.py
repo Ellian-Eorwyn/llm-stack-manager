@@ -35,10 +35,10 @@ services swaps the Mac to a standstill. So the slot's
 else half of RAM (48 GiB on 96): the 27B's ~33 GiB of weights and buffers and
 ~15 GiB of KV, one ~230K-token bf16 conversation.
 
-Why not more: while it serves a request Splash wires the KV of every
-conversation it keeps, not only the one it is answering. At 60 GiB that took
-wired memory from 37 to 67 GiB at the start of each request, and the Mac's apps
-stalled for 5-10 s while macOS made room. Conversations that no longer fit go
+Why not more: every page of KV Splash keeps is locked into RAM while it
+serves a request and given back after it, and giving it back stalls every
+app's new windows and tabs (docs/splash.md#stalls; the chat proxy keeps it
+locked while the stack is in use). Conversations that no longer fit go
 to the SSD instead (`--max-cache-disk`, `{PREFIX}_SPLASH_MAX_CACHE_DISK_GB`,
 40 GiB unless set; 0 turns it off), so an older session still resumes without
 reading its whole prompt again. `auto` hands the memory choice back to Splash.

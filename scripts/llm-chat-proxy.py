@@ -1542,6 +1542,64 @@ def _adapt_for_ninfer(payload: dict[str, Any], kind: str | None, is_generation: 
         _log(f"ninfer-adapt kind={kind or 'chat'} dropped={','.join(dropped)}")
 
 
+#: Splash locks its KV cache into RAM (Metal residency) only while it serves a
+#: request, and gives it back about a second after the last one ends. Giving
+#: back ~17 GiB blocks IOSurface creation in the kernel -- the call every app
+#: makes for a new window buffer or tab -- for 1-6 s, so a Mac serving an agent
+#: froze after nearly every turn (docs/splash.md#stalls). A one-token request
+#: every SPLASH_KEEPALIVE_PING_SEC keeps the cache locked instead, from each
+#: generation request until SPLASH_KEEP_RESIDENT_MIN minutes after the last.
+#: 0 turns it off.
+SPLASH_KEEP_RESIDENT_MIN = float(os.environ.get("SPLASH_KEEP_RESIDENT_MIN", "20") or 0)
+SPLASH_KEEPALIVE_PING_SEC = 0.7
+_RESIDENCY = {"in_flight": 0, "last": 0.0}
+_RESIDENCY_LOCK = threading.Lock()
+
+
+def _residency_begin():
+    with _RESIDENCY_LOCK:
+        _RESIDENCY["in_flight"] += 1
+        _RESIDENCY["last"] = time.monotonic()
+
+
+def _residency_end():
+    with _RESIDENCY_LOCK:
+        _RESIDENCY["in_flight"] = max(0, _RESIDENCY["in_flight"] - 1)
+        _RESIDENCY["last"] = time.monotonic()
+
+
+def _keepalive_due(now: float) -> bool:
+    """A ping is due when a generation request ended within the window and none
+    is running: a running request holds the cache itself."""
+    with _RESIDENCY_LOCK:
+        in_flight, last = _RESIDENCY["in_flight"], _RESIDENCY["last"]
+    return (in_flight == 0 and last > 0
+            and now - last < SPLASH_KEEP_RESIDENT_MIN * 60
+            and not _lease_active())
+
+
+def _keep_splash_resident():
+    body = json.dumps({"model": BACKEND_MODEL, "messages": [{"role": "user", "content": "."}],
+                       "max_tokens": 1, "reasoning_effort": "none"}).encode()
+    url = f"http://{BACKEND_HOST}:{BACKEND_PORT}/v1/chat/completions"
+    failing = False
+    while True:
+        started = time.monotonic()
+        if _keepalive_due(started):
+            try:
+                request = urllib.request.Request(url, body, {"Content-Type": "application/json"})
+                with urllib.request.urlopen(request, timeout=30) as resp:
+                    resp.read()
+                if failing:
+                    _log("splash-keepalive status=ok")
+                failing = False
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                if not failing:
+                    _log(f"splash-keepalive status=error detail={exc}")
+                failing = True
+        time.sleep(max(0.05, SPLASH_KEEPALIVE_PING_SEC - (time.monotonic() - started)))
+
+
 def _requested_model_id_from_path(path: str) -> str:
     normalized = _normalized_path(path)
     prefix = "/v1/models/"
@@ -1694,6 +1752,16 @@ def make_handler(
             return self.rfile.read(n) if n > 0 else b""
 
         def _proxy_raw(self, method: str, body: bytes):
+            tracked = method == "POST" and _is_generation_kind(_request_kind(self.path))
+            if tracked:
+                _residency_begin()
+            try:
+                self._proxy_backend(method, body)
+            finally:
+                if tracked:
+                    _residency_end()
+
+        def _proxy_backend(self, method: str, body: bytes):
             kind = _request_kind(self.path)
             is_generation_request = method == "POST" and _is_generation_kind(kind)
             is_embeddings_request = method == "POST" and kind == "embeddings"
@@ -2205,6 +2273,10 @@ if __name__ == "__main__":
     think_thread.start()
     nothink_thread.start()
     code_thread.start()
+    if BACKEND_ENGINE == "splash" and BACKEND_MODEL and SPLASH_KEEP_RESIDENT_MIN > 0:
+        threading.Thread(target=_keep_splash_resident, daemon=True).start()
+        _log(f"splash-keepalive every {SPLASH_KEEPALIVE_PING_SEC}s "
+             f"until {SPLASH_KEEP_RESIDENT_MIN:g} min after the last request")
     if aggregate_thread is not None:
         aggregate_thread.start()
         for extra_host in AGGREGATE_EXTRA_LISTEN_HOSTS:
