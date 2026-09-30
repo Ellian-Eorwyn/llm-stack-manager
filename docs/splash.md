@@ -51,9 +51,8 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
   reasoning level (as `--default-reasoning-effort`).
 - **Memory is always capped** with `--max-memory`: `LLM_A_SPLASH_MAX_MEMORY_GB`
   if set, else the SSD-offload RAM budget, else half of RAM (48 GiB on 96 GB).
-  Conversations evicted from memory go to the SSD (`--max-cache-disk`,
-  `LLM_A_SPLASH_MAX_CACHE_DISK_GB`, 40 GiB unless set, `0` for none). See
-  [Memory](#memory).
+  Splash's SSD tier for evicted conversations is off unless
+  `LLM_A_SPLASH_MAX_CACHE_DISK_GB` sizes it. See [Memory](#memory).
 - **Vision** (images and PDFs) is on by default; Splash downloads the repo's
   `mmproj` (~0.9 GB) on first start. `LLM_A_SPLASH_VISION=off` serves text
   only and saves that memory.
@@ -72,18 +71,36 @@ weights, 80 GiB in all. With macOS and the other services on top, the Mac ran
 out of swap and froze.
 
 The stack therefore passes a cap: half of RAM, 48 GiB on the Studio. The 27B
-Q8_0 plan is about 33 GiB of weights, drafter, vision and buffers, which leaves
+Q8_0 plan is about 33 GiB of weights, drafter, vision and buffers. That leaves
 about 15 GiB for KV and state: one bf16 conversation of about 230K tokens.
 Past that, Splash evicts the oldest instead of growing. `auto` restores
 Splash's own limit.
 
-The cap was 60 GiB until 2026-09-30. Every page of KV Splash keeps is locked
-into RAM while it serves a request, so a smaller cap also means less memory
-changing hands at each request; see [Stalls](#stalls).
+Every page of KV Splash keeps is locked into RAM while it serves a request.
+With the chat proxy's keep-alive (see [Stalls](#stalls)) it stays locked while
+the stack is in use, and locked memory cannot be compressed or swapped. At
+48 GiB, 55 GiB of the Studio's 96 was wired. With about 9 GiB compressed,
+that left ~32 GiB for macOS and every app. On 2026-09-30 a busy desktop plus a
+test run went past that: macOS killed background daemons and showed its "out
+of application memory" dialog, without swapping. So the cap was not raised
+back to 60.
 
-Evicted conversations go to the SSD (`--max-cache-disk`, 40 GiB by default).
-Resuming an older Hermes session then reads its KV back from disk instead of
-processing its whole prompt again.
+### The SSD tier
+
+`--max-cache-disk` moves evicted conversations to the SSD instead of dropping
+them. It is off unless `LLM_A_SPLASH_MAX_CACHE_DISK_GB` sizes it, because it
+did not pay for its writes under an agent. With 40 GiB of tier and a 48 GiB cap
+on 2026-09-30 (2.7M prompt tokens, mostly stress tests):
+
+- It wrote 337 GB in 2 h 40 min, about 121 KiB per prompt token: 153 GB of KV
+  pages and ~180 GB of 187 MiB recurrent-state snapshots.
+- It read back 49 GB, 15%, and served 57K tokens of KV from disk.
+- A compacted conversation is never resumed, yet each compaction wrote its
+  ~12 GiB of KV to the tier.
+
+A normal heavy day (~800K prompt tokens) would write ~100 GB. That is small
+against an SSD's rated endurance, but it bought little. The tier writes its
+files as `$TMPDIR/splash-cache-*`.
 
 Splash reports its plan and live use on `/status` (`memory_plan.budget`,
 `memory_actual`) and `/metrics` (`splash_memory_current_bytes`,
@@ -102,7 +119,7 @@ The cause, measured on 2026-09-30 with a probe that times what apps ask the
 system for:
 
 - Splash locks its whole KV cache into RAM (Metal residency) while it serves a
-  request: wired memory rises from 35 to 54 GiB at 48 GiB of cap.
+  request: wired memory rose from 35 to 54 GiB at the 48 GiB cap then in use.
 - About a second after the last request ends, it gives the cache back. While
   the kernel unlocks those ~17 GiB, creating an IOSurface blocks. That is the
   call every app makes for a new window buffer, tab or view. Stacks taken
@@ -129,7 +146,8 @@ What it costs:
 
 - Each ping is about 60 ms of GPU, roughly 8% of the GPU while the window is
   open.
-- 54 GiB stays wired for those 20 minutes instead of 35.
+- The KV cache stays wired for those 20 minutes: ~55 GiB wired at 48 GiB of
+  cap, instead of ~37.
 - The pings show up in Splash's request counts and its TTFT percentiles.
 - When the window closes, Splash gives the cache back once, and that can
   stall apps once.

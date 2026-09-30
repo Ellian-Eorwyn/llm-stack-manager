@@ -62,19 +62,19 @@ class SplashEngineTests(unittest.TestCase):
     def test_memory_is_capped_below_splash_auto(self):
         with mock.patch.object(backends.splash, "physical_gib", return_value=96.0):
             self.assertEqual(flag(build(), "--max-memory"), "48G")
-            self.assertEqual(flag(build(LLM_B_RAM_BUDGET_GB="56"), "--max-memory"), "48G")
-            argv = build(LLM_B_MEMORY_MODE="ssd-offload", LLM_B_RAM_BUDGET_GB="56")
-            self.assertEqual(flag(argv, "--max-memory"), "56G")
-            argv = build(LLM_B_MEMORY_MODE="ssd-offload", LLM_B_RAM_BUDGET_GB="56",
+            self.assertEqual(flag(build(LLM_B_RAM_BUDGET_GB="50"), "--max-memory"), "48G")
+            argv = build(LLM_B_MEMORY_MODE="ssd-offload", LLM_B_RAM_BUDGET_GB="50")
+            self.assertEqual(flag(argv, "--max-memory"), "50G")
+            argv = build(LLM_B_MEMORY_MODE="ssd-offload", LLM_B_RAM_BUDGET_GB="50",
                          LLM_B_SPLASH_MAX_MEMORY_GB="44")
             self.assertEqual(flag(argv, "--max-memory"), "44G")
             self.assertNotIn("--max-memory", build(LLM_B_SPLASH_MAX_MEMORY_GB="auto"))
 
-    def test_evicted_conversations_go_to_the_ssd(self):
-        self.assertEqual(flag(build(), "--max-cache-disk"), "40G")
-        self.assertEqual(flag(build(LLM_B_SPLASH_MAX_CACHE_DISK_GB="100"), "--max-cache-disk"), "100G")
-        self.assertNotIn("--max-cache-disk", build(LLM_B_SPLASH_MAX_CACHE_DISK_GB="0"))
-        self.assertNotIn("--max-cache-disk", build(LLM_B_SPLASH_MAX_CACHE_DISK_GB="off"))
+    def test_the_ssd_tier_is_off_unless_sized(self):
+        self.assertNotIn("--max-cache-disk", build())
+        self.assertEqual(flag(build(LLM_B_SPLASH_MAX_CACHE_DISK_GB="40"), "--max-cache-disk"), "40G")
+        for off in ("0", "off", ""):
+            self.assertNotIn("--max-cache-disk", build(LLM_B_SPLASH_MAX_CACHE_DISK_GB=off))
 
     def test_a_local_path_or_gguf_is_refused_with_the_reason(self):
         for model in ("/models/q.gguf", "q.gguf", ""):

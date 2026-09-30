@@ -33,15 +33,21 @@ Hermes sessions does, and 78 GiB of model on top of macOS and the other
 services swaps the Mac to a standstill. So the slot's
 `{PREFIX}_SPLASH_MAX_MEMORY_GB` is passed, else the SSD offload RAM budget,
 else half of RAM (48 GiB on 96): the 27B's ~33 GiB of weights and buffers and
-~15 GiB of KV, one ~230K-token bf16 conversation.
+~15 GiB of KV and state, one ~230K-token bf16 conversation.
+`auto` hands the choice back to Splash.
 
-Why not more: every page of KV Splash keeps is locked into RAM while it
-serves a request and given back after it, and giving it back stalls every
-app's new windows and tabs (docs/splash.md#stalls; the chat proxy keeps it
-locked while the stack is in use). Conversations that no longer fit go
-to the SSD instead (`--max-cache-disk`, `{PREFIX}_SPLASH_MAX_CACHE_DISK_GB`,
-40 GiB unless set; 0 turns it off), so an older session still resumes without
-reading its whole prompt again. `auto` hands the memory choice back to Splash.
+Why not more: every page of KV Splash keeps is locked into RAM while it serves
+a request, and giving it back afterwards stalls every app's new windows and
+tabs, so the chat proxy keeps it locked while the stack is in use
+(docs/splash.md#stalls). Locked memory cannot be compressed or swapped: at
+48 GiB, 55 GiB of the Studio's 96 was wired, and the Mac still ran out of
+application memory once under a busy desktop.
+
+Splash can also move conversations it evicts to an SSD tier
+(`--max-cache-disk`, `{PREFIX}_SPLASH_MAX_CACHE_DISK_GB`). It is off unless
+set. Under an agent it wrote ~121 KiB per prompt token -- KV plus a 187 MiB
+recurrent-state snapshot per conversation -- and read back 15% of that,
+because a compacted conversation is never resumed.
 """
 
 from __future__ import annotations
@@ -73,9 +79,6 @@ ARGS_KEYS = ("SPLASH_ARGS_JSON",)
 
 #: Share of RAM Splash may hold when the slot names no cap.
 DEFAULT_MEMORY_FRACTION = 0.5
-
-#: SSD quota, in GiB, for conversations evicted from memory.
-DEFAULT_CACHE_DISK_GB = 40
 
 
 def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> str:
@@ -110,13 +113,11 @@ def max_memory(slot: Slot, env: dict) -> str | None:
 
 def max_cache_disk(slot: Slot, env: dict) -> str | None:
     """`--max-cache-disk` for the slot, or None for Splash's default: none."""
-    value = _first(env, ("SPLASH_MAX_CACHE_DISK_GB",), slot.prefixes).lower()
-    if value in ("off", "0"):
-        return None
+    value = _first(env, ("SPLASH_MAX_CACHE_DISK_GB",), slot.prefixes)
     try:
-        gib = int(float(value)) if value else DEFAULT_CACHE_DISK_GB
+        gib = int(float(value))
     except ValueError:
-        gib = DEFAULT_CACHE_DISK_GB
+        return None
     return f"{gib}G" if gib > 0 else None
 
 
