@@ -50,8 +50,10 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
 - **Carried over:** the alias, context size (capped at Splash's 256K) and the
   reasoning level (as `--default-reasoning-effort`).
 - **Memory is always capped** with `--max-memory`: `LLM_A_SPLASH_MAX_MEMORY_GB`
-  if set, else the SSD-offload RAM budget, else 5/8 of RAM (60 GiB on 96 GB).
-  See [Memory](#memory).
+  if set, else the SSD-offload RAM budget, else half of RAM (48 GiB on 96 GB).
+  Conversations evicted from memory go to the SSD (`--max-cache-disk`,
+  `LLM_A_SPLASH_MAX_CACHE_DISK_GB`, 40 GiB unless set, `0` for none). See
+  [Memory](#memory).
 - **Vision** (images and PDFs) is on by default; Splash downloads the repo's
   `mmproj` (~0.9 GB) on first start. `LLM_A_SPLASH_VISION=off` serves text
   only and saves that memory.
@@ -69,11 +71,24 @@ is reached. A benchmark run never gets there. A day of Hermes sessions does:
 weights, 80 GiB in all. With macOS and the other services on top, the Mac ran
 out of swap and froze.
 
-The stack therefore passes a cap. At 60 GiB the 27B Q8_0 plan is about 30 GiB
-of weights, drafter and vision, plus about 30 GiB for KV and state. That fits a
-full 256K bf16 context (16 GiB) and keeps about 220K tokens of older
-conversations warm. Past that, Splash evicts the oldest instead of growing.
-`auto` restores Splash's own limit.
+The stack therefore passes a cap: half of RAM, 48 GiB on the Studio. The 27B
+Q8_0 plan is about 33 GiB of weights, drafter, vision and buffers, which leaves
+about 15 GiB for KV and state: one bf16 conversation of about 230K tokens.
+Past that, Splash evicts the oldest instead of growing. `auto` restores
+Splash's own limit.
+
+The cap was 60 GiB until 2026-09-30, and the Mac stalled for 5–10 s at the
+start of each large request. While it serves a request, Splash wires the KV of
+every conversation it keeps, not only the one it is answering. At 60 GiB,
+27 GiB of kept conversations took wired memory from 37 to 67 GiB. macOS then
+had to make room all at once: the pointer and window dragging kept working,
+but apps stopped redrawing (Chrome could not switch tabs). A small Metal probe
+running every 16 ms never waited more than 3 ms, so GPU time was not the cause.
+
+Evicted conversations go to the SSD (`--max-cache-disk`, 40 GiB by default).
+Resuming an older Hermes session then reads its KV back from disk instead of
+processing its whole prompt again. With the 48 GiB cap and an empty cache, a
+63K-token request peaked at 40 GiB wired.
 
 Splash reports its plan and live use on `/status` (`memory_plan.budget`,
 `memory_actual`) and `/metrics` (`splash_memory_current_bytes`,

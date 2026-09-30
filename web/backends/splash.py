@@ -32,9 +32,16 @@ limit forces an eviction. One conversation at a time never gets there; a day of
 Hermes sessions does, and 78 GiB of model on top of macOS and the other
 services swaps the Mac to a standstill. So the slot's
 `{PREFIX}_SPLASH_MAX_MEMORY_GB` is passed, else the SSD offload RAM budget,
-else 5/8 of RAM (60 GiB on 96): the 27B's ~31 GiB of weights, a full 256K
-bf16 context (16 GiB), and ~12 GiB of older conversations kept warm.
-`auto` hands the choice back to Splash.
+else half of RAM (48 GiB on 96): the 27B's ~33 GiB of weights and buffers and
+~15 GiB of KV, one ~230K-token bf16 conversation.
+
+Why not more: while it serves a request Splash wires the KV of every
+conversation it keeps, not only the one it is answering. At 60 GiB that took
+wired memory from 37 to 67 GiB at the start of each request, and the Mac's apps
+stalled for 5-10 s while macOS made room. Conversations that no longer fit go
+to the SSD instead (`--max-cache-disk`, `{PREFIX}_SPLASH_MAX_CACHE_DISK_GB`,
+40 GiB unless set; 0 turns it off), so an older session still resumes without
+reading its whole prompt again. `auto` hands the memory choice back to Splash.
 """
 
 from __future__ import annotations
@@ -65,7 +72,10 @@ MAX_CONTEXT = 256 * 1024
 ARGS_KEYS = ("SPLASH_ARGS_JSON",)
 
 #: Share of RAM Splash may hold when the slot names no cap.
-DEFAULT_MEMORY_FRACTION = 0.625
+DEFAULT_MEMORY_FRACTION = 0.5
+
+#: SSD quota, in GiB, for conversations evicted from memory.
+DEFAULT_CACHE_DISK_GB = 40
 
 
 def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> str:
@@ -96,6 +106,18 @@ def max_memory(slot: Slot, env: dict) -> str | None:
     if gib <= 0:
         gib = int(physical_gib() * DEFAULT_MEMORY_FRACTION)
     return f"{gib}G"
+
+
+def max_cache_disk(slot: Slot, env: dict) -> str | None:
+    """`--max-cache-disk` for the slot, or None for Splash's default: none."""
+    value = _first(env, ("SPLASH_MAX_CACHE_DISK_GB",), slot.prefixes).lower()
+    if value in ("off", "0"):
+        return None
+    try:
+        gib = int(float(value)) if value else DEFAULT_CACHE_DISK_GB
+    except ValueError:
+        gib = DEFAULT_CACHE_DISK_GB
+    return f"{gib}G" if gib > 0 else None
 
 
 def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
@@ -147,6 +169,9 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     cap = max_memory(slot, env)
     if cap:
         argv += ["--max-memory", cap]
+    disk = max_cache_disk(slot, env)
+    if disk:
+        argv += ["--max-cache-disk", disk]
 
     argv += custom_args(env, ARGS_KEYS, prefixes)
     argv += list(extra or [])
