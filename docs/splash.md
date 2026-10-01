@@ -78,10 +78,20 @@ replies that ran to `THINK_MAX_TOKENS` (16,384) at 120-170 tok/s, far above
 the usual 65-90, because the drafter accepts almost every repeated token. The
 stock Q8_0 had one in about 560. Both temperatures went to 1.0 that morning.
 
-To count runaways in the slot's log:
+Speed tells a loop from long work. The same afternoon an xhigh turn (cleaning
+an 11k-token meeting transcript) hit the 16,384 cap five times at a normal
+65-88 tok/s, and its thinking had no repeated lines: real work cut short, not a
+loop. So `THINK_MAX_TOKENS` went to 0 like `CODE_`/`NOTHINK_`: the proxy sends
+no limit and Splash uses `--max-new-tokens` (default 32768), clamped to the
+context left. Don't set a fixed cap above about 60K instead: on
+`/v1/chat/completions` Splash refuses (400 `context_length_exceeded`) any
+request whose prompt plus `max_tokens` passes the 256K context, and Hermes
+only compacts at 200K.
+
+To list long replies and their speed (a loop runs at 120+ tok/s):
 
 ```bash
-grep -c 'output 16,384' logs/llm-a.stdout.log
+grep -E 'output (16,384|32,768)' logs/llm-a.stdout.log
 ```
 
 ## Memory
