@@ -8,7 +8,8 @@ generation job therefore evicts the 27B from GPU 1 for a few minutes with
 normal flow.
 
 ```
-gpu-lease.py acquire [--holder NAME] [--max-minutes 30] [--force]
+gpu-lease.py acquire [--holder NAME] [--max-minutes N] [--idle-minutes N] [--force]
+gpu-lease.py touch [--max-minutes N]
 gpu-lease.py release [--reason TEXT]
 gpu-lease.py status
 ```
@@ -22,9 +23,8 @@ Each prints one JSON object. The exit status is non-zero, with the reason in
    sends new generation requests to `CHAT_FALLBACK_URL` (the Studio's proxy),
    marked `X-LLM-Served-By: fallback`. It waits for the 27B's in-flight request
    (`/slots`), stops `llm-a` with `systemctl`, and moves ComfyUI onto GPU 1 —
-   which it is already on, so normally no restart. It also arms a watchdog
-   (`systemd-run --user`, unit `gpu1-lease-watchdog`, at `max-minutes` + 10)
-   that releases the lease if nobody else does.
+   which it is already on, so normally no restart. It also starts the
+   watchdog (below).
 2. `release` waits for ComfyUI's queue to empty (up to 5 minutes, then clears
    it), unloads its models (so the 27B fits back on the card), checks ComfyUI
    is on GPU 1, starts `llm-a` and waits for `/health`. Only then does it
@@ -32,14 +32,55 @@ Each prints one JSON object. The exit status is non-zero, with the reason in
    loads. The next generation pays a one-time model load (~25 s), not a
    ComfyUI restart.
 
-Some details:
+## Two kinds of lease
+
+| | fixed (default) | idle (`--idle-minutes N`) |
+|---|---|---|
+| For | one job: `gen.py --gpu1`, `edit_bg.py` | a session: SillyTavern mode |
+| Who releases | the caller, in its `finally` | the watchdog, once ComfyUI has been idle N minutes |
+| `--max-minutes` | the lease's length (default 30); the watchdog releases 10 minutes after it | a hard ceiling (default 720) |
+| Quiet window | — | an unforced lease ends after 5 idle minutes (`GPU_LEASE_QUIET_IDLE_MINUTES`) |
+| `acquire` again, same holder | refused (the first caller would release under the second) | renews it |
+
+**Idle means ComfyUI did nothing, whoever its client is.** SillyTavern calls
+ComfyUI directly, so the lease can't rely on its callers checking in. Each
+check, the watchdog takes the newest of:
+
+- the newest status timestamp among the last 5 entries of ComfyUI's
+  `/history` (when a job started or finished);
+- now, if ComfyUI's queue is not empty;
+- the lease's own `last_activity` (set at acquire, by `touch`, and by each
+  check, so a ComfyUI restart, which empties `/history`, doesn't reset the
+  clock).
+
+**The watchdog** is a transient user service, `gpu1-lease-watchdog`, running
+`gpu-lease.py watch`: a loop that checks once a minute
+(`GPU_LEASE_WATCH_SECONDS`) and releases when the lease is due. It exits when
+the lease is gone. `Restart=on-failure` brings it back after a crash, and a
+release that left something wrong (the 27B didn't answer) exits 1, so it is
+retried five minutes later. A release by anyone else stops it.
+`systemctl --user status gpu1-lease-watchdog` shows it.
+
+**`touch`** marks activity now (and with `--max-minutes N` moves the end to at
+least now + N). If the watchdog isn't running, it starts it again.
+
+**`status`** adds, while a lease is held: `idle_minutes` (since the last
+activity), `last_activity`, `comfy_busy`, `releases_at` (when the watchdog
+will release if nothing else happens) and `watchdog_active`. `expired` is
+still `expires` < now: past the length of a fixed lease, or past the ceiling
+of an idle one.
+
+## Some details
 
 - The quiet window (`GPU_LEASE_QUIET`, default `23:00-06:30`) refuses a lease
   unless you pass `--force`: the overnight jobs and evals expect the 27B.
 - The manager's recorded expectation for `llm-a` is left alone. A reboot
   mid-lease clears the tmpfs lease file, and `llm-stack-restore` brings the 27B
   back.
-- A log line per acquire and release goes to `~/.local/state/gpu-lease.jsonl`.
+- A log line per acquire, touch and release goes to
+  `~/.local/state/gpu-lease.jsonl`. A watchdog release's `reason` says why:
+  `watchdog: ComfyUI idle 60 min`, `watchdog: hard ceiling` or
+  `watchdog: past its end`.
 
 ## Setup
 
@@ -64,12 +105,13 @@ for a proxy that listens on a non-loopback address itself.
 runtime env file that the lease writes:
 
 ```
-Environment=COMFY_CUDA_DEVICE=0
+Environment=COMFY_CUDA_DEVICE=1
 EnvironmentFile=-%t/comfyui-device.env
 ExecStart=/home/ellie/AI/ComfyUI/run-comfyui.sh --listen 100.124.56.11 --port 8188 --cuda-device ${COMFY_CUDA_DEVICE} --preview-method auto
 ```
 
 **Overrides.** You can override these through the environment:
 `GPU_LEASE_BACKEND_UNIT`, `GPU_LEASE_BACKEND_URL`, `GPU_LEASE_COMFY_UNIT`,
-`GPU_LEASE_COMFY_URL`, `GPU_LEASE_DEVICE`, `GPU_LEASE_QUIET`, and the timeouts
+`GPU_LEASE_COMFY_URL`, `GPU_LEASE_DEVICE`, `GPU_LEASE_QUIET`,
+`GPU_LEASE_QUIET_IDLE_MINUTES`, and the timeouts and intervals
 (`GPU_LEASE_*_SECONDS`).
