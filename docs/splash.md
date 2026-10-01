@@ -60,6 +60,30 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
   picks its own drafter) and `CUSTOM_ARGS_JSON`. Splash's own flags go in
   `LLM_A_SPLASH_ARGS_JSON`.
 
+## Sampling and repetition
+
+Splash samples with temperature, top_p and top_k only. Splash 1.1.0 refuses
+with HTTP 400 ("the requested logits or output transformation is not
+supported") any request whose `presence_penalty`, `frequency_penalty` or
+`min_p` is not 0, or that carries a `logit_bias` (`server/frontend.py`,
+`_prepare`). So keep `*_PRESENCE_PENALTY=0.00` and `*_MIN_P=0.00` for a Splash
+slot; the usual Qwen cure for endless repetition isn't available here.
+
+What is available is the model card's own sampling, which the proxy sets per
+persona: thinking at `temperature=1.0, top_p=0.95, top_k=20`
+(`THINK_TEMP`, `CODE_TEMP`) and instruct at `temperature=0.7, top_p=0.80`
+(`NOTHINK_*`). On 2026-10-01 the Studio still ran `think` at 0.7 and `code` at
+0.6, and the uncensored Q8_0 had six thinking loops in about 840 requests:
+replies that ran to `THINK_MAX_TOKENS` (16,384) at 120-170 tok/s, far above
+the usual 65-90, because the drafter accepts almost every repeated token. The
+stock Q8_0 had one in about 560. Both temperatures went to 1.0 that morning.
+
+To count runaways in the slot's log:
+
+```bash
+grep -c 'output 16,384' logs/llm-a.stdout.log
+```
+
 ## Memory
 
 Left to itself (`--max-memory auto`), Splash may use Metal's recommended
