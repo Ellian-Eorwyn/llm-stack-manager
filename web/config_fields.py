@@ -644,6 +644,7 @@ CONFIG_FIELDS = [
     # Thinking Endpoint (proxied request-time overrides)
     {"section": "Thinking Endpoint", "key": "THINK_MODEL_NAME",          "label": "Thinking Model Name",   "type": "text",   "hint": "Advertised on /v1/models for the thinking endpoint"},
     {"section": "Thinking Endpoint", "key": "PROXY_STREAM_PASSTHROUGH",  "label": "Raw Stream Passthrough", "type": "select", "options": ["off", "on"], "hint": "When on, SSE responses bypass proxy JSON rewriting after request shaping"},
+    {"section": "Thinking Endpoint", "key": "LOOP_GUARD",                "label": "Repetition-Loop Guard", "type": "select", "options": ["off", "on"], "hint": "Watches every chat reply's reasoning and content; a reply that turns into one block repeated back to back is cancelled and retried once a little warmer, then ended with finish_reason length. Thresholds: LOOP_GUARD_* in llm-stack.env (docs/splash.md)"},
     {"section": "Thinking Endpoint", "key": "UPSTREAM_400_CAPTURE_ENABLED", "label": "Capture Upstream 400s", "type": "select", "options": ["off", "on"], "hint": "Diagnostic only: writes the request payload behind an upstream 400 — a whole conversation — to logs/upstream-400 at mode 0600, rotated"},
     {"section": "Thinking Endpoint", "key": "THINK_PRESERVE_THINKING",   "label": "Preserve Thinking",     "type": "select", "options": ["on", "off"], "hint": "Injects chat_template_kwargs.preserve_thinking into thinking requests"},
     {"section": "Thinking Endpoint", "key": "THINK_REASONING_EFFORT",   "label": "Thinking Level",        "type": "select", "options": LLAMA_REASONING_EFFORT_OPTIONS, "hint": "Default level for templates that read reasoning_effort (Qwen 3.8+). medium adds no steering instruction — it is the model's unsteered baseline. A request carrying its own reasoning_effort overrides this, and 'none' turns thinking off for that request; an OpenAI level (high, minimal) is mapped onto the nearest of these rather than failing"},
@@ -1359,6 +1360,7 @@ RESTART_HINTS = {
     "CHAT_BACKEND_PORT":         ["llm-a-proxy"],
     "PROXY_STREAM_PASSTHROUGH":  ["llm-a-proxy"],
     "UPSTREAM_400_CAPTURE_ENABLED": ["llm-a-proxy"],
+    "LOOP_GUARD":                ["llm-a-proxy"],
     "LLM_B_CACHE_RAM":           ["llm-b"],
     "LLM_B_CTX_CHECKPOINTS":     ["llm-b"],
     "LLM_B_SWA_FULL":            ["llm-b"],

@@ -174,6 +174,7 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("CODE2_MODEL_NAME", "code2")
     normalized.setdefault("PROXY_STREAM_PASSTHROUGH", "off")
     normalized.setdefault("UPSTREAM_400_CAPTURE_ENABLED", "off")
+    normalized.setdefault("LOOP_GUARD", "off")
 
     def slot_a(suffix: str, default: str) -> str:
         """A slot-A sampler default, canonical name first.

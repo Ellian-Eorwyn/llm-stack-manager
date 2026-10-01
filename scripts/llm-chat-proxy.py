@@ -90,6 +90,37 @@ UPSTREAM_400_CAPTURE_MAX_BYTES = max(
     4096, int(os.environ.get("UPSTREAM_400_CAPTURE_MAX_BYTES", str(256 * 1024)))
 )
 
+# Repetition-loop guard for chat completions (docs/splash.md, "Sampling and
+# repetition"). Splash refuses every penalty that would discourage repetition,
+# so a model that falls into a loop writes the same block until the output cap:
+# up to 32,768 tokens, 4-8 minutes of a single-slot backend. While relaying a
+# reply the proxy watches its reasoning and its content; once the newest text
+# is one block repeated back to back, it closes the backend connection (Splash
+# cancels the request), retries once with temperature raised a step, and if
+# that loops too ends the reply with finish_reason "length". Off unless asked
+# for, so a checkout updated on another machine keeps its behaviour.
+LOOP_GUARD = os.environ.get("LOOP_GUARD", "off").strip().lower() in {"1", "on", "true", "yes"}
+# The newest LOOP_GUARD_WINDOW_CHARS characters (~32 tokens) are looked for
+# earlier in the text; each earlier copy proposes a period. A loop is the last
+# LOOP_GUARD_MIN_REPEATS blocks of that period being identical, covering at
+# least LOOP_GUARD_MIN_RUN_CHARS. Tuned on Hermes's state.db (2026-10-01): the
+# 09-29 loop trips at 6 x 304 characters, ~490 tokens (3 s) into it, while no
+# legitimate reply of 8,252 does, nor any of ~10,000 tool results (dense,
+# repetitive JSON). Counting how often a window recurs, by contrast, put
+# legitimate reasoning that re-quotes a source line at 7 and JSON at 48.
+LOOP_GUARD_WINDOW_CHARS = max(16, int(os.environ.get("LOOP_GUARD_WINDOW_CHARS", "128")))
+LOOP_GUARD_MIN_REPEATS = max(3, int(os.environ.get("LOOP_GUARD_MIN_REPEATS", "6")))
+LOOP_GUARD_MIN_RUN_CHARS = max(256, int(os.environ.get("LOOP_GUARD_MIN_RUN_CHARS", "1500")))
+# How much recent text is kept per field: a block longer than this divided by
+# the repeat count is never seen as a loop.
+LOOP_GUARD_SPAN_CHARS = max(4096, int(os.environ.get("LOOP_GUARD_SPAN_CHARS", "32000")))
+LOOP_GUARD_CHECK_EVERY_CHARS = max(1, int(os.environ.get("LOOP_GUARD_CHECK_EVERY_CHARS", "256")))
+LOOP_GUARD_RETRIES = max(0, int(os.environ.get("LOOP_GUARD_RETRIES", "1")))
+LOOP_GUARD_RETRY_TEMP_STEP = float(os.environ.get("LOOP_GUARD_RETRY_TEMP_STEP", "0.1"))
+# A client that did not ask for a stream is streamed from the backend anyway,
+# so the guard sees its reply too, and is answered with the one JSON it expects.
+LOOP_GUARD_NONSTREAM = os.environ.get("LOOP_GUARD_NONSTREAM", "on").strip().lower() in {"1", "on", "true", "yes"}
+
 # Qwen 3.8 accepts exactly three thinking levels and its template *raises* on
 # anything else, so an unmapped value is not a soft fallback — it is a 500 that
 # kills the request. OpenAI's own vocabulary (`high`, `minimal`) is the likely
@@ -1206,20 +1237,121 @@ class SSEEventRewriter:
             if not isinstance(obj, dict):
                 rewritten_lines.append(line)
                 continue
-            obj["model"] = self._public_model_name
-            choices = obj.get("choices")
-            if isinstance(choices, list):
-                for choice in choices:
-                    if not isinstance(choice, dict):
-                        continue
-                    delta = choice.get("delta")
-                    if isinstance(delta, dict):
-                        if self._reasoning_mode == "hidden":
-                            self._hold_reasoning(choice, delta)
-                        else:
-                            _rewrite_reasoning_delta(delta, self._reasoning_mode)
+            self.rewrite_obj(obj)
             rewritten_lines.append(f"data: {json.dumps(obj, ensure_ascii=True, separators=(',', ':'))}")
         return "\n".join(rewritten_lines)
+
+    def rewrite_obj(self, obj: dict[str, Any]):
+        """Rewrite one parsed chunk in place (the loop guard parses events itself)."""
+        obj["model"] = self._public_model_name
+        choices = obj.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta")
+                if isinstance(delta, dict):
+                    if self._reasoning_mode == "hidden":
+                        self._hold_reasoning(choice, delta)
+                    else:
+                        _rewrite_reasoning_delta(delta, self._reasoning_mode)
+
+
+class RepetitionDetector:
+    """Notice when the newest text has become one block repeated back to back.
+
+    Fed one field of a streamed reply (its reasoning, or its content) a delta
+    at a time. Every LOOP_GUARD_CHECK_EVERY_CHARS new characters it takes the
+    newest LOOP_GUARD_WINDOW_CHARS and looks for earlier copies; each copy
+    proposes a period, and the text is a loop when its last
+    LOOP_GUARD_MIN_REPEATS blocks of that period are identical and together
+    cover LOOP_GUARD_MIN_RUN_CHARS. Requiring the copies to be consecutive and
+    exact is what spares long code, tables and reasoning that re-quotes one
+    source line many times: those repeat fragments, with different text
+    between them.
+    """
+
+    #: Earlier copies of the newest window tried as periods, nearest first. A
+    #: block with internal repetition offers a short false period before the
+    #: true one.
+    _MAX_CANDIDATES = 4
+
+    def __init__(
+        self,
+        *,
+        window: int | None = None,
+        min_repeats: int | None = None,
+        min_run: int | None = None,
+        span: int | None = None,
+        check_every: int | None = None,
+    ):
+        self.window = window or LOOP_GUARD_WINDOW_CHARS
+        self.min_repeats = min_repeats or LOOP_GUARD_MIN_REPEATS
+        self.min_run = min_run or LOOP_GUARD_MIN_RUN_CHARS
+        self.span = span or LOOP_GUARD_SPAN_CHARS
+        self.check_every = check_every or LOOP_GUARD_CHECK_EVERY_CHARS
+        self._tail = ""
+        self._since_check = 0
+        self.total_chars = 0
+        #: (period, repeats) once a loop is seen; feeding stops mattering then.
+        self.loop: tuple[int, int] | None = None
+
+    def feed(self, text: str) -> bool:
+        """Add text; True once the field has looped."""
+        if self.loop is not None:
+            return True
+        if not text:
+            return False
+        self._tail += text
+        self.total_chars += len(text)
+        self._since_check += len(text)
+        if len(self._tail) > 2 * self.span:
+            self._tail = self._tail[-self.span:]
+        if self._since_check < self.check_every:
+            return False
+        self._since_check = 0
+        self.loop = self._check(self._tail[-self.span:])
+        return self.loop is not None
+
+    def run_text(self) -> str:
+        """The looping run itself: the identical blocks at the end of the field."""
+        if self.loop is None:
+            return ""
+        period, repeats = self.loop
+        return self._tail[-period * repeats:]
+
+    def _check(self, tail: str) -> tuple[int, int] | None:
+        window = self.window
+        if len(tail) < max(2 * window, self.min_run):
+            return None
+        probe = tail[-window:]
+        if not probe.strip():
+            return None
+        end = len(tail)
+        search_end = end - 1
+        for _ in range(self._MAX_CANDIDATES):
+            pos = tail.rfind(probe, 0, search_end)
+            if pos < 0:
+                return None
+            period = end - window - pos
+            search_end = pos + window - 1
+            repeats = self._repeats(tail, period)
+            if repeats >= self.min_repeats and repeats * period >= self.min_run:
+                return period, repeats
+        return None
+
+    @staticmethod
+    def _repeats(tail: str, period: int) -> int:
+        """How many identical period-long blocks end the text."""
+        end = len(tail)
+        last = tail[end - period:]
+        repeats = 1
+        while (repeats + 1) * period <= end:
+            start = end - (repeats + 1) * period
+            if tail[start:start + period] != last:
+                break
+            repeats += 1
+        return repeats
 
 
 class SSEAssistantAccumulator:
@@ -1298,6 +1430,507 @@ def _stream_rewrite_safe(resp_headers: dict[str, str]) -> bool:
 
 def _stream_passthrough_enabled(resp_headers: dict[str, str]) -> bool:
     return PROXY_STREAM_PASSTHROUGH or not _stream_rewrite_safe(resp_headers)
+
+
+class _ChunkedDecoder:
+    """Undo HTTP/1.1 chunked framing as bytes arrive.
+
+    Splash closes the connection to end a stream, but the loop guard has to
+    read events out of whatever framing a backend picks, and an engine that
+    chunks would otherwise be relayed unread.
+    """
+
+    def __init__(self):
+        self._buf = bytearray()
+        self._left = 0
+        self._state = "size"
+
+    def feed(self, data: bytes) -> bytes:
+        self._buf.extend(data)
+        out = bytearray()
+        while True:
+            if self._state == "size":
+                idx = self._buf.find(b"\r\n")
+                if idx < 0:
+                    break
+                line = bytes(self._buf[:idx]).split(b";", 1)[0].strip()
+                del self._buf[: idx + 2]
+                if not line:
+                    continue
+                try:
+                    size = int(line, 16)
+                except ValueError:
+                    self._state = "done"
+                    break
+                if size == 0:
+                    self._state = "done"
+                    break
+                self._left = size
+                self._state = "data"
+            elif self._state == "data":
+                if not self._buf:
+                    break
+                take = min(self._left, len(self._buf))
+                out += self._buf[:take]
+                del self._buf[:take]
+                self._left -= take
+                if self._left == 0:
+                    self._state = "crlf"
+            elif self._state == "crlf":
+                if len(self._buf) < 2:
+                    break
+                del self._buf[:2]
+                self._state = "size"
+            else:
+                self._buf.clear()
+                break
+        return bytes(out)
+
+
+def _strip_framing_headers(raw_head: bytes) -> bytes:
+    """A backend response head without its framing, for a body the proxy re-frames."""
+    lines = raw_head.split(b"\r\n")
+    kept = [lines[0]] + [
+        line for line in lines[1:]
+        if line.split(b":", 1)[0].strip().lower() not in {b"transfer-encoding", b"content-length", b"connection"}
+    ]
+    kept.append(b"Connection: close")
+    return b"\r\n".join(kept)
+
+
+def _loop_guard_applies(payload: dict[str, Any] | None, kind: str | None) -> bool:
+    """Whether a generation request goes through LoopGuardedChatRelay.
+
+    Chat completions only: the Responses API and legacy completions stream
+    other event shapes and are relayed unwatched. A request the proxy would
+    have to stream on the client's behalf is guarded only when its reply can
+    be rebuilt exactly: no log probabilities. Either way one choice only.
+    """
+    if not LOOP_GUARD or kind != "chat" or not isinstance(payload, dict):
+        return False
+    if payload.get("n") not in (None, 1):
+        return False
+    if payload.get("stream") is True:
+        return True
+    return LOOP_GUARD_NONSTREAM and not payload.get("logprobs") and not payload.get("top_logprobs")
+
+
+#: Put into the client's reasoning stream where a looping attempt was cut and
+#: the retry begins, so a reader of the reasoning sees why it starts over.
+LOOP_GUARD_RETRY_MARK = (
+    "\n\n[llm-chat-proxy: the reasoning above began repeating itself, so it was "
+    "stopped and the reply restarted]\n\n"
+)
+
+
+class LoopGuardedChatRelay:
+    """Relay one chat completion while watching it for a repetition loop.
+
+    The backend is always asked for a stream. Each event's reasoning and
+    content deltas feed a RepetitionDetector per field before the event is
+    passed on. When one trips, the backend connection is closed (Splash logs
+    the request `Cancelled`) and the request is sent again with temperature
+    raised LOOP_GUARD_RETRY_TEMP_STEP, up to LOOP_GUARD_RETRIES times -- but
+    only while the client has seen nothing a second attempt would duplicate:
+    reasoning is fine (a marker says where it restarted), content and tool
+    calls are not. Out of retries, the reply ends with finish_reason "length";
+    when the loop was in the reasoning, the looping text itself is the
+    content, so Hermes recognises a repetition loop and stops instead of
+    asking the model to continue it.
+
+    A client that asked for no stream gets one chat.completion JSON built from
+    the final attempt's events.
+    """
+
+    _LOOP = "loop"
+    _GONE = "gone"
+
+    def __init__(
+        self,
+        handler: BaseHTTPRequestHandler,
+        *,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        upstream: tuple[str, int],
+        can_fall_back: bool,
+    ):
+        self.handler = handler
+        self.payload = payload
+        self.headers = headers
+        self.upstream = upstream
+        self.can_fall_back = can_fall_back
+        self.client_streaming = payload.get("stream") is True
+        self.model_name = handler._model_name
+        self.mode = handler._reasoning_stream_mode
+        self.port_label = handler._port_label
+        self.status_code = 0
+        self.head_sent = False
+        # Content or tool calls (or, outside `hidden`, reasoning shown as
+        # content) went out: a second attempt would show twice.
+        self.client_saw_content = False
+        self.chat_id: Any = None
+        self.created: Any = None
+        self._content_sent: list[str] = []
+        self._reset_attempt()
+
+    def _reset_attempt(self):
+        self._reasoning: list[str] = []
+        self._content: list[str] = []
+        self._tools: dict[int, dict[str, Any]] = {}
+        self._finish: Any = None
+        self._usage: Any = None
+        self._extras: dict[str, Any] = {}
+        self._error: Any = None
+
+    # -- client side ------------------------------------------------------
+
+    def _write(self, data: bytes) -> bool:
+        try:
+            self.handler.wfile.write(data)
+            self.handler.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            return False
+
+    def _write_obj(self, obj: dict[str, Any]) -> bool:
+        return self._write(b"data: " + json.dumps(obj, ensure_ascii=True, separators=(",", ":")).encode("utf-8") + b"\n\n")
+
+    def _chunk(self, delta: dict[str, Any], finish_reason: Any = None) -> dict[str, Any]:
+        return {
+            "id": self.chat_id,
+            "object": "chat.completion.chunk",
+            "created": self.created if self.created is not None else int(time.time()),
+            "model": self.model_name,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+
+    def _stream_error(self, message: str, err_type: str = "loop_guard_error"):
+        """End a stream whose head is already out: the error event Splash itself sends."""
+        self._write_obj({"error": {"message": message, "type": err_type, "code": err_type}})
+        self._write(b"data: [DONE]\n\n")
+
+    def _send_json(self, finish_reason: Any, content: str | None = None):
+        if content is None:
+            content = "".join(self._content)
+        message: dict[str, Any] = {"role": "assistant", "content": content or None}
+        reasoning = "".join(self._reasoning)
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if self._tools:
+            message["tool_calls"] = [
+                {key: value for key, value in self._tools[index].items() if key != "index"}
+                for index in sorted(self._tools)
+            ]
+        response: dict[str, Any] = {
+            "id": self.chat_id,
+            "object": "chat.completion",
+            "created": self.created if self.created is not None else int(time.time()),
+            "model": self.model_name,
+            "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        }
+        if self._usage is not None:
+            response["usage"] = self._usage
+        response.update(self._extras)
+        raw = json.dumps(response, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        raw = _rewrite_json_reasoning_visibility(raw, self.mode)
+        self.status_code = 200
+        _send_response_safely(self.handler, 200, [
+            ("Content-Type", "application/json"),
+            ("Content-Length", str(len(raw))),
+        ], raw)
+
+    # -- the attempts -----------------------------------------------------
+
+    def run(self) -> str:
+        """Relay the reply; returns the assistant text, for the memory gateway."""
+        if not self.client_streaming:
+            self.payload["stream"] = True
+            options = self.payload.get("stream_options")
+            options = dict(options) if isinstance(options, dict) else {}
+            options["include_usage"] = True
+            self.payload["stream_options"] = options
+        attempts = 1 + LOOP_GUARD_RETRIES
+        for attempt in range(attempts):
+            try:
+                outcome = self._attempt(attempt)
+            except _BackendNotReady:
+                raise
+            except OSError as exc:
+                # Before anything reached the client the handler's own error
+                # paths (fallback, 503, 504) apply; after, the stream ends.
+                if attempt == 0 and not self.head_sent:
+                    raise
+                self._log_line(f"attempt={attempt + 1}/{attempts} failed: {exc}")
+                if self.head_sent:
+                    self._stream_error(f"The backend failed during a retry after a repetition loop: {exc}")
+                else:
+                    self.handler._gateway_error(502, "loop_guard_retry_failed",
+                                                f"The backend failed during a retry after a repetition loop: {exc}")
+                return ""
+            if outcome is None:
+                if attempt > 0 and self.status_code != 200:
+                    self._log_line(f"attempt={attempt + 1}/{attempts} failed: the backend answered HTTP {self.status_code}")
+                elif attempt > 0:
+                    self._log_line(f"attempt={attempt + 1}/{attempts} finished (finish_reason={self._finish})")
+                return "".join(self._content_sent if self.client_streaming else self._content).strip()
+            field, detector = outcome
+            period, repeats = detector.loop or (0, 0)
+            where = (
+                f"field={'reasoning' if field == 'reasoning_content' else 'content'} "
+                f"period={period} repeats={repeats} after={detector.total_chars:,} chars "
+                f"attempt={attempt + 1}/{attempts}"
+            )
+            if attempt + 1 < attempts and not self.client_saw_content:
+                self._prepare_retry()
+                self._log_line(f"{where}: cancelled; retrying at temperature {self.payload.get('temperature', 'default')}")
+                if self.client_streaming and not self._write_obj(self._chunk({"reasoning_content": LOOP_GUARD_RETRY_MARK})):
+                    return ""
+                continue
+            reason = "content was already sent" if self.client_saw_content else "no retries left"
+            self._log_line(f"{where}: cancelled; ended with finish_reason=length ({reason})")
+            self._stop(field, detector)
+            return "".join(self._content_sent if self.client_streaming else self._content).strip()
+        return ""
+
+    def _log_line(self, text: str):
+        _log(f"loop-guard port={self.port_label} {text}")
+
+    def _prepare_retry(self):
+        temperature = self.payload.get("temperature")
+        if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+            self.payload["temperature"] = round(temperature + LOOP_GUARD_RETRY_TEMP_STEP, 3)
+        # A client's own seed would replay the same sampling; without one the
+        # backend draws a fresh seed per request (Splash, llama.cpp), and no
+        # field is added that an engine might refuse.
+        seed = self.payload.get("seed")
+        if isinstance(seed, int) and not isinstance(seed, bool):
+            self.payload["seed"] = (seed + 1) % (2 ** 63)
+
+    def _stop(self, field: str, detector: RepetitionDetector):
+        loop_text = detector.run_text() if field == "reasoning_content" else ""
+        if self.client_streaming:
+            delta = {} if self.client_saw_content else {"content": loop_text}
+            self._write_obj(self._chunk(delta, "length"))
+            self._write(b"data: [DONE]\n\n")
+        else:
+            self._send_json("length", "".join(self._content) or loop_text)
+
+    def _attempt(self, attempt: int):
+        """One request to the backend. None when the reply is over (relayed,
+        failed or abandoned by the client); (field, detector) on a loop."""
+        self._reset_attempt()
+        body = json.dumps(self.payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        headers = dict(self.headers)
+        headers["Content-Length"] = str(len(body))
+        request_line = f"POST {_upstream_path(self.handler.path)} HTTP/1.1\r\n"
+        raw_request = (request_line + "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n").encode("utf-8") + body
+        self.handler._backend_phase = "connect"
+        with socket.create_connection(self.upstream, timeout=BACKEND_CONNECT_TIMEOUT_SEC) as sock:
+            self.handler._backend_phase = "read"
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            sock.settimeout(BACKEND_READ_TIMEOUT_SEC)
+            sock.sendall(raw_request)
+            outcome = self._read(sock, attempt)
+            if outcome is not None:
+                # Closing with the stream unread resets the connection, and
+                # Splash cancels the request at its next write.
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            return None if outcome is self._GONE else outcome
+
+    def _read(self, sock: socket.socket, attempt: int):
+        head = bytearray()
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise ConnectionResetError("the backend closed the connection before answering")
+            head.extend(chunk)
+            idx = head.find(b"\r\n\r\n")
+            if idx >= 0:
+                break
+        raw_head = bytes(head[:idx])
+        rest = bytes(head[idx + 4:])
+        status, resp_headers = _parse_status_and_headers(raw_head)
+        if attempt == 0 and self.can_fall_back:
+            if status == 503:
+                raise _BackendNotReady()
+            _note_fallback(False)
+        decoder = _ChunkedDecoder() if "chunked" in resp_headers.get("transfer-encoding", "").lower() else None
+        if status != 200 or "text/event-stream" not in resp_headers.get("content-type", "").lower():
+            body = bytearray(decoder.feed(rest) if decoder else rest)
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                body.extend(decoder.feed(chunk) if decoder else chunk)
+            self._relay_plain(status, resp_headers, bytes(body))
+            return None
+        self.status_code = status
+        if self.client_streaming and not self.head_sent:
+            if not self._write(_strip_framing_headers(raw_head) + b"\r\n\r\n"):
+                return self._GONE
+            self.head_sent = True
+        rewriter = SSEEventRewriter(self.model_name, self.mode)
+        detectors = {"reasoning_content": RepetitionDetector(), "content": RepetitionDetector()}
+        buf = bytearray(decoder.feed(rest) if decoder else rest)
+        while True:
+            while True:
+                idx = buf.find(b"\n\n")
+                if idx < 0:
+                    break
+                event = bytes(buf[:idx])
+                del buf[: idx + 2]
+                outcome = self._event(event, rewriter, detectors)
+                if outcome is not None:
+                    return outcome
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf.extend(decoder.feed(chunk) if decoder else chunk)
+        if bytes(buf).strip():
+            outcome = self._event(bytes(buf), rewriter, detectors)
+            if outcome is not None:
+                return outcome
+        if self.client_streaming:
+            return None
+        if self._error is not None:
+            message = json.dumps({"error": self._error}).encode("utf-8")
+            self.status_code = 500
+            _send_response_safely(self.handler, 500, [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(message))),
+            ], message)
+        elif self._finish is None:
+            self.handler._gateway_error(502, "backend_stream_incomplete",
+                                        "The backend ended the stream before the reply finished")
+        else:
+            self._send_json(self._finish)
+        return None
+
+    def _relay_plain(self, status: int, resp_headers: dict[str, str], body: bytes):
+        """A backend answer that is not a stream: usually an error."""
+        self.status_code = status
+        if self.head_sent:
+            detail = body[:500].decode("utf-8", errors="replace")
+            self._stream_error(f"The backend answered HTTP {status} to a retry after a repetition loop: {detail}")
+            return
+        if status == 400:
+            _capture_upstream_400(
+                path=self.handler.path,
+                kind="chat",
+                port_label=self.port_label,
+                public_model_name=self.model_name,
+                upstream_host=self.upstream[0],
+                upstream_port=self.upstream[1],
+                payload=self.payload,
+                response_body=body,
+            )
+        body = _rewrite_json_response_model(body, self.model_name)
+        forwarded = [
+            (key, value) for key, value in resp_headers.items()
+            if key not in {"content-length", "connection", "transfer-encoding"}
+        ]
+        forwarded.append(("Content-Length", str(len(body))))
+        _send_response_safely(self.handler, status or 502, forwarded, body)
+
+    def _event(self, event: bytes, rewriter: SSEEventRewriter, detectors: dict[str, RepetitionDetector]):
+        data_lines = [
+            line.strip()[5:].strip()
+            for line in event.decode("utf-8", errors="replace").splitlines()
+            if line.strip().startswith("data:")
+        ]
+        if not data_lines:
+            # A comment such as `: splash-keepalive`, which keeps a client's
+            # idle timer from firing through a long prefill.
+            if self.client_streaming and not self._write(event + b"\n\n"):
+                return self._GONE
+            return None
+        data = "\n".join(data_lines)
+        try:
+            obj = json.loads(data) if data != "[DONE]" else None
+        except ValueError:
+            obj = None
+        if not isinstance(obj, dict):
+            if self.client_streaming and not self._write(event + b"\n\n"):
+                return self._GONE
+            return None
+        if "error" in obj:
+            self._error = obj["error"]
+            if self.client_streaming and not self._write(event + b"\n\n"):
+                return self._GONE
+            return None
+        choices = obj.get("choices") if isinstance(obj.get("choices"), list) else []
+        for choice in choices:
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if not isinstance(delta, dict):
+                continue
+            for field, detector in detectors.items():
+                piece = delta.get(field)
+                if isinstance(piece, str) and piece and detector.feed(piece):
+                    return field, detector
+        if self.chat_id is None:
+            self.chat_id = obj.get("id")
+            self.created = obj.get("created")
+        elif "id" in obj:
+            # One id for the whole reply, across a retry.
+            obj["id"] = self.chat_id
+        if not self.client_streaming:
+            self._collect(obj, choices)
+            return None
+        for choice in choices:
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                self.client_saw_content = True
+                self._content_sent.append(content)
+            if delta.get("tool_calls"):
+                self.client_saw_content = True
+            if self.mode != "hidden" and delta.get("reasoning_content"):
+                self.client_saw_content = True
+            if choice.get("finish_reason"):
+                self._finish = choice["finish_reason"]
+        rewriter.rewrite_obj(obj)
+        return None if self._write_obj(obj) else self._GONE
+
+    def _collect(self, obj: dict[str, Any], choices: list[Any]):
+        for choice in choices:
+            if not isinstance(choice, dict) or choice.get("index", 0) != 0:
+                continue
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            reasoning = delta.get("reasoning_content")
+            if isinstance(reasoning, str):
+                self._reasoning.append(reasoning)
+            content = delta.get("content")
+            if isinstance(content, str):
+                self._content.append(content)
+            for call in delta.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                index = call.get("index", 0) if isinstance(call.get("index", 0), int) else 0
+                slot = self._tools.setdefault(index, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
+                if call.get("id"):
+                    slot["id"] = call["id"]
+                if call.get("type"):
+                    slot["type"] = call["type"]
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                if isinstance(function.get("name"), str):
+                    slot["function"]["name"] += function["name"]
+                if isinstance(function.get("arguments"), str):
+                    slot["function"]["arguments"] += function["arguments"]
+            if choice.get("finish_reason"):
+                self._finish = choice["finish_reason"]
+        if obj.get("usage"):
+            self._usage = obj["usage"]
+        for key in ("metrics", "timings"):
+            if key in obj:
+                self._extras[key] = obj[key]
 
 
 def _send_graphiti_ingest(group_id: str, user_text: str, assistant_text: str):
@@ -1867,10 +2500,27 @@ def make_handler(
 
             assistant_text = ""
             response_streaming = False
-            backend_phase = "connect"
+            self._backend_phase = "connect"
             stream_rewriter = None
+            guarded = (
+                LoopGuardedChatRelay(
+                    self,
+                    payload=payload,
+                    headers=headers,
+                    upstream=(upstream_host, upstream_port),
+                    can_fall_back=can_fall_back,
+                )
+                if is_generation_request and _loop_guard_applies(payload, kind)
+                else None
+            )
 
             try:
+                if guarded is not None:
+                    assistant_text = guarded.run()
+                    if group_id and guarded.status_code and guarded.status_code < 500:
+                        _enqueue_ingest(group_id, request_user_text, assistant_text)
+                    return
+
                 request_line = f"{method} {_upstream_path(self.path)} HTTP/1.1\r\n"
                 header_block = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
                 raw_request = (request_line + header_block + "\r\n").encode("utf-8") + body
@@ -1879,7 +2529,7 @@ def make_handler(
                     (upstream_host, upstream_port),
                     timeout=BACKEND_CONNECT_TIMEOUT_SEC,
                 ) as sock:
-                    backend_phase = "read"
+                    self._backend_phase = "read"
                     try:
                         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     except OSError:
@@ -2018,7 +2668,7 @@ def make_handler(
                 else:
                     self._backend_unavailable(upstream_host, upstream_port)
             except TimeoutError as exc:
-                if backend_phase == "connect":
+                if self._backend_phase == "connect":
                     if can_fall_back:
                         self._forward_to_fallback(method, client_body, "backend connect timed out")
                     else:
@@ -2033,7 +2683,7 @@ def make_handler(
                         ),
                     )
             except OSError as exc:
-                if can_fall_back and backend_phase == "connect":
+                if can_fall_back and self._backend_phase == "connect":
                     self._forward_to_fallback(method, client_body, f"backend unreachable: {exc}")
                 else:
                     self._backend_unavailable(upstream_host, upstream_port, str(exc))
