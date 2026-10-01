@@ -94,6 +94,70 @@ To list long replies and their speed (a loop runs at 120+ tok/s):
 grep -E 'output (16,384|32,768)' logs/llm-a.stdout.log
 ```
 
+### The loop guard
+
+Without a cap, a true loop would run to 32,768 tokens, 4-8 minutes of the only
+slot. So the proxy watches for loops itself (`LOOP_GUARD=on`, on the Studio
+since 2026-10-01; `LOOP_GUARD_*` in `config/llm-stack.env.example`). It sees
+every chat reply in full, reasoning included, although `reasoning_stream=hidden`
+keeps the reasoning out of the content clients read.
+
+- **What counts as a loop.** Reasoning and content are watched separately.
+  Every 256 new characters the newest 128 (~32 tokens) are looked for earlier
+  in the last 32,000; each earlier copy proposes a period. It is a loop when
+  the last 6 blocks of that period are identical and cover at least 1,500
+  characters. Back to back and exact is the point: long code, tables and
+  reasoning that re-quotes one source line repeat fragments, with different
+  text between them.
+- **Tuned on Hermes's `state.db`** (2026-10-01). The 09-29 loop (32,768 tokens
+  at 153 tok/s; a 304-character paragraph) trips 1,950 characters (~490
+  tokens, 3 s) after the exact repetition begins, a seventh of the way into the
+  reply. None of the other 8,252 stored replies trips, including session
+  `20261001_134609_56722c` (long xhigh thinking), and neither does any of
+  ~10,000 tool results, which are dense repetitive JSON. Counting how often a window recurs, the other obvious rule,
+  scored legitimate reasoning that re-quotes a transcript line at 7 and JSON at
+  48, so it was not used. `tests/test_loop_guard.py` re-runs these checks
+  whenever `state.db` is on the machine.
+- **On a loop** the proxy closes the backend connection (Splash logs the
+  request `Cancelled`) and writes one line to `logs/llm-a-proxy.stdout.log`:
+
+  ```
+  loop-guard port=think field=reasoning period=304 repeats=6 after=18,944 chars attempt=1/2: cancelled; retrying at temperature 1.1
+  ```
+
+  It retries once (`LOOP_GUARD_RETRIES`) at temperature + 0.1, and with the
+  client's seed + 1 if it sent one; otherwise Splash draws a fresh seed for
+  every request anyway. The client's stream carries on: the reasoning gets a
+  `[llm-chat-proxy: …restarted]` marker and then the new attempt, under the
+  same chat id. Hermes doesn't send reasoning back to this endpoint, so the
+  cut loop doesn't seed later turns.
+- **No second retry.** If the retry loops too, or the loop is in content the
+  client has already received, the reply ends with `finish_reason: "length"`.
+  When the loop was in the reasoning, the looping text becomes the content.
+  That is what the model produced, and it is what makes Hermes stop with
+  "Response Stopped — Repetition Detected" instead of asking the model to
+  continue (`agent/repetition_guard.py`).
+- **Non-streamed requests** (scripts, the llms fallback) are streamed from the
+  backend all the same (`LOOP_GUARD_NONSTREAM=on`), and the client gets the one
+  `chat.completion` JSON it asked for, built from the final attempt: content,
+  reasoning, tool calls, usage and timings. A request with `n` > 1 or log
+  probabilities is relayed as before, unguarded.
+- **Not watched:** `/v1/responses`, `/v1/completions` and tool-call arguments.
+  Repeats that change between copies (numbered, or a counter) aren't caught
+  either. A reply that was *asked* to repeat a long paragraph back to back
+  would be cut, but when asked, the 27B numbers its copies.
+
+Tried live on 2026-10-01 through a scratch proxy: asked to write a paragraph
+12 times, the reply was cut at the seventh copy and Splash logged
+`Cancelled · output 376 · 166.7 tok/s`. The retry and both endings are tested
+against a fake streaming backend in `tests/test_loop_guard.py`.
+
+To see what the guard has done:
+
+```bash
+grep loop-guard logs/llm-a-proxy.stdout.log
+```
+
 ## Memory
 
 Left to itself (`--max-memory auto`), Splash may use Metal's recommended
