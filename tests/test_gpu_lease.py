@@ -31,7 +31,7 @@ class FakeLlms:
         self.tmp = tmp
         self.backend_up = True
         self.backend_busy_polls = 0
-        self.comfy_device = "0"
+        self.comfy_device = "1"  # the unit's default: ComfyUI's home card
         self.comfy_queue = 0
         self.commands: list[list[str]] = []
         self.fail: dict[str, str] = {}
@@ -57,7 +57,7 @@ class FakeLlms:
             return mock.Mock(returncode=0, stdout=f"4242, {uuid}\n999, GPU-bbb\n", stderr="")
         elif cmd[:3] == ["systemctl", "--user", "restart"]:
             dev_file = lease.COMFY_DEVICE_FILE
-            self.comfy_device = dev_file.read_text().strip().split("=")[1] if dev_file.exists() else "0"
+            self.comfy_device = dev_file.read_text().strip().split("=")[1] if dev_file.exists() else "1"
             self.comfy_queue = 0
         return mock.Mock(returncode=0, stdout="", stderr="")
 
@@ -118,6 +118,7 @@ class LeaseTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_acquire_stops_the_backend_and_moves_comfy(self):
+        self.fake.comfy_device = "0"  # drifted off its home card
         result = lease.acquire("test", 30, False)
         self.assertTrue(result["ok"])
         self.assertTrue(lease.LEASE_FILE.exists())
@@ -136,11 +137,15 @@ class LeaseTests(unittest.TestCase):
         result = lease.release("done")
         self.assertTrue(result["ok"], result)
         self.assertTrue(self.fake.backend_up)
-        self.assertEqual(self.fake.comfy_device, "0")
+        self.assertEqual(self.fake.comfy_device, "1")  # ComfyUI never leaves GPU 1
         self.assertFalse(lease.LEASE_FILE.exists())
         self.assertFalse(lease.COMFY_DEVICE_FILE.exists())
         events = [json.loads(l)["event"] for l in lease.LOG_FILE.read_text().splitlines()]
         self.assertEqual(events, ["acquire", "release"])
+
+    def test_acquire_does_not_restart_comfy_when_already_home(self):
+        lease.acquire("test", 30, False)
+        self.assertNotIn(["systemctl", "--user", "restart", "comfyui"], self.fake.commands)
 
     def test_release_is_idempotent(self):
         self.assertTrue(lease.release("done")["ok"])

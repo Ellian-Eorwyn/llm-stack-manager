@@ -1,8 +1,11 @@
 # Lending the chat GPU to ComfyUI
 
-On llms, GPU 1 is full with the 27B (`llm-a`), and GPU 0 is shared by the task
-model, embeddings, the OCR router and ComfyUI, which leaves ComfyUI about 7 GB.
-A heavy image job borrows GPU 1 for a few minutes with `scripts/gpu-lease.py`.
+On llms, ComfyUI lives on GPU 1 permanently (its unit's default), idling at a
+couple hundred MB beside the 27B (`llm-a`). GPU 0 is shared by the task model,
+embeddings and the OCR router, and has no room for most generation models. A
+generation job therefore evicts the 27B from GPU 1 for a few minutes with
+`scripts/gpu-lease.py` — ComfyUI itself never moves (or restarts) in the
+normal flow.
 
 ```
 gpu-lease.py acquire [--holder NAME] [--max-minutes 30] [--force]
@@ -18,13 +21,16 @@ Each prints one JSON object. The exit status is non-zero, with the reason in
 1. `acquire` writes `/run/user/<uid>/gpu1-lease.json`. From then on the proxy
    sends new generation requests to `CHAT_FALLBACK_URL` (the Studio's proxy),
    marked `X-LLM-Served-By: fallback`. It waits for the 27B's in-flight request
-   (`/slots`), stops `llm-a` with `systemctl`, and restarts ComfyUI on GPU 1.
-   It also arms a watchdog (`systemd-run --user`, unit `gpu1-lease-watchdog`,
-   at `max-minutes` + 10) that releases the lease if nobody else does.
+   (`/slots`), stops `llm-a` with `systemctl`, and moves ComfyUI onto GPU 1 —
+   which it is already on, so normally no restart. It also arms a watchdog
+   (`systemd-run --user`, unit `gpu1-lease-watchdog`, at `max-minutes` + 10)
+   that releases the lease if nobody else does.
 2. `release` waits for ComfyUI's queue to empty (up to 5 minutes, then clears
-   it), unloads its models, restarts it on GPU 0, starts `llm-a` and waits for
-   `/health`. Only then does it remove the lease file, so the proxy keeps using
-   the fallback while the 27B loads.
+   it), unloads its models (so the 27B fits back on the card), checks ComfyUI
+   is on GPU 1, starts `llm-a` and waits for `/health`. Only then does it
+   remove the lease file, so the proxy keeps using the fallback while the 27B
+   loads. The next generation pays a one-time model load (~25 s), not a
+   ComfyUI restart.
 
 Some details:
 
