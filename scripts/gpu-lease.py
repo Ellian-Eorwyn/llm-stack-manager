@@ -6,8 +6,9 @@ gpu-lease.py — lend the chat backend's GPU to ComfyUI for one job, then give i
     gpu-lease.py release [--reason TEXT]
     gpu-lease.py status
 
-On llms, GPU 1 holds the 27B (`llm-a`) and GPU 0 is shared by the task model,
-embeddings and ComfyUI. A heavy image job wants a whole card. `acquire`:
+On llms, ComfyUI lives on GPU 1 permanently (its unit's default), idle at a
+couple hundred MB beside the 27B (`llm-a`). A generation job needs the whole
+card, so `acquire` evicts the 27B — and only the 27B — from GPU 1:
 
   1. takes a lock, so there is only ever one lease;
   2. refuses inside the quiet window (overnight jobs and evals use the 27B)
@@ -17,14 +18,17 @@ embeddings and ComfyUI. A heavy image job wants a whole card. `acquire`:
   4. waits for the backend's in-flight request to finish (/slots);
   5. stops the backend with systemctl. The manager's recorded expectation is
      left alone, so a reboot mid-lease brings the 27B back;
-  6. restarts ComfyUI on the lent GPU (a runtime env file its unit reads);
+  6. moves ComfyUI onto the lent GPU if it is not already there (a runtime
+     env file its unit reads);
   7. arms a watchdog that releases the lease if nobody else does.
 
 `release` is idempotent and runs from the caller's `finally` and from the
-watchdog: it waits for ComfyUI's queue, unloads its models, puts it back on its
-own GPU, starts the backend and waits until it answers, then removes the lease
-file so the proxy serves locally again. Output is one JSON object; the exit
-status is non-zero when something is left wrong, with the reason in "error".
+watchdog: it waits for ComfyUI's queue, unloads its models (so the 27B fits
+back on the card), makes sure ComfyUI is on GPU 1, starts the backend and
+waits until it answers, then removes the lease file so the proxy serves
+locally again. ComfyUI never touches GPU 0. Output is one JSON object; the
+exit status is non-zero when something is left wrong, with the reason in
+"error".
 
 Standard library only: it runs with the system python3.
 """
@@ -200,14 +204,18 @@ def wait_until(predicate, timeout: float, what: str):
         sleep(POLL)
 
 
-def restart_comfy(device: str | None):
-    if device is None:
-        COMFY_DEVICE_FILE.unlink(missing_ok=True)
-    else:
+def move_comfy(device: str):
+    """Put ComfyUI on the physical GPU `device`, restarting it only if it is
+    elsewhere. Its unit defaults to GPU 1, so this is a no-op in the normal
+    flow; the env file exists for a one-off GPU 0 (tight VRAM) or a re-home."""
+    if comfy_device() == device:
+        return
+    if COMFY_DEVICE_FILE.exists() or comfy_device() in (None,):
         COMFY_DEVICE_FILE.write_text(f"COMFY_CUDA_DEVICE={device}\n")
+    else:
+        COMFY_DEVICE_FILE.unlink(missing_ok=True)
     run(["systemctl", "--user", "restart", COMFY_UNIT])
-    want = device or "0"
-    wait_until(lambda: comfy_device() == want, COMFY_READY_TIMEOUT, f"ComfyUI on GPU {want}")
+    wait_until(lambda: comfy_device() == device, COMFY_READY_TIMEOUT, f"ComfyUI on GPU {device}")
 
 
 def clear_watchdog():
@@ -235,13 +243,13 @@ def acquire(holder: str, max_minutes: int, force: bool) -> dict:
         raise LeaseError(f"a lease is already held: {json.dumps(existing)}")
     if comfy_queue_len() is None:
         raise LeaseError(f"ComfyUI is not answering at {COMFY_URL}")
-    # Someone else's job (the UI, another Hermes run) finishes first: moving
-    # ComfyUI to GPU 1 restarts it, which would drop the job.
+    # Someone else's job (the UI, another Hermes run) finishes first: a
+    # ComfyUI restart would drop it, and the 27B stopping would OOM it.
     try:
         wait_until(lambda: comfy_queue_len() == 0, COMFY_QUEUE_TIMEOUT, "ComfyUI's current jobs to finish")
     except LeaseError:
         raise LeaseError(f"ComfyUI still has {comfy_queue_len()} job(s) after {int(COMFY_QUEUE_TIMEOUT)} s; "
-                         "restarting it would drop them") from None
+                         "evicting the 27B would drop them") from None
 
     lease = {
         "holder": holder,
@@ -254,7 +262,7 @@ def acquire(holder: str, max_minutes: int, force: bool) -> dict:
     try:
         wait_until(lambda: backend_busy() is not True, DRAIN_TIMEOUT, "the 27B to finish its current request")
         run(["sudo", "-n", "systemctl", "stop", BACKEND_UNIT])
-        restart_comfy(LENT_DEVICE)
+        move_comfy(LENT_DEVICE)  # usually already there: no restart
         clear_watchdog()
         run(watchdog_command(max_minutes))
     except BaseException:
@@ -282,12 +290,13 @@ def release(reason: str) -> dict:
         except (urllib.error.URLError, OSError, ValueError):
             pass
     try:
+        # Unload so the 27B fits back beside ComfyUI's idle footprint; the
+        # next generation pays a one-time model load (~25 s), not a restart.
         http_json(f"{COMFY_URL}/free", {"unload_models": True, "free_memory": True})
     except (urllib.error.URLError, OSError, ValueError):
         pass  # the restart below frees it anyway
     try:
-        if COMFY_DEVICE_FILE.exists() or comfy_device() not in (None, "0"):
-            restart_comfy(None)
+        move_comfy(LENT_DEVICE)  # ComfyUI stays on GPU 1; restart only if it drifted
     except LeaseError as exc:
         errors.append(str(exc))
     try:
