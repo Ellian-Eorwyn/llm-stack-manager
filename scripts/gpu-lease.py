@@ -3,8 +3,9 @@
 gpu-lease.py — lend the chat backend's GPU to ComfyUI for one job, then give it back.
 
     gpu-lease.py acquire [--holder NAME] [--max-minutes N] [--idle-minutes N] [--force]
+    gpu-lease.py acquire --sticky [--force]      (ComfyUI mode: held until released)
     gpu-lease.py touch [--max-minutes N]
-    gpu-lease.py release [--reason TEXT]
+    gpu-lease.py release [--reason TEXT] [--holder NAME]
     gpu-lease.py status
     gpu-lease.py watch          (the watchdog; systemd runs it, not you)
     gpu-lease.py heal           (the backend healer; a systemd timer runs it each minute)
@@ -25,7 +26,7 @@ card, so `acquire` evicts the 27B — and only the 27B — from GPU 1:
      env file its unit reads);
   7. arms a watchdog that releases the lease if nobody else does.
 
-Two kinds of lease:
+Three kinds of lease:
 
   - fixed (the default): the caller releases it in its `finally`; the watchdog
     releases it 10 minutes after `expires` (`--max-minutes`, default 30) in
@@ -38,6 +39,14 @@ Two kinds of lease:
     hard ceiling so a stuck lease still ends, and inside the quiet window an
     unforced idle lease ends after 5 idle minutes, so the overnight jobs get
     their 27B back.
+
+  - sticky (`--sticky`, ComfyUI mode, Ellie 2026-10-02): held until someone
+    runs `release` without a holder. No end, no idle limit, and the quiet
+    window doesn't end it; ComfyUI keeps its models loaded between jobs, so
+    every generation after the first skips the model load and the 35 s 27B
+    reload. Turning it on while another lease is held turns that lease
+    sticky in place. A job's own `release --holder NAME` leaves a sticky
+    lease alone, and an idle acquire shares it.
 
 Taking an idle lease again with the same holder renews it instead of failing,
 and `touch` marks activity now (and with --max-minutes moves the end out).
@@ -104,6 +113,7 @@ FIXED_GRACE = 600  # a fixed lease's watchdog waits this long past `expires`
 QUIET_IDLE_MINUTES = float(os.environ.get("GPU_LEASE_QUIET_IDLE_MINUTES", "5"))
 DEFAULT_MAX_MINUTES = 30
 DEFAULT_IDLE_CEILING_MINUTES = 720
+STICKY_HOLDER = "comfy-mode"
 
 HEAL_STATE_FILE = RUNTIME_DIR / "backend-heal.json"
 HEAL_GRACE_SECONDS = float(os.environ.get("GPU_LEASE_HEAL_GRACE_SECONDS", "300"))  # load time
@@ -366,6 +376,8 @@ def idle_limit_seconds(lease: dict, t: datetime) -> float:
 
 def due(lease: dict, t: datetime, activity: float, busy: bool) -> str | None:
     """Why the watchdog should release now, or None to keep waiting."""
+    if lease.get("sticky"):
+        return None  # ComfyUI mode ends only when someone turns it off
     end = ts_of(lease.get("expires"))
     tt = t.timestamp()
     if not lease.get("idle_minutes"):
@@ -381,6 +393,8 @@ def due(lease: dict, t: datetime, activity: float, busy: bool) -> str | None:
 
 def releases_at(lease: dict, activity: float, t: datetime) -> float | None:
     """When the watchdog will release if nothing happens meanwhile."""
+    if lease.get("sticky"):
+        return None
     end = ts_of(lease.get("expires"))
     if not lease.get("idle_minutes"):
         return None if end is None else end + FIXED_GRACE
@@ -390,12 +404,34 @@ def releases_at(lease: dict, activity: float, t: datetime) -> float | None:
 
 # --- commands -------------------------------------------------------------------
 
-def acquire(holder: str, max_minutes: int | None, force: bool, idle_minutes: int | None = None) -> dict:
+def acquire(holder: str, max_minutes: int | None, force: bool, idle_minutes: int | None = None,
+            sticky: bool = False) -> dict:
     t0 = time.monotonic()
     started = now()
     if max_minutes is None:
         max_minutes = DEFAULT_IDLE_CEILING_MINUTES if idle_minutes else DEFAULT_MAX_MINUTES
     existing = read_lease()
+    if existing is not None and existing.get("sticky") and not existing.get("unreadable"):
+        if sticky:
+            return {"ok": True, "already": True, **existing}
+        if idle_minutes:
+            # ComfyUI mode already gave GPU 1 to ComfyUI and outlives any idle
+            # lease; the idle caller never releases, so sharing is safe.
+            return {"ok": True, "shared": True, **existing}
+    if sticky and existing is not None and not existing.get("unreadable"):
+        if in_quiet_window(started) and not force:
+            raise LeaseError(f"inside the quiet window {QUIET_WINDOW}; overnight jobs use the 27B (use --force to override)")
+        # The 27B is already off: turn the lease that's held into ComfyUI mode.
+        # Its job's own `release --holder` will then leave it alone.
+        existing.update({"sticky": True, "holder": holder, "expires": None, "idle_minutes": None,
+                         "forced": bool(existing.get("forced") or force),
+                         "converted_from": existing.get("holder"),
+                         "sticky_since": started.isoformat(timespec="seconds")})
+        write_lease(existing)
+        if not watchdog_active():
+            arm_watchdog()
+        log_event({"event": "sticky", **existing})
+        return {"ok": True, "converted": True, **existing}
     if (idle_minutes and existing is not None and existing.get("holder") == holder
             and existing.get("idle_minutes")):
         # Taking an idle lease again (e.g. "enable SillyTavern mode" twice)
@@ -421,8 +457,10 @@ def acquire(holder: str, max_minutes: int | None, force: bool, idle_minutes: int
     lease = {
         "holder": holder,
         "started": started.isoformat(timespec="seconds"),
-        "expires": datetime.fromtimestamp(started.timestamp() + max_minutes * 60, started.tzinfo).isoformat(timespec="seconds"),
-        "idle_minutes": idle_minutes,
+        "expires": None if sticky else datetime.fromtimestamp(started.timestamp() + max_minutes * 60,
+                                                              started.tzinfo).isoformat(timespec="seconds"),
+        "idle_minutes": None if sticky else idle_minutes,
+        "sticky": sticky,
         "forced": force,
         "last_activity": started.isoformat(timespec="seconds"),
         "backend_unit": BACKEND_UNIT,
@@ -444,9 +482,15 @@ def acquire(holder: str, max_minutes: int | None, force: bool, idle_minutes: int
     return {"ok": True, **lease}
 
 
-def release(reason: str) -> dict:
+def release(reason: str, holder: str | None = None) -> dict:
     t0 = time.monotonic()
     lease = read_lease()
+    if holder and lease and lease.get("sticky") and lease.get("holder") != holder:
+        # A job that took (or shared) the lease is done, but ComfyUI mode is on:
+        # GPU 1 stays ComfyUI's until a release without a holder turns it off.
+        return {"ok": True, "kept": True, "reason": reason, "holder": holder,
+                "why": "ComfyUI mode is on (sticky lease); release without --holder to turn it off",
+                "held": lease}
     errors = []
     # Let a running job finish, then stop whatever is left.
     try:
@@ -641,11 +685,15 @@ def main(argv: list[str] | None = None) -> int:
                         f"idle lease: the hard ceiling (default {DEFAULT_IDLE_CEILING_MINUTES})")
     a.add_argument("--idle-minutes", type=int, default=None,
                    help="release once ComfyUI has been idle this long (no caller release needed)")
+    a.add_argument("--sticky", action="store_true",
+                   help="ComfyUI mode: hold GPU 1 until a release without --holder (no end, no idle limit)")
     a.add_argument("--force", action="store_true", help="ignore the quiet window")
     t = sub.add_parser("touch", help="mark activity now; keeps an idle lease from ending")
     t.add_argument("--max-minutes", type=int, default=None, help="also move the end out to now + N")
     r = sub.add_parser("release")
     r.add_argument("--reason", default="done")
+    r.add_argument("--holder", default=None,
+                   help="the releasing job's holder; a sticky lease (ComfyUI mode) held by another is kept")
     sub.add_parser("status")
     sub.add_parser("watch", help="the watchdog loop (systemd runs it)")
     sub.add_parser("heal", help="restart a backend that runs but no longer serves (a timer runs it)")
@@ -671,11 +719,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         with locked():
             if args.cmd == "acquire":
-                result = acquire(args.holder, args.max_minutes, args.force, args.idle_minutes)
+                holder = STICKY_HOLDER if args.sticky and args.holder == "comfyui" else args.holder
+                result = acquire(holder, args.max_minutes, args.force, args.idle_minutes, args.sticky)
             elif args.cmd == "touch":
                 result = touch(args.max_minutes)
             else:
-                result = release(args.reason)
+                result = release(args.reason, args.holder)
     except LeaseError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 1

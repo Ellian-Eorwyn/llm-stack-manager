@@ -9,8 +9,9 @@ normal flow.
 
 ```
 gpu-lease.py acquire [--holder NAME] [--max-minutes N] [--idle-minutes N] [--force]
+gpu-lease.py acquire --sticky [--force]
 gpu-lease.py touch [--max-minutes N]
-gpu-lease.py release [--reason TEXT]
+gpu-lease.py release [--reason TEXT] [--holder NAME]
 gpu-lease.py status
 ```
 
@@ -32,15 +33,31 @@ Each prints one JSON object. The exit status is non-zero, with the reason in
    loads. The next generation pays a one-time model load (~25 s), not a
    ComfyUI restart.
 
-## Two kinds of lease
+## Three kinds of lease
 
-| | fixed (default) | idle (`--idle-minutes N`) |
-|---|---|---|
-| For | one job: `gen.py --gpu1`, `edit_bg.py` | a session: SillyTavern mode |
-| Who releases | the caller, in its `finally` | the watchdog, once ComfyUI has been idle N minutes |
-| `--max-minutes` | the lease's length (default 30); the watchdog releases 10 minutes after it | a hard ceiling (default 720) |
-| Quiet window | — | an unforced lease ends after 5 idle minutes (`GPU_LEASE_QUIET_IDLE_MINUTES`) |
-| `acquire` again, same holder | refused (the first caller would release under the second) | renews it |
+| | fixed (default) | idle (`--idle-minutes N`) | sticky (`--sticky`, ComfyUI mode) |
+|---|---|---|---|
+| For | one job: `gen.py --gpu1`, `edit_bg.py` | a session: SillyTavern mode | working on generation for a while |
+| Who releases | the caller, in its `finally` | the watchdog, once ComfyUI has been idle N minutes | only `release` without `--holder` (Ellie turning it off) |
+| `--max-minutes` | the lease's length (default 30); the watchdog releases 10 minutes after it | a hard ceiling (default 720) | ignored: no end |
+| Quiet window | — | an unforced lease ends after 5 idle minutes (`GPU_LEASE_QUIET_IDLE_MINUTES`) | turning it on needs `--force`; once on, it stays on overnight |
+| `acquire` again, same holder | refused (the first caller would release under the second) | renews it | no-op (`"already": true`) |
+
+**ComfyUI mode** (Ellie, 2026-10-02) exists because each job's own release
+unloads ComfyUI's models and reloads the 27B (~35 s), so the next generation
+pays both the model load and, before that, the eviction. With a sticky lease
+ComfyUI keeps its models loaded between jobs. While it is on:
+
+- `acquire --sticky` with another lease held turns that lease sticky in place
+  (`"converted_from"` names the old holder); the 27B is already off.
+- A job's `release --holder NAME` (the Mac's `lease.py` always passes it)
+  leaves a sticky lease held by someone else alone and answers `"kept": true`.
+- An idle acquire (SillyTavern mode) shares it (`"shared": true`); a fixed
+  acquire is refused as "already held", and the Mac's `gpu1_lease` then
+  shares it too.
+- `heal` keeps its hands off, as for any lease. Overnight jobs on llms `think`
+  are served by the Studio through the proxy fallback for as long as it's on.
+- A reboot clears the lease file (tmpfs), which ends ComfyUI mode.
 
 **Idle means ComfyUI did nothing, whoever its client is.** SillyTavern calls
 ComfyUI directly, so the lease can't rely on its callers checking in. Each

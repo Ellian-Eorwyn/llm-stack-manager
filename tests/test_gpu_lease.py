@@ -439,6 +439,103 @@ class IdleLeaseTests(FakeLlmsCase):
         self.assertTrue(out[2]["ok"])
 
 
+class StickyLeaseTests(FakeLlmsCase):
+    """--sticky (ComfyUI mode): held until a release without a holder."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = Clock(NOON, limit=3 * 24 * 60)
+        self.more = mock.patch.multiple(lease, now=self.clock.now, sleep=self.clock.sleep, WATCH_POLL=60)
+        self.more.start()
+
+    def tearDown(self):
+        self.more.stop()
+        super().tearDown()
+
+    def test_sticky_lease_has_no_end(self):
+        result = lease.acquire("comfy-mode", None, False, sticky=True)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["sticky"])
+        self.assertIsNone(result["expires"])
+        self.assertIsNone(result["idle_minutes"])
+        self.assertFalse(self.fake.backend_up)
+        st = lease.status()
+        self.assertIsNone(st["releases_at"])
+        self.assertNotIn("expired", st)
+
+    def test_watchdog_never_releases_it_even_overnight(self):
+        lease.acquire("comfy-mode", None, False, sticky=True)
+        # Two idle days, through two quiet windows: still held.
+        with mock.patch.object(lease, "read_lease", side_effect=self._stop_after(2 * 24 * 60)):
+            self.assertEqual(lease.watch(), 0)
+        self.assertTrue(lease.LEASE_FILE.exists())
+        self.assertFalse(self.fake.backend_up)
+
+    def _stop_after(self, minutes):
+        real = lease.read_lease  # taken before the patch below replaces it
+
+        def read():
+            if (self.clock.t - NOON).total_seconds() / 60 >= minutes:
+                return None  # end the loop as a release elsewhere would
+            return real()
+        return read
+
+    def test_a_jobs_release_keeps_it(self):
+        lease.acquire("comfy-mode", None, False, sticky=True)
+        result = lease.release("done", holder="comfyui-edit")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["kept"])
+        self.assertTrue(lease.LEASE_FILE.exists())
+        self.assertFalse(self.fake.backend_up)
+
+    def test_release_without_holder_turns_it_off(self):
+        lease.acquire("comfy-mode", None, False, sticky=True)
+        result = lease.release("comfy mode off")
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(lease.LEASE_FILE.exists())
+        self.assertTrue(self.fake.backend_up)
+
+    def test_turning_it_on_converts_a_held_job_lease(self):
+        lease.acquire("comfyui-edit", 30, False)
+        result = lease.acquire("comfy-mode", None, False, sticky=True)
+        self.assertTrue(result["converted"])
+        self.assertEqual(result["converted_from"], "comfyui-edit")
+        self.assertIsNone(result["expires"])
+        # The job finishes and releases its own lease: ComfyUI mode stays on.
+        self.assertTrue(lease.release("done", holder="comfyui-edit")["kept"])
+        self.assertTrue(lease.LEASE_FILE.exists())
+
+    def test_on_twice_is_a_no_op(self):
+        lease.acquire("comfy-mode", None, False, sticky=True)
+        n = len(self.fake.commands)
+        self.assertTrue(lease.acquire("comfy-mode", None, False, sticky=True)["already"])
+        self.assertEqual(len(self.fake.commands), n)
+
+    def test_idle_acquire_shares_it_and_fixed_is_refused(self):
+        lease.acquire("comfy-mode", None, False, sticky=True)
+        shared = lease.acquire("sillytavern", None, False, 60)
+        self.assertTrue(shared["shared"])
+        self.assertTrue(lease.read_lease()["sticky"])
+        with self.assertRaises(lease.LeaseError):
+            lease.acquire("comfyui-edit", 30, False)
+
+    def test_quiet_window_needs_force_to_turn_it_on(self):
+        self.clock.t = NOON.replace(hour=23, minute=30)
+        with self.assertRaises(lease.LeaseError):
+            lease.acquire("comfy-mode", None, False, sticky=True)
+        self.assertTrue(lease.acquire("comfy-mode", None, True, sticky=True)["ok"])
+
+    def test_main_sticky_defaults_the_holder(self):
+        out = []
+        with mock.patch("builtins.print", lambda s: out.append(json.loads(s))):
+            self.assertEqual(lease.main(["acquire", "--sticky"]), 0)
+            self.assertEqual(lease.main(["release", "--holder", "comfyui"]), 0)
+            self.assertEqual(lease.main(["release", "--reason", "comfy mode off"]), 0)
+        self.assertEqual(out[0]["holder"], "comfy-mode")
+        self.assertTrue(out[1]["kept"])
+        self.assertFalse(lease.LEASE_FILE.exists())
+
+
 class HealTests(FakeLlmsCase):
     """heal: restart a backend that runs but has latched itself unavailable."""
 
