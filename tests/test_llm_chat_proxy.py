@@ -134,6 +134,51 @@ class MaxTokensOverrideTests(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], 40)
 
 
+class MediaMaxTokensTests(unittest.TestCase):
+    """MEDIA_MAX_TOKENS: an image request may not reserve the rest of the context."""
+
+    IMAGE = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+
+    def chat(self, **extra):
+        return {"messages": [{"role": "user", "content": "hi"},
+                             {"role": "tool", "tool_call_id": "c1",
+                              "content": [{"type": "text", "text": "look"}, self.IMAGE]}], **extra}
+
+    def test_uncapped_image_request_is_capped(self):
+        payload = self.chat()
+        self.assertEqual(proxy._cap_media_max_tokens(payload, "chat", 32768), 0)
+        self.assertEqual(payload["max_tokens"], 32768)
+
+    def test_a_larger_cap_is_lowered_and_a_smaller_one_kept(self):
+        payload = self.chat(max_tokens=95000)
+        self.assertEqual(proxy._cap_media_max_tokens(payload, "chat", 32768), 95000)
+        self.assertEqual(payload["max_tokens"], 32768)
+        payload = self.chat(max_tokens=6090)
+        self.assertIsNone(proxy._cap_media_max_tokens(payload, "chat", 32768))
+        self.assertEqual(payload["max_tokens"], 6090)
+
+    def test_max_completion_tokens_is_capped_in_place(self):
+        payload = self.chat(max_completion_tokens=100000)
+        proxy._cap_media_max_tokens(payload, "chat", 32768)
+        self.assertEqual(payload, self.chat(max_completion_tokens=32768))
+
+    def test_text_only_requests_are_left_alone(self):
+        payload = {"messages": [{"role": "user", "content": "hi"}]}
+        self.assertIsNone(proxy._cap_media_max_tokens(payload, "chat", 32768))
+        self.assertNotIn("max_tokens", payload)
+
+    def test_responses_input_image(self):
+        payload = {"input": [{"type": "message", "role": "user",
+                              "content": [{"type": "input_image", "image_url": "data:x"}]}]}
+        proxy._cap_media_max_tokens(payload, "responses", 32768)
+        self.assertEqual(payload["max_output_tokens"], 32768)
+
+    def test_off_by_default(self):
+        payload = self.chat()
+        self.assertIsNone(proxy._cap_media_max_tokens(payload, "chat", 0))
+        self.assertNotIn("max_tokens", payload)
+
+
 class ReasoningEffortTests(unittest.TestCase):
     """Qwen 3.8's template raises on a level it does not recognize, so an
     unusable value must never survive as far as the backend."""

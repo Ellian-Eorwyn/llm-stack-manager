@@ -121,6 +121,18 @@ LOOP_GUARD_RETRY_TEMP_STEP = float(os.environ.get("LOOP_GUARD_RETRY_TEMP_STEP", 
 # so the guard sees its reply too, and is answered with the one JSON it expects.
 LOOP_GUARD_NONSTREAM = os.environ.get("LOOP_GUARD_NONSTREAM", "on").strip().lower() in {"1", "on", "true", "yes"}
 
+# Output cap for requests that carry media (images, video, audio). NInfer
+# reserves the whole requested output up front, and an image request whose
+# output fills the rest of the context (a client that sends no max_tokens gets
+# context - prompt, ~95k tokens) fails with std::bad_alloc; three such failures
+# in a row latch the engine "unavailable" until a restart (2026-10-01 and
+# 10-02, Hermes's background skill review after an image session). A request
+# with media and no max_tokens, or a larger one, is capped here. Text-only
+# requests are left alone. 0 (the default) turns it off.
+MEDIA_MAX_TOKENS = max(0, int(os.environ.get("MEDIA_MAX_TOKENS", "0")))
+_MEDIA_PART_TYPES = frozenset({"image_url", "input_image", "image", "video_url", "input_video",
+                               "video", "input_audio", "audio"})
+
 # Qwen 3.8 accepts exactly three thinking levels and its template *raises* on
 # anything else, so an unmapped value is not a soft fallback — it is a 500 that
 # kills the request. OpenAI's own vocabulary (`high`, `minimal`) is the likely
@@ -2085,6 +2097,35 @@ def _inject_max_tokens(payload: dict[str, Any], kind: str | None, max_tokens: in
         payload["max_tokens"] = max_tokens
 
 
+def _has_media(payload: dict[str, Any], kind: str | None) -> bool:
+    """True when any message (chat) or input item (responses) carries a media part."""
+    items = payload.get("messages") if kind == "chat" else payload.get("input")
+    stack = list(items) if isinstance(items, list) else []
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if item.get("type") in _MEDIA_PART_TYPES:
+                return True
+            stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
+
+
+def _cap_media_max_tokens(payload: dict[str, Any], kind: str | None, cap: int) -> int | None:
+    """Apply MEDIA_MAX_TOKENS to a media request; returns the old value (0 = unset) when it capped."""
+    if cap <= 0 or kind not in {"chat", "responses"} or not _has_media(payload, kind):
+        return None
+    keys = ["max_output_tokens"] if kind == "responses" else ["max_tokens", "max_completion_tokens"]
+    present = [k for k in keys if isinstance(payload.get(k), int) and payload[k] > 0]
+    if present and all(payload[k] <= cap for k in present):
+        return None
+    old = max((payload[k] for k in present), default=0)
+    for k in present or keys[:1]:
+        payload[k] = cap
+    return old
+
+
 def _normalize_json_object_response_format(payload: dict[str, Any]):
     """Give a schema-less `json_object` the schema that makes it mean something.
 
@@ -2448,6 +2489,10 @@ def make_handler(
                     _inject_overrides(payload, self._overrides)
                 if is_generation_request:
                     _inject_max_tokens(payload, kind, self._max_tokens)
+                    capped_from = _cap_media_max_tokens(payload, kind, MEDIA_MAX_TOKENS)
+                    if capped_from is not None:
+                        _log(f"media-cap port={self._port_label} max_tokens "
+                             f"{capped_from or 'unset'} -> {MEDIA_MAX_TOKENS}")
                     _normalize_json_object_response_format(payload)
 
                 request_messages = _payload_messages(payload, kind)
