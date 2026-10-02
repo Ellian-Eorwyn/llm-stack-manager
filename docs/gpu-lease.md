@@ -82,6 +82,61 @@ of an idle one.
   `watchdog: ComfyUI idle 60 min`, `watchdog: hard ceiling` or
   `watchdog: past its end`.
 
+## When the 27B is up but not serving: `heal`
+
+Found 2026-10-01 and 10-02. The lease handed GPU 1 back correctly every time,
+but within minutes of a release the 27B answered `/health` with 503
+`{"status":"unavailable"}` and stayed that way, process alive, until someone
+restarted it by hand. The proxy served everything from the Studio meanwhile,
+so the only visible sign was the doctor's `llms-model` line.
+
+The chain:
+
+1. After an image session, Hermes's background skill review sends the whole
+   conversation to llms `think`: ~35-40k tokens, 18 tools, the generated
+   images as `image_url` parts of tool results, and no `max_tokens`.
+2. NInfer gives a request with no `max_tokens` the rest of the context
+   (~95k tokens) and reserves it up front. With an image in the prompt that
+   fails with `std::bad_alloc` (reproduced 10-02 with the 10-01 request: it
+   fails uncapped and passes at 16k and 65k; a short image prompt fails
+   intermittently near a full-context cap). Text-only requests at the same
+   size pass.
+3. Hermes retries a failed call three times. NInfer recovers from a worker
+   failure only twice in a row: the third consecutive one (or any failure
+   whose cleanup leaves resources behind, e.g. one that lands while a
+   cancelled request is torn down) latches the engine `failed_`
+   (`engine_core.h` `recover_locked`). systemd sees a running process, so
+   `Restart=` never fires.
+
+Two fixes, both on llms:
+
+- **The proxy caps media requests** (`MEDIA_MAX_TOKENS=32768` in
+  `config/llm-stack.env`; off by default). A chat or responses request with an
+  image, video or audio part and no output cap, or a larger one, is capped and
+  logged as `media-cap`. That removes the trigger seen in production; it does
+  not make NInfer's bug impossible.
+- **`gpu-lease.py heal`**, run each minute by the user timer
+  `llm-a-heal.timer` (`systemd/user/`). Hands off while a lease exists, while
+  the unit is not `active` (stopped on purpose or failed: systemd's business),
+  within 5 minutes of the unit starting (load time), and while another
+  gpu-lease command holds the lock. Otherwise, when `/health` fails on two
+  checks at least 90 s apart, it restarts `llm-a` and waits for `/health`.
+  At most 3 restarts an hour; past that it logs `gave up` once and leaves the
+  backend to the fallback. Each restart is a `heal` event in
+  `~/.local/state/gpu-lease.jsonl`, and `status` shows `last_heal` (and
+  `heal_gave_up`).
+
+Install on llms:
+
+```
+cp /mnt/LLMs/llamacpp/llm-stack-git/systemd/user/llm-a-heal.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now llm-a-heal.timer
+```
+
+Check: `journalctl --user -u llm-a-heal -n 5` (one JSON line per check) and
+`grep '"heal"' ~/.local/state/gpu-lease.jsonl`.
+
 ## Setup
 
 **Proxy.** In `config/llm-stack.env` on llms:
@@ -113,5 +168,5 @@ ExecStart=/home/ellie/AI/ComfyUI/run-comfyui.sh --listen 100.124.56.11 --port 81
 **Overrides.** You can override these through the environment:
 `GPU_LEASE_BACKEND_UNIT`, `GPU_LEASE_BACKEND_URL`, `GPU_LEASE_COMFY_UNIT`,
 `GPU_LEASE_COMFY_URL`, `GPU_LEASE_DEVICE`, `GPU_LEASE_QUIET`,
-`GPU_LEASE_QUIET_IDLE_MINUTES`, and the timeouts and intervals
+`GPU_LEASE_QUIET_IDLE_MINUTES`, `GPU_LEASE_HEAL_MAX_PER_HOUR`, and the timeouts and intervals
 (`GPU_LEASE_*_SECONDS`).

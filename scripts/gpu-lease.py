@@ -7,6 +7,7 @@ gpu-lease.py — lend the chat backend's GPU to ComfyUI for one job, then give i
     gpu-lease.py release [--reason TEXT]
     gpu-lease.py status
     gpu-lease.py watch          (the watchdog; systemd runs it, not you)
+    gpu-lease.py heal           (the backend healer; a systemd timer runs it each minute)
 
 On llms, ComfyUI lives on GPU 1 permanently (its unit's default), idle at a
 couple hundred MB beside the 27B (`llm-a`). A generation job needs the whole
@@ -48,6 +49,16 @@ waits until it answers, then removes the lease file so the proxy serves
 locally again. ComfyUI never touches GPU 0. Output is one JSON object; the
 exit status is non-zero when something is left wrong, with the reason in
 "error".
+
+`heal` restarts a backend that is running but has stopped serving. NInfer
+latches itself "unavailable" (/health 503, process alive, so systemd's
+Restart= never fires) after a worker failure it cannot recover from — on
+2026-10-01 and 10-02 a `std::bad_alloc` on an image request with an
+uncapped output, retried three times by Hermes. Without a lease, with the
+unit active past its load time and /health failing on two checks at least
+HEAL_CONFIRM_SECONDS apart, it restarts the unit and waits for /health. At
+most HEAL_MAX_PER_HOUR restarts an hour; past that it logs once and leaves
+the backend alone (the proxy keeps serving from the fallback).
 
 Standard library only: it runs with the system python3.
 """
@@ -93,6 +104,11 @@ FIXED_GRACE = 600  # a fixed lease's watchdog waits this long past `expires`
 QUIET_IDLE_MINUTES = float(os.environ.get("GPU_LEASE_QUIET_IDLE_MINUTES", "5"))
 DEFAULT_MAX_MINUTES = 30
 DEFAULT_IDLE_CEILING_MINUTES = 720
+
+HEAL_STATE_FILE = RUNTIME_DIR / "backend-heal.json"
+HEAL_GRACE_SECONDS = float(os.environ.get("GPU_LEASE_HEAL_GRACE_SECONDS", "300"))  # load time
+HEAL_CONFIRM_SECONDS = float(os.environ.get("GPU_LEASE_HEAL_CONFIRM_SECONDS", "90"))
+HEAL_MAX_PER_HOUR = int(os.environ.get("GPU_LEASE_HEAL_MAX_PER_HOUR", "3"))
 
 
 class LeaseError(Exception):
@@ -193,6 +209,15 @@ def backend_busy() -> bool | None:
 
 def backend_healthy() -> bool:
     return http_status(f"{BACKEND_URL}/health") == 200
+
+
+def backend_unit_state() -> tuple[str, float | None]:
+    """(ActiveState, epoch seconds it entered that state) of the backend unit."""
+    out = run(["systemctl", "show", BACKEND_UNIT, "-p", "ActiveState", "-p", "ActiveEnterTimestamp",
+               "--timestamp=unix"], check=False).stdout
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    since = props.get("ActiveEnterTimestamp", "").lstrip("@")
+    return props.get("ActiveState", "unknown"), float(since) if since.isdigit() else None
 
 
 def comfy_queue_len() -> int | None:
@@ -517,6 +542,68 @@ def watch() -> int:
         sleep(WATCH_POLL)
 
 
+def read_heal_state() -> dict:
+    try:
+        return json.loads(HEAL_STATE_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_heal_state(state: dict):
+    tmp = HEAL_STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, sort_keys=True))
+    tmp.replace(HEAL_STATE_FILE)
+
+
+def heal() -> dict:
+    """One check of the backend; restart it if it is running but latched. Caller holds the lock."""
+    t = now().timestamp()
+    state = read_heal_state()
+    restarts = [r for r in state.get("restarts", []) if t - r < 3600]
+    state["restarts"] = restarts
+
+    def done(action: str, **extra) -> dict:
+        if action != "watching":
+            state.pop("unhealthy_since", None)
+        write_heal_state(state)
+        return {"ok": True, "action": action, **extra}
+
+    if read_lease() is not None:
+        return done("none", why="lease held")
+    unit_state, since = backend_unit_state()
+    if unit_state != "active":
+        # Stopped on purpose, failed (systemd's Restart= handles that) or mid-start.
+        return done("none", why=f"{BACKEND_UNIT} is {unit_state}")
+    if since is not None and t - since < HEAL_GRACE_SECONDS:
+        return done("none", why="backend still loading")
+    code = http_status(f"{BACKEND_URL}/health")
+    if code == 200:
+        return done("none", why="healthy")
+    first = state.get("unhealthy_since")
+    if first is None or t - first < HEAL_CONFIRM_SECONDS:
+        state.setdefault("unhealthy_since", t)
+        return done("watching", health=code)
+    if len(restarts) >= HEAL_MAX_PER_HOUR:
+        if not state.get("gave_up_logged"):
+            state["gave_up_logged"] = True
+            log_event({"event": "heal", "at": iso(t), "action": "gave up", "health": code,
+                       "restarts_last_hour": len(restarts)})
+        return done("gave up", health=code, restarts_last_hour=len(restarts))
+    state.pop("gave_up_logged", None)
+    run(["sudo", "-n", "systemctl", "restart", BACKEND_UNIT])
+    restarts.append(t)
+    try:
+        wait_until(backend_healthy, BACKEND_READY_TIMEOUT, f"{BACKEND_UNIT} to answer /health")
+        recovered = True
+    except LeaseError:
+        recovered = False
+    event = {"event": "heal", "at": iso(t), "action": "restarted", "health": code,
+             "unhealthy_seconds": round(t - first), "recovered": recovered}
+    log_event(event)
+    state["last_restart"] = event
+    return done("restarted", health=code, recovered=recovered)
+
+
 def status() -> dict:
     lease = read_lease()
     t = now()
@@ -526,6 +613,11 @@ def status() -> dict:
         "comfy_device": comfy_device(),
         "now": t.isoformat(timespec="seconds"),
     }
+    heal_state = read_heal_state()
+    if heal_state.get("last_restart"):
+        out["last_heal"] = heal_state["last_restart"]
+    if heal_state.get("gave_up_logged"):
+        out["heal_gave_up"] = True
     if lease and lease.get("expires"):
         out["expired"] = datetime.fromisoformat(lease["expires"]) < t
     if lease and not lease.get("unreadable"):
@@ -556,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--reason", default="done")
     sub.add_parser("status")
     sub.add_parser("watch", help="the watchdog loop (systemd runs it)")
+    sub.add_parser("heal", help="restart a backend that runs but no longer serves (a timer runs it)")
     args = ap.parse_args(argv)
 
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
@@ -565,6 +658,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "watch":
             return watch()
+        if args.cmd == "heal":
+            try:
+                with locked():
+                    result = heal()
+            except LeaseError as exc:
+                if "another gpu-lease command" not in str(exc):
+                    raise
+                # acquire/release own the backend right now; check again next minute.
+                result = {"ok": True, "action": "none", "why": str(exc)}
+            print(json.dumps(result))
+            return 0
         with locked():
             if args.cmd == "acquire":
                 result = acquire(args.holder, args.max_minutes, args.force, args.idle_minutes)

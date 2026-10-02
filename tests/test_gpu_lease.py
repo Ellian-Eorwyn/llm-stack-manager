@@ -37,6 +37,9 @@ class FakeLlms:
         self.watchdog_up = False
         self.commands: list[list[str]] = []
         self.fail: dict[str, str] = {}
+        self.backend_latched = False  # NInfer's "unavailable": running, /health 503
+        self.backend_since = NOON.timestamp() - 3600  # when the unit last (re)started
+        self.restart_heals = True
 
     def run(self, cmd, check=True):
         self.commands.append(cmd)
@@ -50,6 +53,13 @@ class FakeLlms:
             self.backend_up = False
         elif cmd[:4] == ["sudo", "-n", "systemctl", "start"]:
             self.backend_up = True
+        elif cmd[:4] == ["sudo", "-n", "systemctl", "restart"]:
+            self.backend_up = True
+            self.backend_latched = not self.restart_heals
+        elif cmd[:2] == ["systemctl", "show"]:
+            active = "active" if self.backend_up else "inactive"
+            return mock.Mock(returncode=0, stderr="",
+                             stdout=f"ActiveState={active}\nActiveEnterTimestamp=@{int(self.backend_since)}\n")
         elif cmd[:4] == ["systemctl", "--user", "show", "-p"]:
             return mock.Mock(returncode=0, stdout="/user.slice/app.slice/comfyui.service\n", stderr="")
         elif cmd[:2] == ["nvidia-smi", "--query-gpu=index,uuid"]:
@@ -90,7 +100,9 @@ class FakeLlms:
         return {}
 
     def http_status(self, url, timeout=5.0):
-        return 200 if self.backend_up else 0
+        if not self.backend_up:
+            return 0
+        return 503 if self.backend_latched else 200
 
 
 class FakeLlmsCase(unittest.TestCase):
@@ -104,6 +116,7 @@ class FakeLlmsCase(unittest.TestCase):
             LOCK_FILE=tmp / "gpu1-lease.lock",
             COMFY_DEVICE_FILE=tmp / "comfyui-device.env",
             LOG_FILE=tmp / "gpu-lease.jsonl",
+            HEAL_STATE_FILE=tmp / "backend-heal.json",
             RUNTIME_DIR=tmp,
             run=self.fake.run,
             Path=self._fake_path,
@@ -424,6 +437,95 @@ class IdleLeaseTests(FakeLlmsCase):
         self.assertEqual(out[0]["idle_minutes"], 60)
         self.assertIn("last_activity", out[1])
         self.assertTrue(out[2]["ok"])
+
+
+class HealTests(FakeLlmsCase):
+    """heal: restart a backend that runs but has latched itself unavailable."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = Clock(NOON)
+        self.more = mock.patch.multiple(lease, now=self.clock.now)
+        self.more.start()
+
+    def tearDown(self):
+        self.more.stop()
+        super().tearDown()
+
+    def check(self, after_seconds: float = 0):
+        self.clock.t += timedelta(seconds=after_seconds)
+        return lease.heal()
+
+    def restarts(self):
+        return [c for c in self.fake.commands if c[:4] == ["sudo", "-n", "systemctl", "restart"]]
+
+    def heal_events(self):
+        if not lease.LOG_FILE.exists():
+            return []
+        return [e for e in map(json.loads, lease.LOG_FILE.read_text().splitlines()) if e["event"] == "heal"]
+
+    def test_a_healthy_backend_is_left_alone(self):
+        self.assertEqual(self.check()["action"], "none")
+        self.assertEqual(self.restarts(), [])
+
+    def test_a_latched_backend_is_restarted_after_two_checks(self):
+        self.fake.backend_latched = True
+        self.assertEqual(self.check()["action"], "watching")
+        self.assertEqual(self.check(60)["action"], "watching")  # 60 s < 90 s: not yet confirmed
+        result = self.check(60)
+        self.assertEqual(result["action"], "restarted")
+        self.assertTrue(result["recovered"])
+        self.assertEqual(len(self.restarts()), 1)
+        self.assertEqual(self.heal_events()[-1]["health"], 503)
+        self.assertIn("last_heal", lease.status())
+
+    def test_one_bad_check_then_healthy_does_not_restart(self):
+        self.fake.backend_latched = True
+        self.check()
+        self.fake.backend_latched = False
+        self.assertEqual(self.check(120)["action"], "none")
+        self.fake.backend_latched = True
+        self.assertEqual(self.check(120)["action"], "watching")  # the clock started again
+        self.assertEqual(self.restarts(), [])
+
+    def test_a_lease_means_hands_off(self):
+        lease.acquire("comfyui", 30, False)
+        self.fake.backend_up, self.fake.backend_latched = True, True
+        self.check()
+        self.assertEqual(self.check(300)["why"], "lease held")
+        self.assertEqual(self.restarts(), [])
+
+    def test_a_stopped_unit_is_not_started(self):
+        self.fake.backend_up = False
+        self.check()
+        self.assertEqual(self.check(300)["action"], "none")
+        self.assertEqual(self.restarts(), [])
+
+    def test_a_backend_still_loading_is_given_time(self):
+        self.fake.backend_latched = True
+        self.fake.backend_since = NOON.timestamp() - 60
+        self.check()
+        self.assertEqual(self.check(120)["why"], "backend still loading")
+        self.assertEqual(self.restarts(), [])
+
+    def test_gives_up_after_three_restarts_an_hour_and_logs_once(self):
+        self.fake.backend_latched = True
+        self.fake.restart_heals = False
+        actions = []
+        for _ in range(12):
+            actions.append(self.check(100)["action"])
+            self.fake.backend_since = self.clock.t.timestamp() - 3600  # past the load grace
+        self.assertEqual(len(self.restarts()), 3)
+        self.assertIn("gave up", actions)
+        self.assertEqual([e["action"] for e in self.heal_events()].count("gave up"), 1)
+        self.assertTrue(lease.status()["heal_gave_up"])
+
+    def test_main_heal_skips_quietly_while_a_lease_command_runs(self):
+        out = []
+        with mock.patch("builtins.print", lambda s: out.append(json.loads(s))), \
+                mock.patch.object(lease, "locked", side_effect=lease.LeaseError("another gpu-lease command is running")):
+            self.assertEqual(lease.main(["heal"]), 0)
+        self.assertEqual(out[0]["action"], "none")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart llm-a when it runs but no longer serves (gpu-lease.py heal)
+Documentation=file:///mnt/LLMs/llamacpp/llm-stack-git/docs/gpu-lease.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /mnt/LLMs/llamacpp/llm-stack-git/scripts/gpu-lease.py heal
+# A restart waits up to 300 s for /health.
+TimeoutStartSec=420
