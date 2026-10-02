@@ -142,6 +142,9 @@ keeps the reasoning out of the content clients read.
   `chat.completion` JSON it asked for, built from the final attempt: content,
   reasoning, tool calls, usage and timings. A request with `n` > 1 or log
   probabilities is relayed as before, unguarded.
+- **With `PROXY_STREAM_PASSTHROUGH=on`** (llms) streams are still watched, but
+  reach the client as the backend sent them; only the guard's marker and its
+  ending are added, and a retry keeps the backend's second chat id.
 - **Not watched:** `/v1/responses`, `/v1/completions` and tool-call arguments.
   Repeats that change between copies (numbered, or a counter) aren't caught
   either. A reply that was *asked* to repeat a long paragraph back to back

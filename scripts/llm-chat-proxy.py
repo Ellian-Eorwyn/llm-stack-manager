@@ -1539,7 +1539,9 @@ class LoopGuardedChatRelay:
     asking the model to continue it.
 
     A client that asked for no stream gets one chat.completion JSON built from
-    the final attempt's events.
+    the final attempt's events. Under PROXY_STREAM_PASSTHROUGH a streaming
+    client gets the backend's events unrewritten (llms runs that way); the
+    guard only adds its marker and its ending.
     """
 
     _LOOP = "loop"
@@ -1569,6 +1571,11 @@ class LoopGuardedChatRelay:
         # content) went out: a second attempt would show twice.
         self.client_saw_content = False
         self.chat_id: Any = None
+        # PROXY_STREAM_PASSTHROUGH keeps its meaning under the guard: the
+        # backend's events reach the client as they came, watched but not
+        # rewritten; only the guard's own marker and ending are added.
+        self.passthrough = PROXY_STREAM_PASSTHROUGH
+        self.stream_model = self.model_name
         self.created: Any = None
         self._content_sent: list[str] = []
         self._reset_attempt()
@@ -1600,7 +1607,7 @@ class LoopGuardedChatRelay:
             "id": self.chat_id,
             "object": "chat.completion.chunk",
             "created": self.created if self.created is not None else int(time.time()),
-            "model": self.model_name,
+            "model": self.stream_model,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
 
@@ -1876,6 +1883,8 @@ class LoopGuardedChatRelay:
         if self.chat_id is None:
             self.chat_id = obj.get("id")
             self.created = obj.get("created")
+            if self.passthrough and obj.get("model"):
+                self.stream_model = obj["model"]
         elif "id" in obj:
             # One id for the whole reply, across a retry.
             obj["id"] = self.chat_id
@@ -1892,10 +1901,12 @@ class LoopGuardedChatRelay:
                 self._content_sent.append(content)
             if delta.get("tool_calls"):
                 self.client_saw_content = True
-            if self.mode != "hidden" and delta.get("reasoning_content"):
+            if not self.passthrough and self.mode != "hidden" and delta.get("reasoning_content"):
                 self.client_saw_content = True
             if choice.get("finish_reason"):
                 self._finish = choice["finish_reason"]
+        if self.passthrough:
+            return None if self._write(event + b"\n\n") else self._GONE
         rewriter.rewrite_obj(obj)
         return None if self._write_obj(obj) else self._GONE
 

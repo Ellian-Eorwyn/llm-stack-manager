@@ -331,6 +331,7 @@ class RelayTests(unittest.TestCase):
             LOOP_GUARD=True,
             LOOP_GUARD_RETRIES=1,
             LOOP_GUARD_NONSTREAM=True,
+            PROXY_STREAM_PASSTHROUGH=False,
             MEMORY_GATEWAY_ENABLED=False,
             BACKEND_ENGINE="",
             BACKEND_HOST="127.0.0.1",
@@ -370,6 +371,22 @@ class RelayTests(unittest.TestCase):
         # One id for the reply, though the backend answered twice.
         self.assertEqual({e["id"] for e in events if isinstance(e, dict)}, {"chatcmpl-1"})
         self.assertTrue(all(e["model"] == "think" for e in events if isinstance(e, dict)))
+
+    def test_passthrough_streams_stay_unrewritten_but_are_still_guarded(self):
+        # llms runs PROXY_STREAM_PASSTHROUGH=on; the guard must not quietly
+        # turn its streams into rewritten ones.
+        proxy.PROXY_STREAM_PASSTHROUGH = True
+        self.addCleanup(setattr, proxy, "PROXY_STREAM_PASSTHROUGH", False)
+        backend = self._backend([(_looping(), "length"), (_clean(), "stop")])
+        status, _, body = self._ask(stream=True)
+        events = _events(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(backend.requests), 2)
+        self.assertEqual(_joined(events, "content"), "The answer.")
+        self.assertIn(proxy.LOOP_GUARD_RETRY_MARK, _joined(events, "reasoning_content"))
+        # The backend's own model name, as passthrough always relayed it.
+        self.assertEqual({e["model"] for e in events if isinstance(e, dict)}, {"backend-model"})
+        self.assertEqual(_finish_reasons(events), ["stop"])
 
     def test_a_client_seed_moves_on_for_the_retry(self):
         backend = self._backend([(_looping(), "length"), (_clean(), "stop")])
