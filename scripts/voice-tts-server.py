@@ -14,8 +14,9 @@ Voices come from a JSON file (VOICE_TTS_VOICES, default ~/AI/voice-tts/voices.js
 Paths are relative to the voices file. Presets need the CustomVoice model, clones the Base
 model; the server loads only the models its voices need (both fit on GPU 0 in one process,
 ~10 GB). A voice whose clip or speaker is missing is skipped and listed in /health.
-A request's voice may also be any preset speaker name; an unknown voice gets the
-default (logged), so a client's "alloy" still speaks.
+A request's voice may also be any preset speaker name, or "default" (what Hermes asks for, so
+changing "default" in voices.json changes Hermes's voice); an unknown voice gets the default
+(logged), so a client's "alloy" still speaks.
 
 Guards:
   * length cap: max_new_tokens from the text (MAX_SECONDS_BASE + chars * MAX_SECONDS_PER_CHAR,
@@ -103,7 +104,9 @@ def load_voices() -> None:
 
 def resolve(voice: str | None, instructions: str | None) -> tuple[str, dict]:
     """(name, spec) for a request; spec has kind preset (speaker, instruct) or clone (ref_audio, ref_text)."""
-    name = (voice or "").lower() or state["default"]
+    name = (voice or "").lower()
+    if name in ("", "default"):  # Hermes asks for "default", so the server's default is the one switch
+        name = state["default"]
     if name in state["voices"]:
         v = dict(state["voices"][name])
         if v["kind"] == "preset":

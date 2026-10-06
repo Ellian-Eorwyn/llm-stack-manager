@@ -52,6 +52,7 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(tts.resolve("Vivian", None)[1]["speaker"], "vivian")
         self.assertEqual(tts.resolve("alloy", None)[0], "sohee")
         self.assertEqual(tts.resolve(None, None)[0], "sohee")
+        self.assertEqual(tts.resolve("default", None)[0], "sohee")
 
     def test_clone_voice_reads_its_clip_and_text_relative_to_the_file(self):
         self.load({"default": "sohee", "voices": {
