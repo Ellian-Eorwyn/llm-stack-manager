@@ -26,7 +26,7 @@ with replies spoken as the model writes them.
 ## Guards
 
 - **One request at a time.** CUDA graphs aren't shareable. Hermes sends one sentence per request, in order.
-- **Length cap.** `max_new_tokens` is computed from the text: 3 s plus 0.15 s per character. In the
+- **Length cap.** `max_new_tokens` is computed from the text: 1.5 s plus 0.12 s per character. In the
   audition, Qwen3-TTS sometimes failed to stop: "Okay. Keep going." came out as 20 s of audio. `/health`
   counts `capped` replies.
 - **Barge-in.** When the client disconnects, generation stops at the next chunk (about 0.6 s of audio).

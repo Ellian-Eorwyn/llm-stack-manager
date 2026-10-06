@@ -53,7 +53,8 @@ class VoiceTests(unittest.TestCase):
 
     def test_length_cap_scales_with_text(self):
         short, long = tts.max_tokens_for("Okay. Keep going."), tts.max_tokens_for("x" * 230)
-        self.assertLess(short / tts.FRAME_HZ, 6)        # a runaway "Okay." stops within 6 s
+        self.assertLess(short / tts.FRAME_HZ, 4)        # a runaway "Okay. Keep going." stops within 4 s
+        self.assertLess(tts.max_tokens_for("Check.") / tts.FRAME_HZ, 2.5)  # one word: ~2 s at most
         self.assertGreater(long / tts.FRAME_HZ, 2 * 14)  # the audition's 14 s sentence fits twice over
 
     def test_streaming_wav_header(self):

@@ -43,8 +43,8 @@ VOICES_FILE = Path(os.environ.get("VOICE_TTS_VOICES", str(Path.home() / "AI/voic
 LANGUAGE = os.environ.get("VOICE_TTS_LANGUAGE", "English")
 CHUNK_SIZE = int(os.environ.get("VOICE_TTS_CHUNK", "8"))  # codec frames per streamed chunk (~0.64 s)
 FRAME_HZ = 12.5
-MAX_SECONDS_BASE = 3.0
-MAX_SECONDS_PER_CHAR = 0.15  # ~2x a slow speaker; sentence 3 of the audition (230 chars) caps at 37 s
+MAX_SECONDS_BASE = 1.5
+MAX_SECONDS_PER_CHAR = 0.12  # ~1.6x a slow speaker; the audition's 14 s sentence (230 chars) caps at 29 s
 MAX_CHARS = 2000
 
 log = logging.getLogger("voice-tts")
