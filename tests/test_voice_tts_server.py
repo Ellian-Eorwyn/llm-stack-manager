@@ -28,8 +28,13 @@ class VoiceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.file = pathlib.Path(self.tmp.name) / "voices.json"
+        self.dir = pathlib.Path(self.tmp.name)
+        self.file = self.dir / "voices.json"
         tts.state["speakers"] = SPEAKERS
+        tts.state["models"] = {"preset": object(), "clone": object()}
+        (self.dir / "voices" / "deep").mkdir(parents=True)
+        (self.dir / "voices" / "deep" / "reference.wav").write_bytes(b"RIFF")
+        (self.dir / "voices" / "deep" / "reference.txt").write_text("Take a breath with me.\n")
 
     def load(self, cfg):
         self.file.write_text(json.dumps(cfg))
@@ -38,16 +43,39 @@ class VoiceTests(unittest.TestCase):
 
     def test_named_voice_carries_its_speaker_and_style(self):
         self.load({"default": "Hermes", "voices": {"Hermes": {"speaker": "sohee", "instruct": "calm"}}})
-        self.assertEqual(tts.resolve("hermes", None), ("sohee", "calm", "hermes"))
-        self.assertEqual(tts.resolve("hermes", "brighter"), ("sohee", "brighter", "hermes"))
+        self.assertEqual(tts.resolve("hermes", None),
+                         ("hermes", {"kind": "preset", "speaker": "sohee", "instruct": "calm"}))
+        self.assertEqual(tts.resolve("hermes", "brighter")[1]["instruct"], "brighter")
 
     def test_preset_speaker_and_unknown_voice(self):
         self.load({"default": "sohee", "voices": {"sohee": {"speaker": "sohee"}}})
-        self.assertEqual(tts.resolve("Vivian", None)[0], "vivian")
-        self.assertEqual(tts.resolve("alloy", None), ("sohee", None, "sohee"))
+        self.assertEqual(tts.resolve("Vivian", None)[1]["speaker"], "vivian")
+        self.assertEqual(tts.resolve("alloy", None)[0], "sohee")
         self.assertEqual(tts.resolve(None, None)[0], "sohee")
 
-    def test_voice_with_missing_speaker_refuses_to_start(self):
+    def test_clone_voice_reads_its_clip_and_text_relative_to_the_file(self):
+        self.load({"default": "sohee", "voices": {
+            "sohee": {"speaker": "sohee"},
+            "deep": {"ref_audio": "voices/deep/reference.wav", "ref_text_file": "voices/deep/reference.txt"}}})
+        name, spec = tts.resolve("Deep", "ignored for clones")
+        self.assertEqual((name, spec["kind"], spec["ref_text"]), ("deep", "clone", "Take a breath with me."))
+        self.assertTrue(spec["ref_audio"].endswith("voices/deep/reference.wav"))
+        self.assertEqual(tts.kinds_needed(json.loads(self.file.read_text())), {"preset", "clone"})
+
+    def test_bad_voices_are_skipped_not_fatal(self):
+        self.load({"default": "gone", "voices": {
+            "sohee": {"speaker": "sohee"}, "x": {"speaker": "nobody"},
+            "gone": {"ref_audio": "voices/gone/reference.wav", "ref_text": "hi"}}})
+        self.assertEqual(sorted(tts.state["skipped"]), ["gone", "x"])
+        self.assertEqual(tts.state["default"], "sohee")  # a skipped default falls back to a usable voice
+
+    def test_clone_voice_without_the_clone_model_is_skipped(self):
+        tts.state["models"] = {"preset": object()}
+        self.load({"voices": {"sohee": {"speaker": "sohee"},
+                              "deep": {"ref_audio": "voices/deep/reference.wav", "ref_text": "hi"}}})
+        self.assertIn("deep", tts.state["skipped"])
+
+    def test_no_usable_voice_refuses_to_start(self):
         with self.assertRaises(SystemExit):
             self.load({"voices": {"x": {"speaker": "nobody"}}})
 

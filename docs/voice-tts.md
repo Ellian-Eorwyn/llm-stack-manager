@@ -40,7 +40,7 @@ with replies spoken as the model writes them.
 | What | Where |
 |---|---|
 | venv | `~/AI/voice-tts/venv` (torch 2.11 cu128, torchaudio cu128, transformers 5.15.1, faster-qwen3-tts 0.5.4) |
-| voices | `~/AI/voice-tts/voices.json`: `{"default": "sohee", "voices": {"sohee": {"speaker": "sohee", "instruct": ""}}}` |
+| voices | `~/AI/voice-tts/voices.json` (below), clone clips in `~/AI/voice-tts/voices/<name>/` (`reference.wav`, `reference.txt`, `voice.json`) |
 | weights | `~/.cache/huggingface` (the unit runs with `HF_HUB_OFFLINE=1`) |
 | audition script | in the hermes repo, `scripts/voice_audition.py` |
 
@@ -78,10 +78,34 @@ curl -s http://llms:8016/v1/audio/speech -H 'Content-Type: application/json' \
 Logs: `journalctl --user -u voice-tts -n 20`. There's one `speak {...}` line per request, with
 first-audio ms, audio seconds, and whether it was capped or cancelled.
 
-**Changing voices:** edit `voices.json`, then `systemctl --user restart voice-tts`. Hermes's desktop
-falls back to Piper while the service is down.
+**Changing voices:** from the Studio, use the hermes repo's `scripts/voice_design.py enable <name>... [--default]`
+or `disable <name>`. It copies the clip, edits `voices.json` (keeping `voices.json.bak`), restarts the
+service once it is idle and checks the voice loaded. By hand: edit `voices.json`, then
+`systemctl --user restart voice-tts`. Hermes's desktop falls back to Piper while the service is down
+(about a minute with both models).
+
+## Voices: presets and clones (2026-10-06)
+
+```
+{"default": "sohee",
+ "voices": {"sohee": {"speaker": "sohee"},
+            "deep":  {"ref_audio": "voices/deep/reference.wav", "ref_text_file": "voices/deep/reference.txt"}}}
+```
+
+- A **preset** names a CustomVoice speaker (and may carry an `instruct` style). A **clone** is a
+  10–20 s clip plus exactly what it says, spoken by the Base model (`VOICE_TTS_CLONE_MODEL`).
+- The server loads only the models its voices need. Both together: ~10 GB in one process. Measured
+  10-06 with the clone model beside the running server: GPU 0 at 23.8 of 24.6 GB as two processes, so
+  one process (one CUDA context) leaves ~1.2 GB. The other tenants (9B, embeddings, Frigate)
+  allocate up front.
+- A clone's first audio is ~300 ms, the same as a preset. Each clone's clip is encoded once, at startup.
+- Ellie kept `sohee` as the native preset: a sohee clone sounded worse to them.
+- A voice whose clip or speaker is missing is skipped and listed under `skipped` in `/health`, so
+  one bad voice can't stop the server. If no voice is usable, it refuses to start.
+- Making voices (VoiceDesign from a description, cloning a recording, listening pages) is the hermes
+  repo's `scripts/voice_design.py` and the Hermes skill `voice-maker`. VoiceDesign runs as a one-off
+  process and needs ~5 GB, so the script pauses this service while it renders.
 
 ## Not yet
 
-- **Custom voices.** Cloning and voice design need the Base and VoiceDesign checkpoints. Loading
-  either beside CustomVoice adds about 4 GB on GPU 0. Fine-tuning has to be planned first.
+- **Fine-tuning** has to be planned first (roadmap 6e in the hermes repo).
