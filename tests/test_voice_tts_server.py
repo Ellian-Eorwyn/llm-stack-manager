@@ -76,6 +76,22 @@ class VoiceTests(unittest.TestCase):
                               "deep": {"ref_audio": "voices/deep/reference.wav", "ref_text": "hi"}}})
         self.assertIn("deep", tts.state["skipped"])
 
+    def test_a_new_default_in_the_file_applies_without_a_restart(self):
+        import os
+        cfg = {"default": "sohee", "voices": {
+            "sohee": {"speaker": "sohee"},
+            "deep": {"ref_audio": "voices/deep/reference.wav", "ref_text_file": "voices/deep/reference.txt"}}}
+        self.load(cfg)
+        with mock.patch.object(tts, "VOICES_FILE", self.file):
+            cfg["default"] = "deep"
+            self.file.write_text(json.dumps(cfg))
+            os.utime(self.file, (1, tts.state["voices_mtime"] + 5))
+            self.assertEqual(tts.resolve("default", None)[0], "deep")
+            cfg["default"] = "nobody"  # not loaded: keep the current default
+            self.file.write_text(json.dumps(cfg))
+            os.utime(self.file, (1, tts.state["voices_mtime"] + 5))
+            self.assertEqual(tts.resolve(None, None)[0], "deep")
+
     def test_no_usable_voice_refuses_to_start(self):
         with self.assertRaises(SystemExit):
             self.load({"voices": {"x": {"speaker": "nobody"}}})

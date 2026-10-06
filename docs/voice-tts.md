@@ -79,7 +79,7 @@ Logs: `journalctl --user -u voice-tts -n 20`. There's one `speak {...}` line per
 first-audio ms, audio seconds, and whether it was capped or cancelled.
 
 **Changing voices:** from the Studio, use the hermes repo's `scripts/voice_design.py enable <name>... [--default]`
-or `disable <name>`. It copies the clip, edits `voices.json` (keeping `voices.json.bak`), restarts the
+or `disable <name>` (restart), or `default <name>` (live, no restart). enable copies the clip, edits `voices.json` (keeping `voices.json.bak`), restarts the
 service once it is idle and checks the voice loaded. By hand: edit `voices.json`, then
 `systemctl --user restart voice-tts`. Hermes's desktop falls back to Piper while the service is down
 (about a minute with both models).

@@ -15,7 +15,8 @@ Paths are relative to the voices file. Presets need the CustomVoice model, clone
 model; the server loads only the models its voices need (both fit on GPU 0 in one process,
 ~10 GB). A voice whose clip or speaker is missing is skipped and listed in /health.
 A request's voice may also be any preset speaker name, or "default" (what Hermes asks for, so
-changing "default" in voices.json changes Hermes's voice); an unknown voice gets the default
+changing "default" in voices.json changes Hermes's voice, live: no restart needed for that one
+field); an unknown voice gets the default
 (logged), so a client's "alloy" still speaks.
 
 Guards:
@@ -98,12 +99,39 @@ def load_voices() -> None:
     if not voices:
         raise SystemExit(f"no usable voices in {VOICES_FILE}: {skipped}")
     state["voices"], state["skipped"] = voices, skipped
+    try:
+        state["voices_mtime"] = VOICES_FILE.stat().st_mtime
+    except OSError:
+        pass
     default = (cfg.get("default") or "").lower()
     state["default"] = default if default in voices else next(iter(voices))
 
 
+def refresh_default() -> None:
+    """Pick up a new "default" from the voices file without a restart (a cheap stat per request).
+    Only the default is live; added or removed voices still need a restart."""
+    try:
+        mtime = VOICES_FILE.stat().st_mtime
+    except OSError:
+        return
+    if mtime == state.get("voices_mtime"):
+        return
+    state["voices_mtime"] = mtime
+    try:
+        default = (read_config().get("default") or "").lower()
+    except (OSError, ValueError) as exc:
+        log.error("voices file unreadable (%s); keeping default %r", exc, state["default"])
+        return
+    if default in state["voices"] and default != state["default"]:
+        log.info("default voice %r -> %r", state["default"], default)
+        state["default"] = default
+    elif default and default not in state["voices"]:
+        log.error("voices file names default %r, which isn't loaded; keeping %r", default, state["default"])
+
+
 def resolve(voice: str | None, instructions: str | None) -> tuple[str, dict]:
     """(name, spec) for a request; spec has kind preset (speaker, instruct) or clone (ref_audio, ref_text)."""
+    refresh_default()
     name = (voice or "").lower()
     if name in ("", "default"):  # Hermes asks for "default", so the server's default is the one switch
         name = state["default"]
@@ -199,6 +227,7 @@ def build_app():
     @app.get("/health")
     def health():
         import torch
+        refresh_default()
         return {"ok": bool(state["models"]), "models": {k: MODELS[k] for k in state["models"]},
                 "default_voice": state["default"], "voices": sorted(state["voices"]),
                 "clones": sorted(n for n, v in state["voices"].items() if v["kind"] == "clone"),
@@ -213,6 +242,7 @@ def build_app():
 
     @app.get("/v1/audio/voices")
     def voices():
+        refresh_default()
         return {"default": state["default"], "voices": sorted(state["voices"]), "speakers": state["speakers"],
                 "skipped": state["skipped"]}
 
