@@ -114,7 +114,7 @@ def generate(text: str, speaker: str, instruct: str | None, out: queue.Queue, st
                 out.put(pcm16(chunk))
             gen.close()
         seconds = samples / state["sr"]
-        capped = not cancelled and seconds >= limit / FRAME_HZ - 1.0
+        capped = not cancelled and seconds >= limit / FRAME_HZ - 0.25  # within ~3 codec frames of the cap
     except Exception as exc:  # reported to the client as a short stream; logged in full
         log.exception("generation failed: %s", exc)
         out.put(exc)
