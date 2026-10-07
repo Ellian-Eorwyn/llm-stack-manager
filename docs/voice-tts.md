@@ -5,12 +5,13 @@ with replies spoken as the model writes them.
 
 ## What it is
 
-- **Model:** Qwen3-TTS 1.7B CustomVoice (Apache-2.0), run by
-  [faster-qwen3-tts](https://github.com/andimarafioti/faster-qwen3-tts) with CUDA graphs.
-- **Voice:** the preset speaker `sohee`, Ellie's pick from an audition of every preset (the page is
-  `~/Documents/Hermes Media/Voice Audition/2026-10-06/` on the Studio).
-- **Where:** llms GPU 0, beside the embeddings and the 9B task model. It uses about 4.3 GB, so GPU 0
-  holds about 18 of its 24 GB. GPU 0 was chosen over the Studio: the Studio was faster (127 ms against
+- **Model:** Qwen3-TTS 1.7B (Apache-2.0), run by
+  [faster-qwen3-tts](https://github.com/andimarafioti/faster-qwen3-tts) with CUDA graphs. Since 2026-10-07
+  only the Base (clone) model is loaded: every served voice is a clone (see "Voices" below).
+- **Voices:** deep, earth, lama, spark, ellie (clones). It started on the preset speaker `sohee` (Ellie's
+  pick from the preset audition, `~/Documents/Hermes Media/Voice Audition/2026-10-06/` on the Studio).
+- **Where:** llms GPU 0, beside the embeddings and the 9B task model. It uses about 5.7 GB, so GPU 0
+  holds about 19.7 of its 24.6 GB. GPU 0 was chosen over the Studio: the Studio was faster (127 ms against
   ~250 ms first audio), but llms sees less traffic.
 - **API:** `scripts/voice-tts-server.py` serves an OpenAI-style speech API on `100.124.56.11:8016`
   (tailnet only, no auth, like the other llms services).
@@ -99,7 +100,10 @@ service once it is idle and checks the voice loaded. By hand: edit `voices.json`
   one process (one CUDA context) leaves ~1.2 GB. The other tenants (9B, embeddings, Frigate)
   allocate up front.
 - A clone's first audio is ~300 ms, the same as a preset. Each clone's clip is encoded once, at startup.
-- Ellie kept `sohee` as the native preset: a sohee clone sounded worse to them.
+- Ellie kept `sohee` as the native preset (a sohee clone sounded worse to them) until 2026-10-07, when
+  they chose clones only to free ~4.4 GB on GPU 0 (spare went from ~1.2 GB to ~4.8 GB). To bring sohee
+  back: add `"sohee": {"speaker": "sohee"}` to `voices.json` and restart; the preset model loads again.
+  Styling a preset for a new voice doesn't need it here: the audition loads it for that run.
 - A voice whose clip or speaker is missing is skipped and listed under `skipped` in `/health`, so
   one bad voice can't stop the server. If no voice is usable, it refuses to start.
 - Making voices (VoiceDesign from a description, cloning a recording, listening pages) is the hermes
