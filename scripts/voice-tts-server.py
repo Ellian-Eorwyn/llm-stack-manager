@@ -23,7 +23,11 @@ Guards:
   * length cap: max_new_tokens from the text (MAX_SECONDS_BASE + chars * MAX_SECONDS_PER_CHAR,
     12.5 codec frames a second), so a sampling runaway can't talk for a minute;
   * a client that disconnects (barge-in) stops generation at the next chunk;
-  * input over MAX_CHARS is refused (Hermes sends one sentence at a time).
+  * long input is spoken in sentence groups of at most PIECE_CHARS, one after another (Qwen3-TTS
+    rambles on long text; SillyTavern sends whole paragraphs); input over MAX_CHARS is refused.
+
+Formats: pcm and wav stream as they are made; mp3, opus, aac and flac (what SillyTavern and other
+OpenAI clients ask for) are encoded with ffmpeg once the whole text is spoken.
 
 Run (systemd/user/voice-tts.service does this):
     CUDA_VISIBLE_DEVICES=0 ~/AI/voice-tts/venv/bin/python voice-tts-server.py --host 100.124.56.11 --port 8016
@@ -53,7 +57,13 @@ CHUNK_SIZE = int(os.environ.get("VOICE_TTS_CHUNK", "8"))  # codec frames per str
 FRAME_HZ = 12.5
 MAX_SECONDS_BASE = 1.5
 MAX_SECONDS_PER_CHAR = 0.12  # ~1.6x a slow speaker; the audition's 14 s sentence (230 chars) caps at 29 s
-MAX_CHARS = 2000
+MAX_CHARS = 8000
+PIECE_CHARS = 400
+FFMPEG = os.environ.get("VOICE_TTS_FFMPEG", "/usr/bin/ffmpeg")
+ENCODED = {"mp3": ("mp3", ["-c:a", "libmp3lame", "-b:a", "96k"], "audio/mpeg"),
+           "opus": ("ogg", ["-c:a", "libopus", "-b:a", "48k"], "audio/ogg"),
+           "aac": ("adts", ["-c:a", "aac", "-b:a", "96k"], "audio/aac"),
+           "flac": ("flac", ["-c:a", "flac"], "audio/flac")}
 
 log = logging.getLogger("voice-tts")
 state: dict = {"models": {}, "voices": {}, "skipped": {}, "default": None, "speakers": [], "sr": 24000,
@@ -172,27 +182,58 @@ def wav_header(sr: int) -> bytes:
             struct.pack("<IHHIIHH", 16, 1, 1, sr, sr * 2, 2, 16) + b"data" + struct.pack("<I", 0xFFFFFFFF))
 
 
+def pieces(text: str, size: int = PIECE_CHARS) -> list[str]:
+    """Whole sentences (or, for a run-on, words) grouped up to size characters."""
+    import re
+    out, cur = [], ""
+    for sentence in re.split(r"(?<=[.!?…])\s+|\n+", text):
+        sentence = sentence.strip()
+        while len(sentence) > size:
+            cut = sentence.rfind(" ", 0, size)
+            cut = cut if cut > 0 else size
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(sentence[:cut].strip())
+            sentence = sentence[cut:].strip()
+        if not sentence:
+            continue
+        if cur and len(cur) + 1 + len(sentence) > size:
+            out.append(cur)
+            cur = sentence
+        else:
+            cur = f"{cur} {sentence}".strip()
+    if cur:
+        out.append(cur)
+    return out
+
+
 def generate(text: str, name: str, spec: dict, out: queue.Queue, stop: threading.Event) -> None:
     """Producer thread: put PCM bytes, then None. Holds the model lock throughout."""
     import numpy as np
     t0 = time.perf_counter()
     first = None
     samples = 0
-    limit = max_tokens_for(text)
     capped = cancelled = False
     try:
         with lock:
-            gen = stream_for(text, spec, limit)
-            for chunk, _sr, _timing in gen:
-                if stop.is_set():
-                    cancelled = True
+            for piece in pieces(text):
+                limit = max_tokens_for(piece)
+                piece_samples = 0
+                gen = stream_for(piece, spec, limit)
+                for chunk, _sr, _timing in gen:
+                    if stop.is_set():
+                        cancelled = True
+                        break
+                    first = first or time.perf_counter() - t0
+                    piece_samples += np.asarray(chunk).size
+                    out.put(pcm16(chunk))
+                gen.close()
+                samples += piece_samples
+                # within ~3 codec frames of this piece's cap
+                capped |= not cancelled and piece_samples / state["sr"] >= limit / FRAME_HZ - 0.25
+                if cancelled:
                     break
-                first = first or time.perf_counter() - t0
-                samples += np.asarray(chunk).size
-                out.put(pcm16(chunk))
-            gen.close()
-        seconds = samples / state["sr"]
-        capped = not cancelled and seconds >= limit / FRAME_HZ - 0.25  # within ~3 codec frames of the cap
     except Exception as exc:  # reported to the client as a short stream; logged in full
         log.exception("generation failed: %s", exc)
         out.put(exc)
@@ -209,9 +250,20 @@ def generate(text: str, name: str, spec: dict, out: queue.Queue, stop: threading
         log.info("speak %s", json.dumps({"voice": name, **state["last"]}))
 
 
+def encode(pcm: bytes, sr: int, fmt: str) -> bytes:
+    import subprocess
+    container, codec, _media = ENCODED[fmt]
+    r = subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", str(sr), "-ac", "1",
+                        "-i", "pipe:0", *codec, "-f", container, "pipe:1"], input=pcm, capture_output=True,
+                       timeout=120)
+    if r.returncode:
+        raise RuntimeError(f"ffmpeg {fmt} failed: {r.stderr.decode(errors='replace')[-300:]}")
+    return r.stdout
+
+
 def build_app():
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import Response, StreamingResponse
     from pydantic import BaseModel
 
     app = FastAPI(title="voice-tts")
@@ -254,8 +306,8 @@ def build_app():
             raise HTTPException(400, "input is empty")
         if len(text) > MAX_CHARS:
             raise HTTPException(400, f"input over {MAX_CHARS} characters; send one sentence or paragraph at a time")
-        if fmt not in ("pcm", "wav"):
-            raise HTTPException(400, f"response_format {fmt!r} not supported; use pcm or wav")
+        if fmt not in ("pcm", "wav", *ENCODED):
+            raise HTTPException(400, f"response_format {fmt!r} not supported; use pcm, wav, {', '.join(ENCODED)}")
         name, spec = resolve(req.voice, req.instructions)
         out: queue.Queue = queue.Queue()
         stop = threading.Event()
@@ -277,6 +329,11 @@ def build_app():
                 stop.set()  # client gone (barge-in) or done: stop generating
 
         sr = state["sr"]
+        if fmt in ENCODED:  # whole text first, then one encode (clients asking for mp3 don't stream)
+            pcm = b"".join([chunk async for chunk in body()])
+            audio = await loop.run_in_executor(None, encode, pcm, sr, fmt)
+            return Response(audio, media_type=ENCODED[fmt][2],
+                            headers={"X-Audio-Sample-Rate": str(sr), "X-Voice": name})
         media = "audio/wav" if fmt == "wav" else f"audio/pcm; rate={sr}"
         return StreamingResponse(body(), media_type=media,
                                  headers={"X-Audio-Sample-Rate": str(sr), "X-Voice": name})

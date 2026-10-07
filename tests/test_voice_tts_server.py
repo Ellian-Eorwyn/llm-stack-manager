@@ -102,6 +102,27 @@ class VoiceTests(unittest.TestCase):
         self.assertLess(tts.max_tokens_for("Check.") / tts.FRAME_HZ, 2.5)  # one word: ~2 s at most
         self.assertGreater(long / tts.FRAME_HZ, 2 * 14)  # the audition's 14 s sentence fits twice over
 
+    def test_long_text_is_spoken_in_sentence_groups(self):
+        text = " ".join(f"Sentence number {i} is here." for i in range(60))
+        parts = tts.pieces(text)
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(all(len(p) <= tts.PIECE_CHARS for p in parts))
+        self.assertEqual(" ".join(parts), text)  # nothing lost or reordered
+        self.assertTrue(all(p.endswith(".") for p in parts))  # cut between sentences
+        self.assertEqual(tts.pieces("Short one."), ["Short one."])
+        runon = "word " * 200
+        self.assertTrue(all(len(p) <= tts.PIECE_CHARS for p in tts.pieces(runon)))
+        self.assertEqual(tts.pieces("Line one\n\nLine two"), ["Line one Line two"])
+
+    def test_mp3_is_encoded_with_ffmpeg(self):
+        import shutil
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.skipTest("no ffmpeg here")
+        with mock.patch.object(tts, "FFMPEG", ffmpeg):
+            audio = tts.encode(b"\0\0" * 24000, 24000, "mp3")
+        self.assertTrue(audio[:3] == b"ID3" or audio[0] == 0xFF)  # an MP3 frame or tag
+
     def test_streaming_wav_header(self):
         h = tts.wav_header(24000)
         self.assertEqual(len(h), 44)
