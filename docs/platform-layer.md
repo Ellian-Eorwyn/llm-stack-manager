@@ -90,11 +90,15 @@ adapters stay small enough to read.
 - `gpu_compute_apps()` returns `None` on macOS. IOAccelerator reports allocation
   driver-wide with no per-process breakdown, so there is no Darwin equivalent of
   `nvidia-smi --query-compute-apps`. `[]` would assert the GPU is idle.
-- Temperature and power are `None` on macOS, not `0`. They are not readable
-  without elevated privileges, and a monitoring daemon should not need root. A
+- Power is `None` on macOS, not `0`. It is not readable without elevated
+  privileges (`powermetrics`), and a monitoring daemon should not need root. A
   fabricated `0` renders as a cold, idle card — indistinguishable from good
   news. The UI renders `null` as an em-dash (`gpuReading` in
   `static/js/telemetry.js`).
+- Temperature on Apple silicon comes from the SMC, which any user may read:
+  the hottest of the GPU's `Tg**` sensors (`platforms/smc.py`; 168 on the M5
+  Ultra). Where the SMC does not answer that way it is `None`, for the same
+  reason.
 
 ## 3. Two questions macOS answers differently
 

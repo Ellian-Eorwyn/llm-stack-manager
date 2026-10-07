@@ -366,7 +366,9 @@ class GpuAttributionTests(unittest.TestCase):
                 return _completed(ioreg)
             return UnifiedMemoryTests()._run(cmd, timeout)
 
-        with platform_harness.as_darwin(run_cmd=run) as platform:
+        # No SMC to read, as on a Mac that does not answer like Apple silicon.
+        with platform_harness.as_darwin(run_cmd=run) as platform, \
+                patch.object(platforms.smc, "gpu_temperature_c", return_value=None):
             gpus = platform.gpu_info()
         self.assertEqual(len(gpus), 1)
         gpu = gpus[0]
@@ -374,6 +376,11 @@ class GpuAttributionTests(unittest.TestCase):
             with self.subTest(key):
                 self.assertIsNone(gpu[key])
         self.assertEqual(gpu["util"], 44)
+
+        # Apple silicon: the SMC's hottest GPU sensor, read without root.
+        with platform_harness.as_darwin(run_cmd=run) as platform, \
+                patch.object(platforms.smc, "gpu_temperature_c", return_value=63.8):
+            self.assertEqual(platform.gpu_info()[0]["temp"], 63.8)
 
     def test_unified_memory_is_reported_against_host_memory(self):
         # IOAccelerator's "Alloc system memory" counts virtual allocations: on a

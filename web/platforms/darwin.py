@@ -42,7 +42,7 @@ import subprocess
 import threading
 import time
 
-from . import base
+from . import base, smc
 
 
 _PLIST_INT_RE = {
@@ -773,9 +773,10 @@ class DarwinPlatform(base.Platform):
                 "wired_limit_mib": wired_limit_mib,
                 "util": stats.get("Device Utilization %"),
                 "mem_util": None,
-                # Not readable without elevated privileges. Reported as unknown
-                # rather than as zero, which would render as a cold idle GPU.
-                "temp": None,
+                # The hottest GPU sensor, from the SMC (no root needed); None,
+                # not zero, when it cannot be read, so it never renders as a
+                # cold idle GPU. Power still needs root (`powermetrics`).
+                "temp": smc.gpu_temperature_c(),
                 "power_watts": None,
                 "power_limit_watts": None,
                 "clock_sm_mhz": None,
