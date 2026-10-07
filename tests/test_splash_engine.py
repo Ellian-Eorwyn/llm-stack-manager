@@ -76,6 +76,19 @@ class SplashEngineTests(unittest.TestCase):
         for off in ("0", "off", ""):
             self.assertNotIn("--max-cache-disk", build(LLM_B_SPLASH_MAX_CACHE_DISK_GB=off))
 
+    def test_prefill_stays_on_the_gpu_unless_asked(self):
+        self.assertIn("--disable-ane", build())
+        self.assertIn("--disable-ane", build(LLM_B_SPLASH_ANE="off"))
+        self.assertNotIn("--disable-ane", build(LLM_B_SPLASH_ANE="on"))
+
+    def test_memory_stays_locked_twenty_minutes_unless_asked(self):
+        self.assertEqual(flag(build(), "--idle-release"), "20m")
+        for value in ("2h", "90s", "45", "1.5h", "off"):
+            self.assertEqual(flag(build(LLM_B_SPLASH_IDLE_RELEASE=value), "--idle-release"), value)
+        self.assertEqual(flag(build(LLM_B_SPLASH_IDLE_RELEASE="OFF"), "--idle-release"), "off")
+        for bad in ("0", "0m", "0.0h", "soon", "-5m", "10 m"):
+            self.assertEqual(flag(build(LLM_B_SPLASH_IDLE_RELEASE=bad), "--idle-release"), "20m")
+
     def test_a_local_path_or_gguf_is_refused_with_the_reason(self):
         for model in ("/models/q.gguf", "q.gguf", ""):
             with self.assertRaises(SystemExit) as caught:

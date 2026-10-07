@@ -29,11 +29,15 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
 
 ## Setting it up
 
-1. Install it:
+1. Install it (1.2.1 or newer; the Studio runs 1.3.0 since 2026-10-07):
 
    ```bash
    brew install incoai/tap/splash
    ```
+
+   To upgrade, stop the slot first (the server and engine must be the same
+   version), then `brew update && brew upgrade incoai/tap/splash`, then start
+   it again.
 
 2. Configure the slot:
    - `LLM_A_ENGINE=splash`
@@ -56,18 +60,29 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
 - **Vision** (images and PDFs) is on by default; Splash downloads the repo's
   `mmproj` (~0.9 GB) on first start. `LLM_A_SPLASH_VISION=off` serves text
   only and saves that memory.
+- **Memory stays locked** in RAM for `LLM_A_SPLASH_IDLE_RELEASE` after the last
+  request (`--idle-release`; blank is 20m, `off` never releases). See
+  [Stalls](#stalls).
+- **Neural Engine prefill is off** (`--disable-ane`) unless
+  `LLM_A_SPLASH_ANE=on`. Splash 1.3 can run part of a long prompt's FFN on the
+  Neural Engine in W8A8, which is not lossless. On the Studio it calibrated a
+  15% share and made a 103K-token prefill 3.5% faster (85 s against 88).
+  Smaller Macs gain more: Splash measured 1.3x on an M5 Pro and 1.8x on an
+  M4 Max.
 - **Not carried over:** llama.cpp placement, cache types, draft settings (Splash
   picks its own drafter) and `CUSTOM_ARGS_JSON`. Splash's own flags go in
   `LLM_A_SPLASH_ARGS_JSON`.
 
 ## Sampling and repetition
 
-Splash samples with temperature, top_p and top_k only. Splash 1.1.0 refuses
-with HTTP 400 ("the requested logits or output transformation is not
-supported") any request whose `presence_penalty`, `frequency_penalty` or
-`min_p` is not 0, or that carries a `logit_bias` (`server/frontend.py`,
-`_prepare`). So keep `*_PRESENCE_PENALTY=0.00` and `*_MIN_P=0.00` for a Splash
-slot; the usual Qwen cure for endless repetition isn't available here.
+Splash 1.1.0 sampled with temperature, top_p and top_k only, and refused with
+HTTP 400 ("the requested logits or output transformation is not supported")
+any request whose `presence_penalty`, `frequency_penalty` or `min_p` was not 0.
+Since 1.2.0 it accepts `presence_penalty`, `frequency_penalty`,
+`repetition_penalty` and `min_p` (checked on 1.3.0, 2026-10-07); only a
+non-empty `logit_bias` is still refused. The proxy still sends 0 for all of
+them, so the usual Qwen cure for endless repetition (`*_PRESENCE_PENALTY=1.5`)
+is now available but untried here.
 
 What is available is the model card's own sampling, which the proxy sets per
 persona: thinking at `temperature=1.0, top_p=0.95, top_k=20`
@@ -82,11 +97,12 @@ Speed tells a loop from long work. The same afternoon an xhigh turn (cleaning
 an 11k-token meeting transcript) hit the 16,384 cap five times at a normal
 65-88 tok/s, and its thinking had no repeated lines: real work cut short, not a
 loop. So `THINK_MAX_TOKENS` went to 0 like `CODE_`/`NOTHINK_`: the proxy sends
-no limit and Splash uses `--max-new-tokens` (default 32768), clamped to the
-context left. Don't set a fixed cap above about 60K instead: on
-`/v1/chat/completions` Splash refuses (400 `context_length_exceeded`) any
-request whose prompt plus `max_tokens` passes the 256K context, and Hermes
-only compacts at 200K.
+no limit of its own. Hermes sends `max_tokens: 16384` itself
+(`~/.hermes/config.yaml`). A client that sends none got 32,768 from Splash
+1.1; since 1.2 it may use all the context the prompt leaves. Don't set a fixed
+cap above about 60K instead: on `/v1/chat/completions` Splash refuses (400
+`context_length_exceeded`) any request whose prompt plus `max_tokens` passes
+the 256K context, and Hermes only compacts at 200K.
 
 To list long replies and their speed (a loop runs at 120+ tok/s):
 
@@ -96,7 +112,8 @@ grep -E 'output (16,384|32,768)' logs/llm-a.stdout.log
 
 ### The loop guard
 
-Without a cap, a true loop would run to 32,768 tokens, 4-8 minutes of the only
+Without a cap, a true loop would run to the client's limit (Hermes: 16,384) or,
+with none, to the end of the context, many minutes of the only
 slot. So the proxy watches for loops itself (`LOOP_GUARD=on`, on the Studio
 since 2026-10-01; `LOOP_GUARD_*` in `config/llm-stack.env.example`). It sees
 every chat reply in full, reasoning included, although `reasoning_stream=hidden`
@@ -177,10 +194,9 @@ about 15 GiB for KV and state: one bf16 conversation of about 230K tokens.
 Past that, Splash evicts the oldest instead of growing. `auto` restores
 Splash's own limit.
 
-Every page of KV Splash keeps is locked into RAM while it serves a request.
-With the chat proxy's keep-alive (see [Stalls](#stalls)) it stays locked while
-the stack is in use, and locked memory cannot be compressed or swapped. At
-48 GiB, 55 GiB of the Studio's 96 was wired. The Studio's config sets 56
+Everything Splash allocates (weights, KV, state) stays locked into RAM until
+the idle release (see [Stalls](#stalls)), and locked memory cannot be
+compressed or swapped. At 48 GiB, 55 GiB of the Studio's 96 was wired. The Studio's config sets 56
 (`LLM_A_SPLASH_MAX_MEMORY_GB`), for about 64 GiB wired and ~410K tokens of
 conversations. The default stays at half of RAM for smaller Macs.
 
@@ -203,8 +219,11 @@ files as `$TMPDIR/splash-cache-*`.
 
 Splash reports its plan and live use on `/status` (`memory_plan.budget`,
 `memory_actual`) and `/metrics` (`splash_memory_current_bytes`,
-`splash_state_evictions_total`). The manager's memory panel counts the
-KV pages too; `footprint` does not.
+`splash_state_evictions_total`). Since 1.2 the weights are ordinary Metal
+buffers rather than mapped cache files, and the manager's memory panel and
+`footprint` agree (31 GB just after start on 1.3.0). 1.1's prepared-weight
+cache, `~/Library/Caches/Splash/weights` (55 GB on the Studio), is no longer
+read and can be deleted.
 
 ## Stalls
 
@@ -231,32 +250,43 @@ system for:
   round trips, page faults and disk writes stayed under 40 ms throughout.
 - Splash issue [#220](https://github.com/incoai/splash/issues/220) reports the
   same family of stall at >180K context, severe enough that WindowServer's
-  watchdog logged users out. Its proposed patch covers KV unmapping; here
-  Splash reports no unmaps, only the residency release.
+  watchdog logged users out. Its proposed patch covers KV unmapping. Here
+  Splash reported no unmaps on 09-30, but by 10-07, after six days up, 1.1
+  had done 564, the longest taking 1.4 s.
 
-Splash has no setting for how long it keeps the cache locked. So the chat
-proxy keeps it locked for Splash: from each generation request until
-`SPLASH_KEEP_RESIDENT_MIN` minutes (20 by default) after the last one, it
-sends Splash a one-token request every 0.7 s, skipping while a request runs.
-Replaying the same growing conversation with it on, no app waited more than
-9 ms, and turns took as long as before.
+Splash 1.1 had no setting for how long it kept the cache locked. So the chat
+proxy kept it locked (commit f03c5ed): until 20 minutes after the last
+request, it sent Splash a one-token request every 0.7 s. No app waited more
+than 9 ms, but the pings cost ~8% of the GPU and showed up in Splash's request
+counts.
 
-What it costs:
+### Since 1.2
 
-- Each ping is about 60 ms of GPU, roughly 8% of the GPU while the window is
-  open.
-- The KV cache stays wired for those 20 minutes: ~55 GiB wired at 48 GiB of
-  cap, instead of ~37.
-- The pings show up in Splash's request counts and its TTFT percentiles.
-- When the window closes, Splash gives the cache back once, and that can
-  stall apps once.
+Splash 1.2 rebuilt both paths. Every buffer joins one residency set that stays
+wired between requests until `--idle-release` passes without one. KV is held
+in ordinary shared buffers, so nothing is mapped or unmapped while it serves.
+The stack passes `LLM_A_SPLASH_IDLE_RELEASE`, 20m unless set, and the proxy no
+longer pings. Measured on 1.3.0 on 2026-10-07 with the same IOSurface probe and
+a 2-minute release:
 
-`0` turns it off. `always` is not offered: the GPU would never idle.
+- A 103K-token prompt, then 2 minutes idle: wired memory held at 46 GiB
+  throughout, and no new surface took more than 1.1 ms.
+- The release itself unlocked 37 GiB at once (46 to 9 GiB wired), and no
+  surface took more than 0.6 ms. That is the event that froze apps for
+  1–6 s on 1.1.
+- The next request re-locked it without a stall (0.7 ms), restored the
+  weights in 3.7 s, and found the 103K-token conversation still cached: the
+  whole turn took 3.9 s.
+
+So the release costs a few seconds on the next request and nothing else.
+`off` keeps the memory locked for as long as Splash runs.
 
 ## Thinking
 
-Splash ignores `chat_template_kwargs.enable_thinking`, which llama.cpp and MTPLX
-honour. It turns thinking off only with `reasoning_effort: "none"`.
+Splash 1.1 ignored `chat_template_kwargs.enable_thinking`, which llama.cpp and
+MTPLX honour, and turned thinking off only with `reasoning_effort: "none"`.
+Since 1.2 it reads `enable_thinking` too (a boolean overrides the effort), but
+`"none"` still works and the proxy keeps sending it.
 
 The chat proxy knows which engine is behind it (`CHAT_BACKEND_ENGINE`, from the
 slot registry). On endpoints with thinking off, it sends `"none"` to Splash
@@ -267,9 +297,14 @@ rely on the slot's default.
 
 ## Known limits
 
-- **Young software.** It was released 2026-09-18 (1.1.0).
-- **Output limit.** A single response is limited to 32k tokens (Splash issue
-  #221).
+- **Young software.** It was released 2026-09-18; 1.3.0 came out 2026-10-06.
+- **Output limit.** Since 1.2 a response may run to the end of the context
+  (1.1 stopped at 32k, issue #221). `--max-new-tokens` is gone.
+- **Monitoring names changed in 1.2** (status schema 6): `splash_ttft_seconds`
+  is `splash_http_ttft_seconds`, and `/status` `latency.ttft` is
+  `latency.http_ttft`. Nothing in the stack read them.
+- **Mac sleep.** Since 1.2.1 Splash keeps the Mac awake while a request runs
+  (the display may still sleep), and a request survives a sleep.
 - **Concurrent load.** A crash was reported under concurrent GPU load (#220).
   It did not reproduce here.
 - **Health checks.** `/health` answers before the model has loaded, so the

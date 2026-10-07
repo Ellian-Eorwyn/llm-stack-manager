@@ -15,12 +15,13 @@ wants. It downloads into the ordinary Hugging Face cache on first start.
 
 What carries over from the slot: alias, context size, reasoning level, a memory
 cap (below). Vision is on unless `{PREFIX}_SPLASH_VISION=off`; Splash
-fetches the model repo's `mmproj` itself. What does not: llama.cpp placement and cache types, the
+fetches the model repo's `mmproj` itself. The Neural Engine's share of prefill
+is off unless `{PREFIX}_SPLASH_ANE=on`: like int8 KV, it is not lossless. What does not: llama.cpp placement and cache types, the
 draft settings (Splash picks its own drafter), CUSTOM_ARGS_JSON.
 
 Two differences from the other engines a client has to know about. Splash
-turns thinking off with `reasoning_effort: "none"`, and ignores the
-`chat_template_kwargs.enable_thinking` switch the others take -- so the slot's
+turns thinking off with `reasoning_effort: "none"` (1.1 ignored the
+`chat_template_kwargs.enable_thinking` switch the others take) -- so the slot's
 default is passed as `--default-reasoning-effort`, and the chat proxy sends
 `reasoning_effort` per request. And its KV cache defaults to int8, which is
 not lossless; this passes bf16 unless the slot says otherwise.
@@ -36,12 +37,15 @@ else half of RAM (48 GiB on 96): the 27B's ~33 GiB of weights and buffers and
 ~15 GiB of KV and state, one ~230K-token bf16 conversation.
 `auto` hands the choice back to Splash.
 
-Why not more: every page of KV Splash keeps is locked into RAM while it serves
-a request, and giving it back afterwards stalls every app's new windows and
-tabs, so the chat proxy keeps it locked while the stack is in use
-(docs/splash.md#stalls). Locked memory cannot be compressed or swapped, so
-the cap is also what macOS can never reclaim while the stack is in use. The
-Studio's own config sets 56.
+Why not more: Splash keeps every buffer it allocates -- weights, KV, state --
+locked into RAM between requests, until no request has come for
+`--idle-release`. The slot's `{PREFIX}_SPLASH_IDLE_RELEASE` sets that: 20
+minutes unless it says otherwise, the window the chat proxy used to hold with
+pings when Splash 1.1 released its KV a second after every request and stalled
+every app's new windows and tabs (docs/splash.md#stalls). Locked memory cannot
+be compressed or swapped, so the cap is also what macOS can never reclaim
+while the stack is in use. The Studio's own config sets 56. Needs Splash 1.2.1
+or newer, the first with `--idle-release`.
 
 Splash can also move conversations it evicts to an SSD tier
 (`--max-cache-disk`, `{PREFIX}_SPLASH_MAX_CACHE_DISK_GB`). It is off unless
@@ -53,6 +57,7 @@ because a compacted conversation is never resumed.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 
 import platforms
@@ -79,6 +84,13 @@ ARGS_KEYS = ("SPLASH_ARGS_JSON",)
 
 #: Share of RAM Splash may hold when the slot names no cap.
 DEFAULT_MEMORY_FRACTION = 0.5
+
+#: How long Splash keeps its memory locked after the last request when the
+#: slot does not say: the 20 minutes the chat proxy used to hold it with pings.
+DEFAULT_IDLE_RELEASE = "20m"
+
+#: An `--idle-release` duration: seconds, or a number with an s, m or h suffix.
+_DURATION = re.compile(r"(\d+(?:\.\d+)?)[smh]?")
 
 
 def _first(env: dict, keys: tuple[str, ...], prefixes: tuple[str, ...]) -> str:
@@ -119,6 +131,17 @@ def max_cache_disk(slot: Slot, env: dict) -> str | None:
     except ValueError:
         return None
     return f"{gib}G" if gib > 0 else None
+
+
+def idle_release(slot: Slot, env: dict) -> str:
+    """`--idle-release` for the slot: how long after the last request Splash
+    keeps its weights and KV locked in RAM. The next request after a release
+    waits a few seconds (3.7 s on the Studio) for the weights."""
+    value = _first(env, ("SPLASH_IDLE_RELEASE",), slot.prefixes).lower()
+    if value == "off":
+        return value
+    match = _DURATION.fullmatch(value)
+    return value if match and float(match.group(1)) > 0 else DEFAULT_IDLE_RELEASE
 
 
 def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
@@ -167,12 +190,19 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     if vision == "off":
         argv.append("--language-only")
 
+    # Off unless turned on. Splash 1.3 runs part of a long prompt's FFN on the
+    # Neural Engine in W8A8, which is not what the GPU computes; on the M5 Ultra
+    # it saved 3.5% of a 103K-token prefill (85 s against 88).
+    if (_first(env, ("SPLASH_ANE",), prefixes) or "off") != "on":
+        argv.append("--disable-ane")
+
     cap = max_memory(slot, env)
     if cap:
         argv += ["--max-memory", cap]
     disk = max_cache_disk(slot, env)
     if disk:
         argv += ["--max-cache-disk", disk]
+    argv += ["--idle-release", idle_release(slot, env)]
 
     argv += custom_args(env, ARGS_KEYS, prefixes)
     argv += list(extra or [])
