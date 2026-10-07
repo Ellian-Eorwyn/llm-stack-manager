@@ -80,9 +80,13 @@ HTTP 400 ("the requested logits or output transformation is not supported")
 any request whose `presence_penalty`, `frequency_penalty` or `min_p` was not 0.
 Since 1.2.0 it accepts `presence_penalty`, `frequency_penalty`,
 `repetition_penalty` and `min_p` (checked on 1.3.0, 2026-10-07); only a
-non-empty `logit_bias` is still refused. The proxy still sends 0 for all of
-them, so the usual Qwen cure for endless repetition (`*_PRESENCE_PENALTY=1.5`)
-is now available but untried here.
+non-empty `logit_bias` is still refused. So the usual Qwen cure for endless
+repetition is available: the Studio sets `THINK_`, `NOTHINK_` and
+`CODE_PRESENCE_PENALTY=1.5` since 2026-10-07 (the code default stays 0). The
+first checks were clean: correct answers, intact tool-call arguments, code
+that passed its own tests, and no language mixing in prose. Whether it lowers
+the loop rate shows in `grep loop-guard logs/llm-a-proxy.stdout.log` over the
+following days.
 
 What is available is the model card's own sampling, which the proxy sets per
 persona: thinking at `temperature=1.0, top_p=0.95, top_k=20`
