@@ -46,6 +46,11 @@ import time
 from pathlib import Path
 
 DEFAULT_CHECK_INTERVAL_SECONDS = 900
+# The local half (HEAD, uncommitted files, ahead/behind against the remote ref
+# as last fetched) is a few milliseconds of git and needs no network, so it is
+# re-read this often. Re-read only with each fetch, a commit made just after a
+# check left the badge on "local changes" for up to the whole fetch interval.
+LOCAL_CHECK_SECONDS = 30
 GIT_TIMEOUT_SECONDS = 120
 FETCH_TIMEOUT_SECONDS = 180
 
@@ -202,15 +207,15 @@ def backend_sensitive_changes(stack_dir, upstream: str) -> list[str]:
     return sorted({line.strip() for line in out.splitlines() if line.strip()})
 
 
-def refresh_remote(stack_dir) -> dict:
-    """Fetch, then compare. The whole snapshot, network included.
+def compare(stack_dir, remote_checked_at: float | None = None, fetch_error: str = "") -> dict:
+    """The whole snapshot against the remote ref as it was last fetched.
 
-    Never raises: a box that cannot reach GitHub should report that it could not
-    check, not lose the local half of the answer too.
+    No network: `refresh_remote` fetches first, and the watcher calls this
+    alone between fetches, carrying the last fetch's time and error forward.
     """
     state = local_state(stack_dir)
-    state["remote_checked_at"] = time.time()
-    state["fetch_error"] = ""
+    state["remote_checked_at"] = remote_checked_at
+    state["fetch_error"] = fetch_error
     state["behind"] = 0
     state["ahead"] = 0
     state["pending_commits"] = []
@@ -220,15 +225,9 @@ def refresh_remote(stack_dir) -> dict:
         return state
 
     git = git_cmd(stack_dir)
-    rc, out = _run([*git, "fetch", "--prune", "origin"], timeout=FETCH_TIMEOUT_SECONDS)
-    if rc != 0:
-        state["fetch_error"] = out or "git fetch failed"
-
-    # The upstream ref may only exist after the fetch, so resolve it again.
-    upstream = _upstream_ref(git, state.get("branch", ""))
-    state["upstream"] = upstream
+    upstream = state.get("upstream", "")
     if not upstream:
-        state["fetch_error"] = state["fetch_error"] or "no upstream branch to compare against"
+        state["fetch_error"] = fetch_error or "no upstream branch to compare against"
         return state
 
     rc, counts = _run([*git, "rev-list", "--left-right", "--count", f"HEAD...{upstream}"])
@@ -241,6 +240,23 @@ def refresh_remote(stack_dir) -> dict:
         state["pending_commits"] = _pending_commits(git, upstream)
         state["backend_sensitive_changes"] = backend_sensitive_changes(stack_dir, upstream)
     return state
+
+
+def refresh_remote(stack_dir) -> dict:
+    """Fetch, then compare. The whole snapshot, network included.
+
+    Never raises: a box that cannot reach GitHub should report that it could not
+    check, not lose the local half of the answer too.
+    """
+    checked_at = time.time()
+    fetch_error = ""
+    if is_git_checkout(stack_dir):
+        rc, out = _run([*git_cmd(stack_dir), "fetch", "--prune", "origin"],
+                       timeout=FETCH_TIMEOUT_SECONDS)
+        if rc != 0:
+            fetch_error = out or "git fetch failed"
+    # The upstream ref may only exist after the fetch, so `compare` resolves it.
+    return compare(stack_dir, checked_at, fetch_error)
 
 
 def summarize(snapshot: dict) -> dict:
@@ -314,6 +330,20 @@ class DriftWatcher:
             self._snapshot = snapshot
         return snapshot
 
+    def recheck_local(self) -> dict:
+        """Re-read the local half, keeping the last fetch's time and error."""
+        with self._lock:
+            last = dict(self._snapshot)
+        try:
+            snapshot = compare(self.stack_dir, last.get("remote_checked_at"),
+                               last.get("fetch_error", ""))
+        except Exception as exc:
+            snapshot = {"ok": False, "error": f"deployment check failed: {exc}",
+                        "remote_checked_at": last.get("remote_checked_at")}
+        with self._lock:
+            self._snapshot = snapshot
+        return snapshot
+
     def snapshot(self) -> dict:
         """The cached answer, never a network call."""
         with self._lock:
@@ -345,16 +375,22 @@ class DriftWatcher:
         self._thread.start()
 
     def _loop(self) -> None:
+        next_fetch = 0.0
         while True:
             # A check that raises must not end the thread; a dead watcher would
             # freeze the badge on whatever it last said, which is worse than
             # saying nothing.
-            self.check()
-            time.sleep(self.interval)
+            if time.monotonic() >= next_fetch:
+                self.check()
+                next_fetch = time.monotonic() + self.interval
+            else:
+                self.recheck_local()
+            time.sleep(min(LOCAL_CHECK_SECONDS, self.interval))
 
 
 __all__ = [
     "BACKEND_SENSITIVE_PATHS", "DEFAULT_CHECK_INTERVAL_SECONDS", "DriftWatcher",
-    "REMEDY", "backend_sensitive_changes", "check_interval", "git_cmd",
+    "LOCAL_CHECK_SECONDS", "REMEDY", "backend_sensitive_changes", "check_interval",
+    "compare", "git_cmd",
     "is_git_checkout", "local_state", "refresh_remote", "summarize",
 ]

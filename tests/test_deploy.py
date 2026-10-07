@@ -207,6 +207,22 @@ class DriftWatcherTests(unittest.TestCase):
         watcher.check()
         self.assertIsNotNone(watcher.snapshot()["remote_checked_at"])
 
+    def test_a_commit_after_a_check_clears_the_badge_without_a_fetch(self):
+        """The manager restarted with edits uncommitted; they were committed a
+        minute later, and the badge said "local changes" until the next fetch,
+        15 minutes on."""
+        watcher = deploy.DriftWatcher(self.repo)
+        (self.repo / "README.md").write_text("edited\n")
+        checked = watcher.check()
+        self.assertTrue(checked["dirty"])
+        git(self.repo, "commit", "-am", "second commit")
+        with mock.patch.object(deploy, "refresh_remote", side_effect=AssertionError("fetched")):
+            snapshot = watcher.recheck_local()
+        self.assertFalse(snapshot["dirty"])
+        self.assertEqual(snapshot["subject"], "second commit")
+        self.assertEqual(snapshot["remote_checked_at"], checked["remote_checked_at"])
+        self.assertEqual(watcher.snapshot()["subject"], "second commit")
+
     def test_a_zero_interval_starts_no_thread(self):
         watcher = deploy.DriftWatcher(self.repo)
         watcher.start(lambda: {"LLM_MANAGER_DEPLOY_CHECK_INTERVAL": "0"})
