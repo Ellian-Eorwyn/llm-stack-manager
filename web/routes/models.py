@@ -67,6 +67,15 @@ def api_backend_lora(slot):
     base_url = telemetry.base_url_for_slot(env, slot)
     if base_url is None:
         return jsonify(ok=False, error=f"unknown slot {slot!r}"), 404
+    # The live list costs llama-server a queued task, which restarts an
+    # idle-unload slot's timer; the page asks every five seconds. A slot started
+    # with no --lora has nothing to report, so it is not asked at all.
+    if not models.configured_lora_scales(env, slot):
+        return jsonify(ok=True, slot=slot, adapters=[])
+    if telemetry.idle_unload(env, slot):
+        return jsonify(ok=False, slot=slot, adapters=[],
+                       error=f"{slot} unloads when idle, so its adapters are not polled "
+                             f"(polling would keep it loaded)"), 409
     adapters = telemetry.probe_lora_adapters(base_url)
     if adapters is None:
         return jsonify(ok=False, error=f"{slot} is not answering on {base_url}",

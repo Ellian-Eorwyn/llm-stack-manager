@@ -476,6 +476,27 @@ class SleepingBackendTests(unittest.TestCase):
         metrics.assert_not_called()
         self.assertTrue(snapshot["props"]["is_sleeping"])
 
+    def test_an_idle_unload_slot_is_never_asked_while_awake_either(self):
+        """Each `/slots` or `/metrics` restarts the idle timer, so asking them
+        while it is awake is what kept embed and task loaded on 10-09."""
+        target = {"name": "task", "label": "Task", "unit": None, "active": True,
+                  "base_url": "http://127.0.0.1:1", "engine": "llamacpp", "idle_unload": True}
+        with mock.patch.object(telemetry, "probe_props", return_value={"is_sleeping": False}), \
+                mock.patch.object(telemetry, "probe_slots") as slots, \
+                mock.patch.object(telemetry, "probe_metrics") as metrics:
+            snapshot = telemetry.backend_snapshot(target, 3600)
+        slots.assert_not_called()
+        metrics.assert_not_called()
+        self.assertTrue(snapshot["idle_unload"])
+
+    def test_idle_unload_follows_the_slot_setting(self):
+        self.assertTrue(telemetry.idle_unload({"TASK_SLEEP_IDLE_SECONDS": "900"}, "task"))
+        self.assertFalse(telemetry.idle_unload({"TASK_SLEEP_IDLE_SECONDS": "-1"}, "task"))
+        self.assertFalse(telemetry.idle_unload({"TASK_SLEEP_IDLE_SECONDS": ""}, "task"))
+        self.assertFalse(telemetry.idle_unload({"EMBED_SLEEP_IDLE_SECONDS": "900"}, "task"))
+        targets = telemetry.resolve_targets({"EMBED_SLEEP_IDLE_SECONDS": "900"}, lambda unit: "active")
+        self.assertEqual({t["name"]: t["idle_unload"] for t in targets}["embed"], True)
+
     def test_an_awake_backend_is_still_asked_everything(self):
         target = {"name": "task", "label": "Task", "unit": None, "active": True,
                   "base_url": "http://127.0.0.1:1", "engine": "llamacpp"}

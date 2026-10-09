@@ -725,6 +725,23 @@ def clamp_window(value, default: int = DEFAULT_WINDOW_SECONDS) -> int:
     return max(MIN_WINDOW_SECONDS, min(MAX_WINDOW_SECONDS, window))
 
 
+def idle_unload(env: dict, slot_name: str) -> bool:
+    """Whether a slot runs with `--sleep-idle-seconds` (`<PREFIX>_SLEEP_IDLE_SECONDS` > 0).
+
+    Such a slot must not be asked anything that queues a task in llama-server --
+    `/slots`, `/metrics`, `/lora-adapters` -- because each one restarts its idle
+    timer, and the manager page polls every few seconds. Measured 10-09: with the
+    page open, embed and task never slept.
+    """
+    slot = backends.SLOTS.get(slot_name)
+    if slot is None:
+        return False
+    try:
+        return float(str(env.get(f"{slot.prefix}_SLEEP_IDLE_SECONDS") or "").strip() or -1) > 0
+    except ValueError:
+        return False
+
+
 def resolve_targets(env: dict, service_status) -> list[dict]:
     """Backends worth probing, with the systemd unit currently serving each one.
 
@@ -752,6 +769,7 @@ def resolve_targets(env: dict, service_status) -> list[dict]:
             "port": port,
             "base_url": f"http://{host}:{port}",
             "active": active_unit is not None,
+            "idle_unload": idle_unload(env, spec["units"][0]),
         })
     return targets
 
@@ -784,13 +802,15 @@ def backend_snapshot(target: dict, window_seconds: int, registry: TelemetryRegis
 
     snapshot["props"] = probe_props(target["base_url"])
     # `/props` answers a sleeping server without waking it; `/slots` and
-    # `/metrics` queue a task, which reloads the model and restarts its idle
-    # timer. Asking them on every poll would keep an idle-unload slot loaded
-    # for as long as anyone watched the telemetry panel.
-    if (snapshot["props"] or {}).get("is_sleeping"):
-        return snapshot
-    snapshot["slots"] = probe_slots(target["base_url"])
-    snapshot["metrics"], snapshot["metrics_available"] = probe_metrics(target["base_url"])
+    # `/metrics` queue a task, which reloads a sleeping model and restarts the
+    # idle timer of an awake one. Asking them on every poll would keep an
+    # idle-unload slot loaded for as long as anyone had the page open. Its
+    # request statistics still come from the journal below.
+    if target.get("idle_unload") or (snapshot["props"] or {}).get("is_sleeping"):
+        snapshot["idle_unload"] = True
+    else:
+        snapshot["slots"] = probe_slots(target["base_url"])
+        snapshot["metrics"], snapshot["metrics_available"] = probe_metrics(target["base_url"])
 
     if target["unit"]:
         collector = registry.collector(target["unit"], window_seconds)
