@@ -218,10 +218,16 @@ def sleep_models() -> None:
     t0 = time.perf_counter()
     before = torch.cuda.memory_reserved()
     for model in state["models"].values():
-        model.predictor_graph = model.talker_graph = None  # their memory pools go with them
+        for graph in (model.predictor_graph, model.talker_graph):
+            if getattr(graph, "graph", None) is not None:
+                graph.graph.reset()  # frees the captured graph and its private memory pool now
+        model.predictor_graph = model.talker_graph = None
         model._warmed_up = False
         _move_tensors(_gpu_modules(model), to_host=True)
     gc.collect()
+    # Each graph capture runs on a new CUDA stream, and torch keeps a cuBLAS workspace (~8 MB) per
+    # stream it has seen; without this, every sleep/wake cycle left two behind (+17 MB a cycle).
+    torch._C._cuda_clearCublasWorkspaces()
     torch.cuda.empty_cache()
     state["sleeping"] = True
     state["slept"] += 1
