@@ -56,6 +56,7 @@ import platforms
 import public_api
 import scheduling
 import telemetry
+import voice_tts
 
 from routes import control as control_routes
 from routes import fleet as fleet_routes
@@ -147,6 +148,7 @@ SERVICES = [
     {"group": "auxiliary", "name": "transcript-backend", "label": "Transcription", "desc": "Speech-to-text: faster-whisper, NeMo, HF, router", "ports": "8014", "config_section": "Transcription"},
     {"group": "auxiliary", "name": "searxng",          "label": "SearXNG",      "desc": "Local metasearch engine via uWSGI/nginx", "ports": "/searxng", "config_section": "SearXNG"},
     {"group": "auxiliary", "name": "playwright-server", "label": "Playwright",   "desc": "Remote browser automation WebSocket server", "ports": "3001", "config_section": "Playwright"},
+    {"group": "auxiliary", "name": "voice-tts",        "label": "Voice TTS",    "desc": "Hermes's voice: Qwen3-TTS speech API",  "ports": "8016", "config_section": "Voice TTS"},
 ]
 
 LLAMACPP_MODEL_SERVICES = list(backends.SLOTS)
@@ -1558,6 +1560,70 @@ def api_playwright_status():
 def api_playwright_install():
     ok, output = run_playwright_install()
     return jsonify(ok=ok, output=output)
+
+
+@app.route('/api/voice-tts/status')
+def api_voice_tts_status():
+    """The unit, the server's own /health, and the voices file it reads."""
+    cfg = voice_tts.config(config_env.normalize_env_keys(config_env.read_env()))
+    status = get_service_status(voice_tts.UNIT)
+    server = None
+    try:
+        server = core.http_json(f"{cfg['local_url']}/health", timeout=3)
+    except Exception as exc:
+        server_error = str(exc)
+    else:
+        server_error = ""
+    voices, voices_error = None, ""
+    try:
+        voices = voice_tts.read_voices(cfg["voices_file"])
+    except Exception as exc:
+        voices_error = str(exc)
+    checks = {
+        "service": {"ok": status == "active", "status": status},
+        "unit": {"ok": Path(cfg["service_unit"]).exists(), "path": cfg["service_unit"]},
+        "python": {"ok": Path(cfg["python"]).exists(), "path": cfg["python"]},
+        "voices_file": {"ok": voices is not None, "path": cfg["voices_file"], "error": voices_error},
+        "health": {"ok": bool(server and server.get("ok")), "endpoint": f"{cfg['local_url']}/health",
+                   "error": server_error},
+    }
+    return jsonify(ok=True, service_status=status, config=cfg, checks=checks,
+                   server=server, voices=voices, last_refresh=int(time.time()))
+
+
+@app.route('/api/voice-tts/default', methods=['POST'])
+def api_voice_tts_default():
+    """Change the default voice. The server takes it on its next request."""
+    voice = str((request.get_json(silent=True) or {}).get('voice') or '')
+    cfg = voice_tts.config(config_env.normalize_env_keys(config_env.read_env()))
+    try:
+        previous = voice_tts.set_default_voice(cfg["voices_file"], voice)
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    except OSError as exc:
+        return jsonify(ok=False, error=str(exc)), 500
+    return jsonify(ok=True, default=voice.strip().lower(), previous=previous)
+
+
+@app.route('/api/voice-tts/speak', methods=['POST'])
+def api_voice_tts_speak():
+    """Speak a test sentence through the running server and return the WAV."""
+    body = request.get_json(silent=True) or {}
+    text = str(body.get('input') or '').strip()
+    if not text:
+        return jsonify(ok=False, error='Enter text to speak'), 400
+    payload = {"input": text, "voice": str(body.get('voice') or 'default'), "response_format": "wav"}
+    if str(body.get('instructions') or '').strip():
+        payload["instructions"] = str(body['instructions']).strip()
+    cfg = voice_tts.config(config_env.normalize_env_keys(config_env.read_env()))
+    try:
+        audio, content_type = core.http_bytes(f"{cfg['local_url']}/v1/audio/speech", method='POST',
+                                              payload=payload, timeout=120)
+        return Response(audio, mimetype=content_type or 'audio/wav')
+    except urlerror.HTTPError as exc:
+        return jsonify(ok=False, error=exc.read().decode('utf-8', errors='ignore') or str(exc)), exc.code
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 502
 
 
 

@@ -340,6 +340,51 @@ class OcrExtractTests(unittest.TestCase):
         self.assertTrue(body["ok"] and body["enabled"] and body["reachable"])
         self.assertEqual(body["active_engine"], "faster-whisper")
 
+    def test_voice_tts_is_a_service_with_a_config_section(self):
+        entry = next(s for s in manager.SERVICES if s["name"] == "voice-tts")
+        self.assertEqual(entry["config_section"], "Voice TTS")
+        self.assertIn("Voice TTS", manager.CORE_CONFIG_SECTIONS)
+        keys = {f["key"] for f in manager.CONFIG_FIELDS if f["section"] == "Voice TTS"}
+        self.assertIn("VOICE_TTS_ENABLED", keys)
+        for key in keys - {"VOICE_TTS_PUBLIC_URL"}:
+            self.assertEqual(config_fields.RESTART_HINTS.get(key), ["voice-tts"], key)
+
+    def test_voice_tts_status_reports_the_server_and_its_voices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            voices = pathlib.Path(tmp) / "voices.json"
+            voices.write_text(json.dumps({"default": "deep", "voices": {
+                "deep": {"ref_audio": "voices/deep/reference.wav"}, "sohee": {"speaker": "sohee"}}}))
+            env = {"VOICE_TTS_ENABLED": "on", "VOICE_TTS_HOST": "0.0.0.0", "VOICE_TTS_PORT": "8016",
+                   "VOICE_TTS_VOICES": str(voices)}
+            server = {"ok": True, "voices": ["deep"], "default_voice": "deep"}
+            with (
+                manager.app.test_client() as client,
+                patch.object(config_env, "read_env", return_value=env),
+                patch.object(core, "http_json", return_value=server) as http,
+                patch.object(manager, "get_service_status", return_value="active"),
+            ):
+                body = client.get("/api/voice-tts/status").get_json()
+        http.assert_called_once_with("http://127.0.0.1:8016/health", timeout=3)
+        self.assertTrue(body["checks"]["health"]["ok"])
+        self.assertEqual(body["voices"], {"default": "deep", "voices": {"deep": "clone", "sohee": "preset"}})
+
+    def test_voice_tts_default_edits_only_the_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            voices = pathlib.Path(tmp) / "voices.json"
+            original = {"default": "deep", "voices": {"deep": {"ref_audio": "a.wav"}, "earth": {"ref_audio": "b.wav"}}}
+            voices.write_text(json.dumps(original))
+            env = {"VOICE_TTS_VOICES": str(voices)}
+            with (
+                manager.app.test_client() as client,
+                patch.object(config_env, "read_env", return_value=env),
+            ):
+                ok = client.post("/api/voice-tts/default", json={"voice": "Earth"})
+                bad = client.post("/api/voice-tts/default", json={"voice": "alloy"})
+            self.assertEqual(ok.get_json(), {"ok": True, "default": "earth", "previous": "deep"})
+            self.assertEqual(bad.status_code, 400)
+            self.assertEqual(json.loads(voices.read_text()), dict(original, default="earth"))
+            self.assertEqual(json.loads((pathlib.Path(tmp) / "voices.json.bak").read_text()), original)
+
     def test_transcribe_overview_does_not_dial_a_disabled_sidecar(self):
         with (
             manager.app.test_client() as client,
@@ -1829,6 +1874,9 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/tts/activate/<backend_id>", ("POST",), "api_tts_activate"),
         ("/api/tts/overview", ("GET",), "api_tts_overview"),
         ("/api/tts/test", ("POST",), "api_tts_test"),
+        ("/api/voice-tts/default", ("POST",), "api_voice_tts_default"),
+        ("/api/voice-tts/speak", ("POST",), "api_voice_tts_speak"),
+        ("/api/voice-tts/status", ("GET",), "api_voice_tts_status"),
         # The read-only state API. Also registered here so `/api/v1/*` works on
         # the manager's own port; the listener other machines reach is built by
         # `create_state_api_app()` and carries these and nothing else.

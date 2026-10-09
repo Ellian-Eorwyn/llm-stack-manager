@@ -105,6 +105,13 @@ class AuthorityTests(unittest.TestCase):
         self.assertNotIn("transcript-backend", self.units(TRANSCRIPT_ENABLED="off"))
         self.assertIn("transcript-backend", self.units(TRANSCRIPT_ENABLED="on"))
 
+    def test_voice_tts_starts_only_when_expected_and_switched_on(self):
+        expectations = dict(LLMS_EXPECTATIONS, **{"voice-tts": {"expected": "on"}})
+        self.assertNotIn("voice-tts", self.units())
+        self.assertNotIn("voice-tts", self.units(expectations=expectations, VOICE_TTS_ENABLED="off"))
+        units = self.units(expectations=expectations, VOICE_TTS_ENABLED="on")
+        self.assertEqual(units[-1], "voice-tts")
+
     def test_the_router_unit_answers_to_its_own_switch(self):
         """Starting it against `MODEL_ROUTER_ENABLED=off` gives the pooled
         models two owners, so a recorded `on` cannot bring it up."""

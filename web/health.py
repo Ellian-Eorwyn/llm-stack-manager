@@ -144,6 +144,13 @@ SERVICE_PROBES = _llama_probes() | {
         "host_key": "TRANSCRIPT_HOST", "port_key": "TRANSCRIPT_PORT", "default_port": "8014",
         "expect_field": ("status", "ok"),
     },
+    # `ok` is true once a model is loaded and its voices encoded, which is after
+    # the CUDA-graph warm-up: the port is not bound before then.
+    "voice-tts": {
+        "kind": "http", "path": "/health",
+        "host_key": "VOICE_TTS_HOST", "port_key": "VOICE_TTS_PORT", "default_port": "8016",
+        "expect_field": ("ok", True),
+    },
 }
 
 
@@ -199,6 +206,7 @@ ENABLED_FLAGS = {
     "searxng": "SEARXNG_ENABLED",
     "playwright-server": "PLAYWRIGHT_ENABLED",
     "transcript-backend": "TRANSCRIPT_ENABLED",
+    "voice-tts": "VOICE_TTS_ENABLED",
 }
 
 

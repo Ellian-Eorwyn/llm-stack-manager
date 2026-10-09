@@ -78,6 +78,7 @@ STACK_LEGACY_CORE_SERVICES=(
 STACK_OPTIONAL_SERVICES=(
   graphiti
   transcript-backend
+  voice-tts
   tts-gateway
   tts-backend-kokoro
   tts-backend-chatterbox

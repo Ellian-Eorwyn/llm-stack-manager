@@ -70,6 +70,7 @@ ROUTER_MEMBER_BY_UNIT = {
 FEATURE_SWITCH = {
     "llama-router": "MODEL_ROUTER_ENABLED",
     "transcript-backend": "TRANSCRIPT_ENABLED",
+    "voice-tts": "VOICE_TTS_ENABLED",
 }
 
 #: Start order. A backend comes up before the proxy in front of it so the
@@ -88,6 +89,7 @@ START_ORDER = (
     "glmocr-sdk",
     "playwright-server",
     "transcript-backend",
+    "voice-tts",
 )
 
 

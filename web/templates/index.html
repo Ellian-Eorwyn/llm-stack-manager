@@ -1027,6 +1027,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     <button class="tab-btn" data-tab="searxng" data-local-only="1"><span class="nav-icon">X</span><span class="nav-label">SearXNG</span></button>
     <button class="tab-btn" data-tab="playwright" data-local-only="1"><span class="nav-icon">P</span><span class="nav-label">Playwright</span></button>
     <button class="tab-btn" data-tab="transcribe" data-local-only="1"><span class="nav-icon">T</span><span class="nav-label">Transcription</span></button>
+    <button class="tab-btn" data-tab="voice-tts" data-local-only="1"><span class="nav-icon">V</span><span class="nav-label">Voice TTS</span></button>
     <button class="tab-btn" data-tab="config" data-local-only="1" data-fleet-control="1"><span class="nav-icon">C</span><span class="nav-label">Configuration</span></button>
     <button class="tab-btn" data-tab="logs" data-local-only="1"><span class="nav-icon">L</span><span class="nav-label">Logs</span></button>
   </div>
@@ -1417,6 +1418,65 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
   <div class="svc-group">
     <div class="group-hdr">Endpoints</div>
     <div class="meta-list" id="playwright-endpoint-list"></div>
+  </div>
+</div>
+
+<!-- ====== Voice TTS tab ====== -->
+<div id="tab-voice-tts" class="tab-panel">
+  <div class="quick-bar">
+    <span class="qlabel">Voice TTS</span>
+    <button class="btn btn-primary btn-sm" onclick="loadVoiceTtsStatus()">Refresh</button>
+    <button class="btn btn-success btn-sm" onclick="voiceTtsAction('start',this)">Start</button>
+    <button class="btn btn-danger btn-sm" onclick="voiceTtsAction('stop',this)">Stop</button>
+    <button class="btn btn-ghost btn-sm" onclick="voiceTtsAction('restart',this)">Restart</button>
+    <button class="btn btn-ghost btn-sm" onclick="openServiceConfig('Voice TTS')">Config</button>
+    <span id="voice-tts-last-refresh" class="active-indicator">Last refresh: -</span>
+  </div>
+
+  <div class="tts-grid">
+    <div class="tts-panel">
+      <div class="group-hdr">Server</div>
+      <div class="tts-summary">
+        <span>Status: <strong id="voice-tts-service-status">-</strong></span>
+        <span>URL: <strong id="voice-tts-url">-</strong></span>
+      </div>
+      <div class="meta-list" id="voice-tts-meta-list"></div>
+      <div class="meta-list" id="voice-tts-stats-list" style="margin-top:8px;"></div>
+      <div class="card-acts" style="margin-top:12px;">
+        <button class="btn btn-ghost btn-sm" onclick="openLogs('voice-tts')">Logs</button>
+      </div>
+    </div>
+    <div class="tts-panel">
+      <div class="group-hdr">Voices</div>
+      <div class="card-desc">The default is what Hermes asks for. It is saved to the voices file and applies on the next request, without a restart. Adding or removing a voice needs a restart.</div>
+      <div class="tts-test-grid" style="margin-top:10px;">
+        <select id="voice-tts-default-select" aria-label="Default voice"></select>
+        <button class="btn btn-primary" onclick="setVoiceTtsDefault(this)">Set Default</button>
+      </div>
+      <div class="meta-list" id="voice-tts-voice-list" style="margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <div class="tts-panel" style="margin-bottom:18px;">
+    <div class="group-hdr">Test</div>
+    <div class="field">
+      <label for="voice-tts-test-input">Text</label>
+      <input id="voice-tts-test-input" type="text" value="Hello there. This is a test of the voice server." placeholder="Enter text to speak">
+    </div>
+    <div class="field">
+      <label for="voice-tts-test-style">Style (optional)</label>
+      <input id="voice-tts-test-style" type="text" placeholder="e.g. calm, unhurried">
+    </div>
+    <div class="tts-test-grid">
+      <select id="voice-tts-test-voice" aria-label="Voice"></select>
+      <button class="btn btn-primary" onclick="runVoiceTtsTest(this)">Speak</button>
+    </div>
+    <audio id="voice-tts-audio" class="tts-audio" controls style="display:none;"></audio>
+  </div>
+
+  <div class="svc-group">
+    <div class="group-hdr">Health Checks</div>
+    <div class="svc-cards" id="voice-tts-status-cards"></div>
   </div>
 </div>
 
@@ -2411,6 +2471,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
 <script src="{{ url_for('static', filename='js/setup.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/tts.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/transcribe.js') }}?v={{ asset_version }}"></script>
+<script src="{{ url_for('static', filename='js/voice-tts.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/scheduling.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/logs.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='js/boot.js') }}?v={{ asset_version }}"></script>

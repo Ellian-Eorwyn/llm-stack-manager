@@ -84,6 +84,7 @@ function showTab(tab) {
   if (tab === 'searxng') initSearxngTab();
   if (tab === 'playwright') initPlaywrightTab();
   if (tab === 'transcribe') initTranscribeTab();
+  if (tab === 'voice-tts') initVoiceTtsTab();
   if (tab === 'setup') initSetupWizard();
 }
 

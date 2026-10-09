@@ -482,6 +482,12 @@ UNIT
     else
         bash "${STACK_DIR}/scripts/install-model-router-nginx.sh" --remove >/dev/null 2>&1 || true
     fi
+    # Hermes's voice. Its venv is built by hand (docs/voice-tts.md), so the unit
+    # is installed only where it has been switched on. TimeoutStartSec covers
+    # model load plus the CUDA-graph warm-up.
+    if [[ "${VOICE_TTS_ENABLED:-off}" == "on" ]]; then
+        install_unit "voice-tts" "Voice TTS - Qwen3-TTS speech API" "start-voice-tts.sh" 300
+    fi
     if [[ "${PLAYWRIGHT_ENABLED:-on}" == "on" ]]; then
         install_playwright_nginx_conf
         cat > /etc/systemd/system/playwright-server.service <<UNIT
@@ -541,6 +547,10 @@ UNIT
     # router happens to be on.
     if [[ -f /etc/systemd/system/llama-router.service ]]; then
         cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/llama-router.service
+    fi
+    # Same clean exit when VOICE_TTS_ENABLED is off.
+    if [[ -f /etc/systemd/system/voice-tts.service ]]; then
+        cp_sed_inplace "s|^Restart=always$|Restart=on-failure|" /etc/systemd/system/voice-tts.service
     fi
 
     systemctl daemon-reload

@@ -132,3 +132,42 @@ class VoiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LauncherTests(unittest.TestCase):
+    """scripts/start-voice-tts.sh, run against a stand-in python."""
+
+    def run_launcher(self, env_lines):
+        import os
+        import shutil
+        import subprocess
+        root = pathlib.Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            (tmp / "scripts").mkdir()
+            (tmp / "config").mkdir()
+            shutil.copy(root / "scripts" / "start-voice-tts.sh", tmp / "scripts")
+            fake = tmp / "python"
+            fake.write_text('#!/usr/bin/env bash\nenv | grep -E "^(VOICE_TTS_|CUDA_VISIBLE|HF_HUB)" | sort\necho "ARGS $*"\n')
+            fake.chmod(0o755)
+            (tmp / "config" / "llm-stack.env").write_text(
+                "\n".join([f"VOICE_TTS_PYTHON={fake}", *env_lines]) + "\n")
+            clean = {k: v for k, v in os.environ.items() if not k.startswith(("VOICE_TTS_", "HF_HUB"))}
+            return subprocess.run(["bash", str(tmp / "scripts" / "start-voice-tts.sh")],
+                                  capture_output=True, text=True, env=clean, timeout=30)
+
+    def test_disabled_exits_cleanly_without_launching(self):
+        out = self.run_launcher(["VOICE_TTS_ENABLED=off"])
+        self.assertEqual(out.returncode, 0)
+        self.assertNotIn("ARGS", out.stdout)
+
+    def test_blank_settings_reach_the_server_unset(self):
+        out = self.run_launcher(["VOICE_TTS_ENABLED=on", "VOICE_TTS_HOST=100.124.56.11", "VOICE_TTS_PORT=8016",
+                                 "VOICE_TTS_GPU=1", "VOICE_TTS_MODEL=", "VOICE_TTS_VOICES="])
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("ARGS ", out.stdout)
+        self.assertIn("--host 100.124.56.11 --port 8016", out.stdout)
+        self.assertIn("CUDA_VISIBLE_DEVICES=1", out.stdout)
+        self.assertIn("HF_HUB_OFFLINE=1", out.stdout)
+        self.assertNotIn("VOICE_TTS_MODEL=", out.stdout)
+        self.assertNotIn("VOICE_TTS_VOICES=", out.stdout)

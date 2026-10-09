@@ -411,6 +411,13 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(core.STACK_DIR / "playwright" / "browsers"))
     normalized.setdefault("PLAYWRIGHT_NODE_ENV", "production")
     normalized.setdefault("PLAYWRIGHT_NGINX_CONF", "/etc/nginx/default.apps-available/playwright.conf")
+    # Off by default: it needs a venv built by hand (docs/voice-tts.md). The
+    # model and voices keys stay blank so the server's own defaults apply.
+    normalized.setdefault("VOICE_TTS_ENABLED", "off")
+    normalized.setdefault("VOICE_TTS_HOST", "127.0.0.1")
+    normalized.setdefault("VOICE_TTS_PORT", "8016")
+    normalized.setdefault("VOICE_TTS_GPU", "0")
+    normalized.setdefault("VOICE_TTS_HF_OFFLINE", "on")
     # Read-only state API. Loopback by default: reaching it from another machine
     # should be something someone chose, not something an upgrade did for them.
     normalized.setdefault("LLM_API_ENABLED", "on")

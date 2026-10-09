@@ -58,14 +58,38 @@ python3 -m venv ~/AI/voice-tts/venv
 ~/AI/voice-tts/venv/bin/pip install faster-qwen3-tts==0.5.4 transformers==5.15.1 fastapi "uvicorn[standard]"
 ```
 
-## Install, check, restart
+## Managed by the stack (2026-10-09)
 
-Install on llms:
+voice-tts is a stack service like the others: a card on **Services**, a **Voice TTS** page in the
+sidebar, and a **Voice TTS** section under Configuration. Until 10-09 it was a systemd *user* unit
+(`systemctl --user`), which the manager, running as root, could neither see nor start.
+
+- **Unit:** `/etc/systemd/system/voice-tts.service` (runs as the checkout's owner), written by
+  `install.sh` when `VOICE_TTS_ENABLED=on`. It runs `scripts/start-voice-tts.sh`, which reads
+  `config/llm-stack.env`.
+- **Settings** (`VOICE_TTS_*`): enabled, host, port, public URL, GPU (`CUDA_VISIBLE_DEVICES`),
+  the venv's python, the voices file, the clone and preset models, language, stream chunk,
+  offline weights (`HF_HUB_OFFLINE`), ffmpeg. Blank model/voices keys keep the server's defaults.
+  Changing any of them asks for a restart of voice-tts.
+- **Voice TTS page:** start/stop/restart, the server's `/health` (models, GPU memory, served,
+  capped, cancelled, the last request), the voices and which loaded, a **Set Default** that edits
+  `default` in the voices file (keeping `voices.json.bak`; live, no restart), and a spoken test.
+- **Health:** the card is green once `/health` answers `ok: true`, after load and CUDA-graph
+  warm-up (about a minute). With `VOICE_TTS_ENABLED=off` the start script exits cleanly and a
+  stopped card is not a fault.
+- **Boot:** started by `llm-stack-restore` when its expectation is on (starting it from the
+  manager records that) and `VOICE_TTS_ENABLED=on`.
+
+This host's settings: `VOICE_TTS_ENABLED=on`, `VOICE_TTS_HOST=100.124.56.11`, `VOICE_TTS_PORT=8016`,
+`VOICE_TTS_GPU=0`, `VOICE_TTS_PYTHON=/home/ellie/AI/voice-tts/venv/bin/python`.
+
+Moving a host from the old user unit (once, as the owner, then root):
 
 ```
-cp /mnt/LLMs/llamacpp/llm-stack-git/systemd/user/voice-tts.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now voice-tts.service
+systemctl --user disable --now voice-tts.service
+rm ~/.config/systemd/user/voice-tts.service && systemctl --user daemon-reload
+sudo bash /mnt/LLMs/llamacpp/llm-stack-git/install.sh    # or write the unit by hand, as install_unit does
+sudo systemctl daemon-reload && sudo systemctl start voice-tts
 ```
 
 Check and listen:
@@ -76,13 +100,16 @@ curl -s http://llms:8016/v1/audio/speech -H 'Content-Type: application/json' \
   -d '{"input":"Hello there.","response_format":"wav"}' -o /tmp/hello.wav
 ```
 
-Logs: `journalctl --user -u voice-tts -n 20`. There's one `speak {...}` line per request, with
-first-audio ms, audio seconds, and whether it was capped or cancelled.
+Logs: the Logs button on the page, or `journalctl -u voice-tts -n 20`. There's one `speak {...}` line
+per request, with first-audio ms, audio seconds, and whether it was capped or cancelled.
 
-**Changing voices:** from the Studio, use the hermes repo's `scripts/voice_design.py enable <name>... [--default]`
-or `disable <name>` (restart), or `default <name>` (live, no restart). enable copies the clip, edits `voices.json` (keeping `voices.json.bak`), restarts the
-service once it is idle and checks the voice loaded. By hand: edit `voices.json`, then
-`systemctl --user restart voice-tts`. Hermes's desktop falls back to Piper while the service is down
+**Changing voices:** set the default from the Voice TTS page (live). From the Studio, the hermes repo's
+`scripts/voice_design.py enable <name>... [--default]` or `disable <name>` (restart), or
+`default <name>` (live, no restart). enable copies the clip, edits `voices.json` (keeping `voices.json.bak`), restarts the
+service once it is idle and checks the voice loaded. If its restart and pause still call the old
+`systemctl --user` unit, they need moving to `sudo systemctl ... voice-tts` or the manager's
+`POST /api/service/voice-tts/{stop,start,restart}`. By hand: edit `voices.json`, then restart voice-tts from the
+manager. Hermes's desktop falls back to Piper while the service is down
 (about a minute with both models).
 
 ## Voices: presets and clones (2026-10-06)

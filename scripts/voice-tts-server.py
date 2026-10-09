@@ -29,7 +29,7 @@ Guards:
 Formats: pcm and wav stream as they are made; mp3, opus, aac and flac (what SillyTavern and other
 OpenAI clients ask for) are encoded with ffmpeg once the whole text is spoken.
 
-Run (systemd/user/voice-tts.service does this):
+Run (scripts/start-voice-tts.sh does this, under the voice-tts unit):
     CUDA_VISIBLE_DEVICES=0 ~/AI/voice-tts/venv/bin/python voice-tts-server.py --host 100.124.56.11 --port 8016
 Check:
     curl -s http://llms:8016/health

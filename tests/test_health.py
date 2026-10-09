@@ -144,6 +144,14 @@ class ProbeTargetTests(unittest.TestCase):
         self.assertEqual(probe["default_port"], "8014")
         self.assertEqual(probe["expect_field"], ("status", "ok"))
 
+    def test_voice_tts_is_ready_when_its_health_says_ok(self):
+        probe = health.SERVICE_PROBES["voice-tts"]
+        self.assertEqual((probe["port_key"], probe["default_port"]), ("VOICE_TTS_PORT", "8016"))
+        self.assertEqual(probe["expect_field"], ("ok", True))
+        self.assertEqual(health.endpoint_for("voice-tts", {"VOICE_TTS_HOST": "100.124.56.11"}),
+                         ("100.124.56.11", "8016"))
+        self.assertEqual(health.ENABLED_FLAGS["voice-tts"], "VOICE_TTS_ENABLED")
+
     def test_a_disabled_sidecar_is_not_a_fault(self):
         self.assertEqual(health.ENABLED_FLAGS["transcript-backend"], "TRANSCRIPT_ENABLED")
 
