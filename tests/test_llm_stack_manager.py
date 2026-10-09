@@ -1965,6 +1965,7 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/tts/overview", ("GET",), "api_tts_overview"),
         ("/api/tts/test", ("POST",), "api_tts_test"),
         ("/api/voice-tts/default", ("POST",), "api_voice_tts_default"),
+        ("/api/voice-tts/sleep", ("POST",), "api_voice_tts_sleep"),
         ("/api/voice-tts/speak", ("POST",), "api_voice_tts_speak"),
         ("/api/voice-tts/status", ("GET",), "api_voice_tts_status"),
         # The read-only state API. Also registered here so `/api/v1/*` works on

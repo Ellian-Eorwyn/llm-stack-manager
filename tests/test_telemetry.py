@@ -462,6 +462,31 @@ class EngineAwareSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["engine"], "mtplx")
 
 
+class SleepingBackendTests(unittest.TestCase):
+    def test_a_sleeping_backend_is_not_woken_by_telemetry(self):
+        """`/slots` and `/metrics` queue a task in llama-server, which reloads a
+        sleeping model and restarts its idle timer; `/props` does neither."""
+        target = {"name": "task", "label": "Task", "unit": None, "active": True,
+                  "base_url": "http://127.0.0.1:1", "engine": "llamacpp"}
+        with mock.patch.object(telemetry, "probe_props", return_value={"is_sleeping": True}), \
+                mock.patch.object(telemetry, "probe_slots") as slots, \
+                mock.patch.object(telemetry, "probe_metrics") as metrics:
+            snapshot = telemetry.backend_snapshot(target, 3600)
+        slots.assert_not_called()
+        metrics.assert_not_called()
+        self.assertTrue(snapshot["props"]["is_sleeping"])
+
+    def test_an_awake_backend_is_still_asked_everything(self):
+        target = {"name": "task", "label": "Task", "unit": None, "active": True,
+                  "base_url": "http://127.0.0.1:1", "engine": "llamacpp"}
+        with mock.patch.object(telemetry, "probe_props", return_value={"is_sleeping": False}), \
+                mock.patch.object(telemetry, "probe_slots", return_value=[]) as slots, \
+                mock.patch.object(telemetry, "probe_metrics", return_value=(None, False)) as metrics:
+            telemetry.backend_snapshot(target, 3600)
+        slots.assert_called_once()
+        metrics.assert_called_once()
+
+
 class PlainLogLineTests(unittest.TestCase):
     def test_a_launchd_log_line_is_parsed_and_stamped_when_read(self):
         # launchd files carry llama.cpp's own stamp, which counts from process

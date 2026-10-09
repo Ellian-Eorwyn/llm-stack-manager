@@ -187,7 +187,9 @@ class TaskSettingCoverageTests(unittest.TestCase):
     # POOLED decides whether the router owns this model at all, which is a
     # question about the pool rather than a setting the model is started
     # with. It reaches the preset by the member being present or absent.
-    KNOWINGLY_DROPPED = {"PORT", "GPU_VISIBLE_DEVICES", "POOLED"}
+    # SLEEP_IDLE_SECONDS: the router unloads its children on its own timer,
+    # MODEL_ROUTER_SLEEP_IDLE_SECONDS, so a pooled task model has one already.
+    KNOWINGLY_DROPPED = {"PORT", "GPU_VISIBLE_DEVICES", "POOLED", "SLEEP_IDLE_SECONDS"}
 
     def _task(self, **overrides):
         return _sections(renderer.render(dict(BASE_ENV, **overrides)))["task"]

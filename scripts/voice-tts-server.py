@@ -26,6 +26,12 @@ Guards:
   * long input is spoken in sentence groups of at most PIECE_CHARS, one after another (Qwen3-TTS
     rambles on long text; SillyTavern sends whole paragraphs); input over MAX_CHARS is refused.
 
+Idle unload (2026-10-09): after VOICE_TTS_IDLE_SLEEP seconds without a request (default 900; 0 or
+less never), the weights move to pinned host RAM and the CUDA graphs are dropped, which leaves the
+process, its CUDA context and the encoded voice clips on the GPU (~0.5 GB of ~5.7). The next request
+copies them back and recaptures the graphs before speaking (about 1-2 s); /health answers without
+waking it and reports "sleeping". POST /sleep unloads now.
+
 Formats: pcm and wav stream as they are made; mp3, opus, aac and flac (what SillyTavern and other
 OpenAI clients ask for) are encoded with ffmpeg once the whole text is spoken.
 
@@ -59,6 +65,7 @@ MAX_SECONDS_BASE = 1.5
 MAX_SECONDS_PER_CHAR = 0.12  # ~1.6x a slow speaker; the audition's 14 s sentence (230 chars) caps at 29 s
 MAX_CHARS = 8000
 PIECE_CHARS = 400
+IDLE_SLEEP = float(os.environ.get("VOICE_TTS_IDLE_SLEEP") or 900)
 FFMPEG = os.environ.get("VOICE_TTS_FFMPEG", "/usr/bin/ffmpeg")
 ENCODED = {"mp3": ("mp3", ["-c:a", "libmp3lame", "-b:a", "96k"], "audio/mpeg"),
            "opus": ("ogg", ["-c:a", "libopus", "-b:a", "48k"], "audio/ogg"),
@@ -67,7 +74,9 @@ ENCODED = {"mp3": ("mp3", ["-c:a", "libmp3lame", "-b:a", "96k"], "audio/mpeg"),
 
 log = logging.getLogger("voice-tts")
 state: dict = {"models": {}, "voices": {}, "skipped": {}, "default": None, "speakers": [], "sr": 24000,
-               "loaded_at": None, "served": 0, "capped": 0, "cancelled": 0, "last": None}
+               "loaded_at": None, "served": 0, "capped": 0, "cancelled": 0, "last": None,
+               "sleeping": False, "last_used": time.monotonic(), "slept": 0, "last_sleep": None,
+               "last_wake_ms": None}
 lock = threading.Lock()
 
 
@@ -156,6 +165,106 @@ def resolve(voice: str | None, instructions: str | None) -> tuple[str, dict]:
     return resolve(state["default"], instructions)
 
 
+def _gpu_modules(model) -> list:
+    """The torch modules holding a FasterQwen3TTS's weights: the TTS model (talker, code predictor,
+    speaker encoder) and the speech tokenizer's codec, which qwen_tts keeps in a plain wrapper."""
+    mods = [model.model.model]
+    codec = getattr(getattr(model.model.model, "speech_tokenizer", None), "model", None)
+    if codec is not None:
+        mods.append(codec)
+    return mods
+
+
+def _move_tensors(mods: list, to_host: bool) -> None:
+    """Swap every parameter's and buffer's storage between the GPU and pinned host RAM in place, so
+    the tensor objects other code holds stay valid. Shared (tied) storage moves once."""
+    import torch
+    seen: dict = {}
+    for mod in mods:
+        for t in [*mod.parameters(), *mod.buffers()]:
+            if to_host and not t.is_cuda or not to_host and t.is_cuda:
+                continue
+            key = t.data_ptr()
+            if key not in seen:
+                seen[key] = (t.data.to("cpu").pin_memory() if to_host
+                             else t.data.to("cuda", non_blocking=True))
+            t.data = seen[key]
+    if not to_host:
+        torch.cuda.synchronize()
+
+
+def _fresh_graphs(model) -> None:
+    """New, uncaptured CUDA graphs, built as FasterQwen3TTS.from_pretrained builds them; the first
+    generation captures them (warmup is lazy)."""
+    from faster_qwen3_tts.predictor_graph import PredictorGraph
+    from faster_qwen3_tts.talker_graph import TalkerGraph
+    talker = model.model.model.talker
+    talker_config = model.model.model.config.talker_config
+    predictor = talker.code_predictor
+    model.predictor_graph = PredictorGraph(predictor, predictor.model.config, talker_config.hidden_size,
+                                           device=model.device, dtype=model.dtype,
+                                           do_sample=True, top_k=50, temperature=0.9)
+    model.talker_graph = TalkerGraph(talker.model, talker_config, device=model.device, dtype=model.dtype,
+                                     max_seq_len=model.max_seq_len)
+    model._warmed_up = False
+
+
+def sleep_models() -> None:
+    """Unload to host RAM. The caller holds `lock`."""
+    import gc
+    import torch
+    if state["sleeping"] or not state["models"]:
+        return
+    t0 = time.perf_counter()
+    before = torch.cuda.memory_reserved()
+    for model in state["models"].values():
+        model.predictor_graph = model.talker_graph = None  # their memory pools go with them
+        model._warmed_up = False
+        _move_tensors(_gpu_modules(model), to_host=True)
+    gc.collect()
+    torch.cuda.empty_cache()
+    state["sleeping"] = True
+    state["slept"] += 1
+    state["last_sleep"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    log.info("sleeping: GPU %.2f -> %.2f GB in %.1fs", before / 2**30, torch.cuda.memory_reserved() / 2**30,
+             time.perf_counter() - t0)
+
+
+def wake_models() -> None:
+    """Back onto the GPU. The caller holds `lock`. A failed wake exits the process: systemd restarts
+    it from scratch (~10 s), which beats serving from a half-moved model."""
+    if not state["sleeping"]:
+        return
+    t0 = time.perf_counter()
+    try:
+        for model in state["models"].values():
+            _move_tensors(_gpu_modules(model), to_host=False)
+            _fresh_graphs(model)
+    except Exception:
+        log.exception("wake failed; exiting so systemd restarts the server")
+        logging.shutdown()
+        os._exit(1)
+    state["sleeping"] = False
+    state["last_wake_ms"] = round((time.perf_counter() - t0) * 1000)
+    log.info("awake: weights back on the GPU in %d ms (graphs recapture on this request)", state["last_wake_ms"])
+
+
+def idle_watch() -> None:
+    """Unload after IDLE_SLEEP quiet seconds; never while a request holds the lock."""
+    while True:
+        time.sleep(min(30.0, max(IDLE_SLEEP / 4, 1.0)))
+        if state["sleeping"] or time.monotonic() - state["last_used"] < IDLE_SLEEP:
+            continue
+        if lock.acquire(blocking=False):
+            try:
+                if time.monotonic() - state["last_used"] >= IDLE_SLEEP:
+                    sleep_models()
+            except Exception:
+                log.exception("sleep failed; staying loaded")
+            finally:
+                lock.release()
+
+
 def stream_for(text: str, spec: dict, limit: int):
     if spec["kind"] == "clone":
         return state["models"]["clone"].generate_voice_clone_streaming(
@@ -214,9 +323,11 @@ def generate(text: str, name: str, spec: dict, out: queue.Queue, stop: threading
     t0 = time.perf_counter()
     first = None
     samples = 0
-    capped = cancelled = False
+    capped = cancelled = woke = False
     try:
         with lock:
+            woke = state["sleeping"]
+            wake_models()
             for piece in pieces(text):
                 limit = max_tokens_for(piece)
                 piece_samples = 0
@@ -239,6 +350,7 @@ def generate(text: str, name: str, spec: dict, out: queue.Queue, stop: threading
         out.put(exc)
     finally:
         out.put(None)
+        state["last_used"] = time.monotonic()
         seconds = samples / state["sr"]
         state["served"] += 1
         state["capped"] += int(capped)
@@ -246,7 +358,7 @@ def generate(text: str, name: str, spec: dict, out: queue.Queue, stop: threading
         state["last"] = {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "chars": len(text),
                          "first_audio_ms": round((first or 0) * 1000), "audio_s": round(seconds, 2),
                          "total_s": round(time.perf_counter() - t0, 2), "capped": capped,
-                         "cancelled": cancelled}
+                         "cancelled": cancelled, "woke": woke}
         log.info("speak %s", json.dumps({"voice": name, **state["last"]}))
 
 
@@ -286,7 +398,17 @@ def build_app():
                 "skipped": state["skipped"], "speakers": state["speakers"], "sample_rate": state["sr"],
                 "loaded_at": state["loaded_at"], "busy": lock.locked(), "served": state["served"],
                 "capped": state["capped"], "cancelled": state["cancelled"], "last": state["last"],
+                "sleeping": state["sleeping"], "idle_sleep_s": IDLE_SLEEP if IDLE_SLEEP > 0 else None,
+                "idle_s": round(time.monotonic() - state["last_used"]), "slept": state["slept"],
+                "last_sleep": state["last_sleep"], "last_wake_ms": state["last_wake_ms"],
                 "gpu_gb": round(torch.cuda.memory_reserved() / 2**30, 2)}
+
+    @app.post("/sleep")
+    def sleep_now():
+        """Unload now rather than waiting out the idle timer (waits for a reply in progress)."""
+        with lock:
+            sleep_models()
+        return {"ok": True, "sleeping": state["sleeping"]}
 
     @app.get("/v1/models")
     def models():
@@ -366,6 +488,9 @@ def main() -> int:
              sorted(MODELS[k] for k in state["models"]), time.perf_counter() - t, sorted(state["voices"]),
              state["default"], sorted(state["skipped"]), state["sr"])
 
+    state["last_used"] = time.monotonic()
+    if IDLE_SLEEP > 0:
+        threading.Thread(target=idle_watch, daemon=True, name="idle-watch").start()
     import uvicorn
     uvicorn.run(build_app(), host=args.host, port=args.port, log_level="warning")
     return 0

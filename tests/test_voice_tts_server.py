@@ -171,3 +171,48 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("HF_HUB_OFFLINE=1", out.stdout)
         self.assertNotIn("VOICE_TTS_MODEL=", out.stdout)
         self.assertNotIn("VOICE_TTS_VOICES=", out.stdout)
+
+
+class IdleSleepTests(unittest.TestCase):
+    """The idle unload's control flow; the tensor moves need a GPU and are checked live."""
+
+    def setUp(self):
+        self.saved = {k: tts.state[k] for k in ("sleeping", "last_used", "models")}
+        self.addCleanup(tts.state.update, self.saved)
+
+    def test_a_request_wakes_a_sleeping_server_first(self):
+        calls = []
+        tts.state.update(sleeping=True, models={"clone": object()}, sr=24000)
+        # generate() imports numpy for the PCM; the test venv has none and needs none here.
+        with mock.patch.dict("sys.modules", {"numpy": mock.MagicMock()}), \
+                mock.patch.object(tts, "wake_models", side_effect=lambda: calls.append("wake")), \
+                mock.patch.object(tts, "stream_for", side_effect=lambda *a: calls.append("speak") or (c for c in ())):
+            import queue
+            import threading
+            tts.generate("Hi.", "deep", {"kind": "clone"}, queue.Queue(), threading.Event())
+        self.assertEqual(calls, ["wake", "speak"])
+        self.assertTrue(tts.state["last"]["woke"])
+
+    def test_the_idle_watch_sleeps_only_after_the_quiet_period_and_never_mid_request(self):
+        tts.state.update(sleeping=False, last_used=0.0)
+        slept = []
+
+        def tick(clock, held=False):
+            if held:
+                tts.lock.acquire()
+            try:
+                with mock.patch.object(tts.time, "sleep", side_effect=[None, StopIteration]), \
+                        mock.patch.object(tts.time, "monotonic", return_value=clock), \
+                        mock.patch.object(tts, "sleep_models", side_effect=lambda: slept.append(clock)):
+                    with self.assertRaises(StopIteration):
+                        tts.idle_watch()
+            finally:
+                if held:
+                    tts.lock.release()
+
+        with mock.patch.object(tts, "IDLE_SLEEP", 900.0):
+            tick(899.0)
+            tick(901.0, held=True)
+            self.assertEqual(slept, [])
+            tick(901.0)
+        self.assertEqual(slept, [901.0])

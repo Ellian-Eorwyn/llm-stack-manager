@@ -112,6 +112,25 @@ service once it is idle and checks the voice loaded. If its restart and pause st
 manager. Hermes's desktop falls back to Piper while the service is down
 (about a minute with both models).
 
+## Idle unload (2026-10-09)
+
+After `VOICE_TTS_IDLE_SLEEP` seconds without a request (900 here; blank means 900, 0 never), the server
+moves its weights to pinned host RAM and drops its CUDA graphs. The process, its CUDA context and the
+encoded voice clips stay on GPU 0, about 0.5 GB of the 5.7 GB it holds while awake. The next request
+copies the weights back and recaptures the graphs before it speaks. That adds roughly 1-2 s to that
+one reply instead of the ~10 s of a cold start. Measure it on the page: "Last reload".
+
+- `/health` answers without waking it: `sleeping`, `idle_s`, `slept`, `last_sleep`, `last_wake_ms`.
+- `POST /sleep` (the page's **Unload Now**) unloads at once, after any reply in progress.
+- A wake that fails exits the process; systemd restarts it cold.
+- The `speak` log line carries `"woke": true` for a request that reloaded the model.
+
+The embedding and task models do the same through llama.cpp's `--sleep-idle-seconds`
+(`EMBED_SLEEP_IDLE_SECONDS`, `TASK_SLEEP_IDLE_SECONDS`, 900 here). Asleep, a llama-server keeps ~0.3 GB
+(its CUDA context); measured 10-09, the 4B embedding model woke in 1.2 s. The manager's telemetry
+reads `/props` (which reports `is_sleeping` without waking it) and skips `/slots` and `/metrics` for a
+sleeping server, since those would reload the model and restart its timer.
+
 ## Voices: presets and clones (2026-10-06)
 
 ```

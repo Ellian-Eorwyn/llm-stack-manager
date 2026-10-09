@@ -103,6 +103,20 @@ class SlotIdentityTests(unittest.TestCase):
         with as_linux():
             self.assertEqual(flags(backends.build_command("rerank", BASE))["--alias"], "rank")
 
+    def test_idle_unload_is_emitted_only_when_set(self):
+        """`--sleep-idle-seconds` frees an idle slot's VRAM. Unset, the command
+        line is unchanged, which is what keeps the golden files valid."""
+        env = dict(BASE, TASK_MODEL_PATH="/models/task.gguf")
+        with as_linux():
+            for slot in ("embed", "task"):
+                self.assertNotIn("--sleep-idle-seconds", backends.build_command(slot, env))
+                prefix = SLOTS[slot].prefix
+                argv = backends.build_command(slot, dict(env, **{f"{prefix}_SLEEP_IDLE_SECONDS": "900"}))
+                self.assertEqual(flags(argv)["--sleep-idle-seconds"], "900", slot)
+            # Per slot: the embedding model's setting is not the task model's.
+            argv = backends.build_command("task", dict(env, EMBED_SLEEP_IDLE_SECONDS="900"))
+            self.assertNotIn("--sleep-idle-seconds", argv)
+
     def test_each_slot_declares_a_distinct_default_port(self):
         ports = {name: slot.port_default for name, slot in SLOTS.items()}
         self.assertEqual(len(set(ports.values())), len(ports), ports)

@@ -26,7 +26,7 @@ fi
 # so a field left blank in the config page has to reach it as unset to mean
 # "the server's default".
 for key in VOICE_TTS_VOICES VOICE_TTS_MODEL VOICE_TTS_CLONE_MODEL VOICE_TTS_LANGUAGE \
-           VOICE_TTS_CHUNK VOICE_TTS_FFMPEG; do
+           VOICE_TTS_CHUNK VOICE_TTS_FFMPEG VOICE_TTS_IDLE_SLEEP; do
     if [[ -z "${!key:-}" ]]; then unset "${key}"; fi
 done
 

@@ -44,6 +44,9 @@ function renderVoiceTtsStatus() {
     const models = Object.entries(server.models || {}).map(([kind, id]) => `${kind}: ${id}`);
     stats.push(...models.map(m => `Model ${m}`));
     if (server.loaded_at) stats.push(`Loaded: ${server.loaded_at}`);
+    if (server.sleeping) stats.push(`Unloaded to RAM since ${server.last_sleep}`);
+    else if (server.idle_sleep_s) stats.push(`Unloads after ${Math.round(server.idle_sleep_s / 60)} min idle (idle ${Math.round((server.idle_s || 0) / 60)} min)`);
+    if (server.last_wake_ms != null) stats.push(`Last reload: ${server.last_wake_ms} ms + graph capture`);
     if (server.gpu_gb != null) stats.push(`GPU memory: ${server.gpu_gb} GB`);
     stats.push(`Served: ${server.served ?? 0}`, `Capped: ${server.capped ?? 0}`, `Cancelled: ${server.cancelled ?? 0}`);
     if (server.busy) stats.push('Busy');
@@ -96,6 +99,22 @@ function renderVoiceTtsStatus() {
 async function voiceTtsAction(action, btn) {
   await svcAction('voice-tts', action, btn);
   await loadVoiceTtsStatus(true);
+}
+
+async function voiceTtsSleep(btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const d = await fetchJSON('/api/voice-tts/sleep', 'POST');
+    toast(d.ok ? 'Voice TTS unloaded to RAM' : (d.error || 'failed'), d.ok ? 'ok' : 'err');
+    await loadVoiceTtsStatus(true);
+  } catch (e) {
+    toast('Unload failed: ' + e, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
 }
 
 async function setVoiceTtsDefault(btn) {

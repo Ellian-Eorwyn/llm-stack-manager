@@ -77,6 +77,14 @@ _AUX_PREFLIGHT = (
     ("tensor_split", ""),
 )
 
+#: Idle unload, for the slots whose callers can wait a moment on the first
+#: request after a quiet spell. llama-server frees the weights and KV after this
+#: many idle seconds and reloads them on the next request that needs the model;
+#: the process and its CUDA context (~0.3 GB) stay. Omitted unless set, so a
+#: slot's command line is unchanged until someone asks for it.
+_SLEEP_IDLE = Flag("--sleep-idle-seconds", ("SLEEP_IDLE_SECONDS",), "")
+
+
 #: The prompt-cache and sampling flags an auxiliary slot never passed.
 _AUX_OMIT = frozenset({"--cache-ram", "--ctx-checkpoints",
                        "--presence-penalty", "--repeat-penalty"})
@@ -218,7 +226,8 @@ SLOTS = {
         omit=_AUX_OMIT,
         literals=("--embedding", "--pooling", "mean"),
         preflight_fields=_AUX_PREFLIGHT,
-        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj()),
+        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj(),
+              _SLEEP_IDLE),
     ),
     "rerank": Slot(
         name="rerank",
@@ -261,7 +270,7 @@ SLOTS = {
         tail=_large_model_tail(options.TemplateKwargs(
                                    style="enable", thinking_keys=("THINKING",)),
                                options.TemplateFile(keys=("CHAT_TEMPLATE_ID",)),
-                               mmproj_early=True),
+                               mmproj_early=True) + (_SLEEP_IDLE,),
         custom_args_keys=("CUSTOM_ARGS_JSON",),
         preflight_fields=_LARGE_PREFLIGHT,
     ),

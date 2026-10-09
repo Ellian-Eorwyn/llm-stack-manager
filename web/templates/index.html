@@ -1444,6 +1444,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     <button class="btn btn-success btn-sm" onclick="voiceTtsAction('start',this)">Start</button>
     <button class="btn btn-danger btn-sm" onclick="voiceTtsAction('stop',this)">Stop</button>
     <button class="btn btn-ghost btn-sm" onclick="voiceTtsAction('restart',this)">Restart</button>
+    <button class="btn btn-ghost btn-sm" onclick="voiceTtsSleep(this)" title="Move the model to RAM now; the next request reloads it">Unload Now</button>
     <button class="btn btn-ghost btn-sm" onclick="openServiceConfig('Voice TTS')">Config</button>
     <span id="voice-tts-last-refresh" class="active-indicator">Last refresh: -</span>
   </div>

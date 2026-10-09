@@ -1605,6 +1605,18 @@ def api_voice_tts_default():
     return jsonify(ok=True, default=voice.strip().lower(), previous=previous)
 
 
+@app.route('/api/voice-tts/sleep', methods=['POST'])
+def api_voice_tts_sleep():
+    """Unload the model to RAM now; the next request reloads it."""
+    cfg = voice_tts.config(config_env.normalize_env_keys(config_env.read_env()))
+    try:
+        return jsonify(core.http_json(f"{cfg['local_url']}/sleep", method='POST', timeout=180))
+    except urlerror.HTTPError as exc:
+        return jsonify(ok=False, error=exc.read().decode('utf-8', errors='ignore') or str(exc)), exc.code
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 502
+
+
 @app.route('/api/voice-tts/speak', methods=['POST'])
 def api_voice_tts_speak():
     """Speak a test sentence through the running server and return the WAV."""

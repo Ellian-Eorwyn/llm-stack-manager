@@ -783,6 +783,12 @@ def backend_snapshot(target: dict, window_seconds: int, registry: TelemetryRegis
         return snapshot
 
     snapshot["props"] = probe_props(target["base_url"])
+    # `/props` answers a sleeping server without waking it; `/slots` and
+    # `/metrics` queue a task, which reloads the model and restarts its idle
+    # timer. Asking them on every poll would keep an idle-unload slot loaded
+    # for as long as anyone watched the telemetry panel.
+    if (snapshot["props"] or {}).get("is_sleeping"):
+        return snapshot
     snapshot["slots"] = probe_slots(target["base_url"])
     snapshot["metrics"], snapshot["metrics_available"] = probe_metrics(target["base_url"])
 
