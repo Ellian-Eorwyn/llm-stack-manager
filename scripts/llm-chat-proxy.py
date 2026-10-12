@@ -1147,7 +1147,8 @@ def _rewrite_json_reasoning_visibility(raw: bytes, mode: str) -> bytes:
     show. A reply that spent its whole budget reasoning comes back as
     `content: ""` with `finish_reason: "length"`, which reads to a client as the
     model having nothing to say — a much harder failure to debug than a visible
-    truncated thought.
+    truncated thought. A reply that calls a tool has no content by design, so
+    `hidden` leaves it alone: there the reasoning is not an answer.
     """
     mode = _normalize_reasoning_stream_mode(mode)
     parsed = _safe_json_loads(raw)
@@ -1166,7 +1167,8 @@ def _rewrite_json_reasoning_visibility(raw: bytes, mode: str) -> bytes:
         reasoning = message.get("reasoning_content")
         if not isinstance(reasoning, str) or not reasoning:
             continue
-        if not message.get("content"):
+        calls_tool = bool(message.get("tool_calls")) or choice.get("finish_reason") == "tool_calls"
+        if not message.get("content") and not (mode == "hidden" and calls_tool):
             message["content"] = reasoning
             changed = True
         if mode == "content":
@@ -1199,7 +1201,11 @@ class SSEEventRewriter:
         if not isinstance(index, int):
             index = 0
         content = delta.get("content")
-        if isinstance(content, str) and content:
+        # A tool call is an answer too: its reply has no content by design, and
+        # spending the reasoning there put the model's private thoughts in front
+        # of every tool step (Hermes stored and posted them as the message).
+        if (isinstance(content, str) and content) or delta.get("tool_calls") \
+                or choice.get("finish_reason") == "tool_calls":
             self._saw_content.add(index)
             self._held_reasoning.pop(index, None)
         elif index not in self._saw_content:

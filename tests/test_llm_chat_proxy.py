@@ -733,6 +733,32 @@ class ReasoningVisibilityTests(unittest.TestCase):
         ])
         self.assertEqual("".join(_contents(text)), "4")
 
+    def test_hidden_keeps_reasoning_out_of_a_streamed_tool_call(self):
+        """A tool call has no content by design; it is not a reply that came back empty.
+
+        Spending the reasoning there made Hermes store and post the model's thinking
+        in front of every tool step (2026-10-12).
+        """
+        call = {"index": 0, "id": "call_1", "type": "function",
+                "function": {"name": "terminal", "arguments": "{\"command\":\"ls\"}"}}
+        text = self._stream("hidden", [
+            self._delta(reasoning_content="The user wants me to list the files."),
+            self._delta(tool_calls=[call]),
+            self._finish("tool_calls"),
+        ])
+        self.assertEqual(_contents(text), [])
+        self.assertIn("reasoning_content", text)
+        self.assertIn("terminal", text)
+
+    def test_hidden_keeps_reasoning_out_of_a_complete_tool_call(self):
+        call = {"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
+        raw = json.dumps({"choices": [{"finish_reason": "tool_calls", "message": {
+            "content": "", "reasoning_content": "The user wants me to list the files.", "tool_calls": [call]}}]})
+        message = json.loads(proxy._rewrite_json_reasoning_visibility(raw.encode("utf-8"), "hidden"))["choices"][0]["message"]
+        self.assertEqual(message["content"], "")
+        self.assertEqual(message["reasoning_content"], "The user wants me to list the files.")
+        self.assertEqual(message["tool_calls"], [call])
+
     def test_content_mode_still_streams_reasoning_as_the_answer(self):
         text = self._stream("content", [
             self._delta(reasoning_content="step"),
