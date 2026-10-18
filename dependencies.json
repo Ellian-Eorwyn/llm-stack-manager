@@ -52,7 +52,7 @@
       "name": "ninfer-3090",
       "type": "git-cmake",
       "repo": "https://github.com/ashalliants/ninfer-3090.git",
-      "ref": "da0f15c25d",
+      "ref": "50a337e19f73db630e3fea03c1152146e4e63775",
       "path": "deps/ninfer-3090",
       "build_dir": "deps/ninfer-3090/build-sm86",
       "target": "ninfer-serve",

@@ -48,6 +48,9 @@ VISION = ("overlay", "resident", "off")
 #: `--reasoning-effort` values ninfer-serve takes.
 EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
+#: `--ngram-draft-tokens` with DFlash2: what NInfer's tuned launcher passes.
+NGRAM_DRAFT_TOKENS = 15
+
 ARGS_KEYS = ("NINFER_ARGS_JSON",)
 
 #: Where the dependency installer builds it (dependencies.json).
@@ -124,6 +127,13 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     if spec in SPECS:
         drafts = _positive(_first(env, ("NINFER_DRAFT_TOKENS",), prefixes)) or int(SPECS[spec])
         argv += ["--spec", spec, "--draft-tokens", str(drafts), "--lm-head-draft"]
+        # N-gram copy drafting (v0.16) rides on DFlash2: text the reply copies
+        # from the prompt, as an agent writing back a file it read, is drafted
+        # from the prompt itself. Lossless like any draft. On by default where
+        # NInfer's own launcher turns it on: DFlash2 at one or two lanes.
+        ngram = _first(env, ("NINFER_NGRAM",), prefixes) or ("on" if lanes <= 2 else "off")
+        if spec == "dflash2" and ngram == "on":
+            argv += ["--ngram-draft-tokens", str(NGRAM_DRAFT_TOKENS)]
 
     # Overlay keeps the vision tower in host memory and borrows the card per
     # image, which is what leaves the full context for text.
@@ -145,11 +155,12 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     if _first(env, ("NINFER_PREFILL_CUBLAS",), prefixes) == "on":
         argv.append("--prefill-cublas")
 
-    # Retained conversations: several rotating agent sessions stay cached
-    # (8 private continuations, 8 shared prefixes), spilling to pinned host RAM.
-    host_kv = _positive(_first(env, ("NINFER_HOST_KV_MIB",), prefixes) or "4096")
-    argv += ["--max-private-continuations", "8", "--max-shared-prefixes", "8",
-             "--auto-prefix-grid", "--host-kv-mib", str(host_kv)]
+    # Retained conversations spill from the card to one pinned host budget.
+    # v0.16 sizes everything inside it; the four knobs that used to (private
+    # continuations, shared prefixes, the prefix grid, host KV) are gone, and
+    # ninfer-serve refuses to start if it is passed one.
+    host = _positive(_first(env, ("NINFER_HOST_KV_MIB",), prefixes) or "4096")
+    argv += ["--host-context-mib", str(host)]
 
     argv += custom_args(env, ARGS_KEYS, prefixes)
     argv += list(extra or [])

@@ -26,9 +26,15 @@ CUDA-graph decode are built for exactly that card and model.
 
 | What | Pin |
 |---|---|
-| Engine | `ashalliants/ninfer-3090` @ `da0f15c25d` (2026-09-29), `dependencies.json` entry `ninfer-3090` |
-| Model | `neroued/Qwen3.8-27B-NInfer` @ `1cbd84e7221e51186bd7f093a149912d2489625b`, `qwen3_8_27b.ninfer` |
-| Model size | 20,437,521,664 bytes, sha256 `81f924d440c27261d820c19a9f8d45794c5aee410f8a68bd358133fa8c0375da` |
+| Engine | `ashalliants/ninfer-3090` v0.16.0 @ `50a337e19f` (2026-10-14), `dependencies.json` entry `ninfer-3090` |
+| Model | `WarlaxZ/Qwen3.8-27B-NInfer-3090` @ `d47f2732d369acaec76dc44228f67c72b081df2f`, `qwen3_8_27b.ninfer` (saved on llms as `qwen3_8_27b-v013.ninfer`) |
+| Model size | 18,982,458,624 bytes, sha256 `7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706` |
+
+Until 2026-10-18 the stack ran `da0f15c25d` (v0.11.0+138) with neroued's original artifact
+(`neroued/Qwen3.8-27B-NInfer` @ `1cbd84e7`, 20.4 GB). The fork's v0.13.0 re-converted the
+same stock weights with an imatrix-weighted scale search: 1.46 GB smaller and, by its
+KL measurements against Unsloth's Q8_0, 15% closer to it. That artifact needs v0.13 or
+newer binaries and no longer takes the `--embedding-q4` load-time transcode.
 
 The fork's `scripts/download-model.sh qwen38-27b` fetches exactly this revision and checks size
 and hash before keeping the file:
@@ -78,10 +84,20 @@ The engine's own settings are in the "NVIDIA (NInfer)" section:
 | `LLM_*_NINFER_VISION` | `overlay` | Images without giving up context. `resident` costs ~24K tokens; `off` answers images with a 400. |
 | `LLM_*_NINFER_PREFILL_CUBLAS` | `off` | `on`: 1.6–1.8× prompt processing for +0.156% perplexity. |
 | `LLM_*_NINFER_KV_CAPACITY` | the context | `auto` fills the card with 1 GiB spare. |
-| `LLM_*_NINFER_HOST_KV_MIB` | 4096 | Pinned host RAM for cached conversations that no longer fit on the card. |
+| `LLM_*_NINFER_HOST_KV_MIB` | 4096 | Pinned host RAM for cached conversations that no longer fit on the card (`--host-context-mib`). |
+| `LLM_*_NINFER_NGRAM` | on with `dflash2` at 1–2 lanes | N-gram copy drafting (`--ngram-draft-tokens 15`): text the reply copies from its prompt is drafted from the prompt. Lossless; the fork measured +42% decode at one lane on agent traffic. |
 
 The defaults leave out the fork's lossy memory trades (`--embedding-q4`, `--lm-head-q6`,
 `--gdn-state-fp16`).
+
+### v0.16 changes the launcher had to follow
+
+v0.16.0 replaced the context cache, and `ninfer-serve` now stops at startup with
+`unknown argument` on any knob that sized the old one. The stack used to pass four:
+`--max-private-continuations 8 --max-shared-prefixes 8 --auto-prefix-grid --host-kv-mib N`.
+It now passes `--host-context-mib N` (same setting, same 4 GiB default). Also gone in v0.16:
+the `/slots` endpoint and the `ninfer:*` metric names (now `ninfer_*`); the `llamacpp:*`
+series are unchanged.
 
 ## What the chat proxy changes
 
@@ -101,9 +117,10 @@ Each drop is logged as `ninfer-adapt … dropped=…`.
 
 ## Health, gpu-lease
 
-`/health` answers 503 until the engine has loaded and 200 `{"status":"ok"}` after. `/slots`
-reports `is_processing` in llama.cpp's shape. So `scripts/gpu-lease.py` needs no changes to
-wait for an in-flight request, or for the reload after ComfyUI is done.
+`/health` answers 503 until the engine has loaded and 200 `{"status":"ok"}` after. v0.16
+dropped `/slots`, so `scripts/gpu-lease.py` reads `llamacpp:requests_processing` from
+`/metrics` when `/slots` answers 404, to wait for an in-flight request, or for the reload
+after ComfyUI is done.
 
 ## Measured on llms
 

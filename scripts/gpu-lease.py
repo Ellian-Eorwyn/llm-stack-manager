@@ -208,10 +208,34 @@ def log_event(event: dict):
         fh.write(json.dumps(event, sort_keys=True) + "\n")
 
 
+def http_text(url: str, timeout: float = 5.0) -> str:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
 def backend_busy() -> bool | None:
-    """True while the backend is generating; None when it does not answer."""
+    """True while the backend is generating; None when it does not answer.
+
+    llama-server answers `/slots`. NInfer dropped it in v0.16, but still
+    publishes llama.cpp's `llamacpp:requests_processing` gauge, so a 404 there
+    falls back to `/metrics`.
+    """
     try:
         slots = http_json(f"{BACKEND_URL}/slots")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            return None
+        try:
+            metrics = http_text(f"{BACKEND_URL}/metrics")
+        except (urllib.error.URLError, OSError):
+            return None
+        for line in metrics.splitlines():
+            if line.startswith("llamacpp:requests_processing"):
+                try:
+                    return float(line.split()[-1]) > 0
+                except ValueError:
+                    return None
+        return None
     except (urllib.error.URLError, OSError, ValueError):
         return None
     return any(s.get("is_processing") for s in slots if isinstance(s, dict))

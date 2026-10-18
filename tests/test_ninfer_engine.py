@@ -73,6 +73,22 @@ class NinferEngineTests(unittest.TestCase):
         self.assertNotIn("--lm-head-draft", off)
         self.assertEqual(flag(build(LLM_A_NINFER_KV_DTYPE="fp8"), "--kv-dtype"), "int8")
 
+    def test_ngram_copies_ride_on_dflash2_at_one_or_two_lanes(self):
+        self.assertEqual(flag(build(LLM_A_NINFER_SPEC="dflash2"), "--ngram-draft-tokens"), "15")
+        self.assertIn("--ngram-draft-tokens", build(LLM_A_NINFER_SPEC="dflash2", LLM_A_N_PARALLEL="2"))
+        self.assertNotIn("--ngram-draft-tokens", build(LLM_A_NINFER_SPEC="dflash2", LLM_A_N_PARALLEL="3"))
+        self.assertNotIn("--ngram-draft-tokens", build(LLM_A_NINFER_SPEC="dflash2", LLM_A_NINFER_NGRAM="off"))
+        self.assertNotIn("--ngram-draft-tokens", build(LLM_A_NINFER_SPEC="mtp"))
+
+    def test_only_v016_cache_flags_are_passed(self):
+        # v0.16 stops at startup on any of the removed cache knobs.
+        argv = build()
+        self.assertEqual(flag(argv, "--host-context-mib"), "4096")
+        self.assertEqual(flag(build(LLM_A_NINFER_HOST_KV_MIB="8192"), "--host-context-mib"), "8192")
+        for removed in ("--max-private-continuations", "--max-shared-prefixes",
+                        "--auto-prefix-grid", "--host-kv-mib"):
+            self.assertNotIn(removed, argv)
+
     def test_the_slot_reasoning_level_is_the_default(self):
         self.assertEqual(flag(build(LLM_A_REASONING_EFFORT="low"), "--reasoning-effort"), "low")
         self.assertIsNone(flag(build(LLM_A_REASONING_EFFORT="none"), "--reasoning-effort"))

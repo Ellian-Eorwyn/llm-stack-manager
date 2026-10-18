@@ -7,6 +7,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timezone, timedelta
 from unittest import mock
 
@@ -235,6 +236,16 @@ class LeaseTests(FakeLlmsCase):
     def test_backend_that_finishes_its_request_is_waited_for(self):
         self.fake.backend_busy_polls = 3
         self.assertTrue(lease.acquire("test", 30, False)["ok"])
+
+    def test_a_backend_without_slots_is_read_from_its_metrics(self):
+        # NInfer v0.16 dropped `/slots` and kept llama.cpp's gauge.
+        def no_slots(url, data=None, timeout=5.0):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        for gauge, busy in (("1", True), ("0", False)):
+            with (mock.patch.object(lease, "http_json", no_slots),
+                  mock.patch.object(lease, "http_text",
+                                    return_value=f"# HELP x\nllamacpp:requests_processing {gauge}\n")):
+                self.assertIs(lease.backend_busy(), busy)
 
     def test_backend_that_will_not_start_keeps_the_fallback(self):
         lease.acquire("test", 30, False)
