@@ -35,14 +35,25 @@ function updateCustomModelCardStatuses(activeData) {
     const card = document.getElementById('custom-card-' + m.id);
     if (!card) return;
     const pill = card.querySelector('.status-pill');
+    const btn = card.querySelector('.switch-model-btn');
+    // `configured_model` is set whether or not LLM A is up; `variant` only
+    // while it serves.
+    const configured = activeData.configured_model === m.id;
     if (activeData.variant === m.id) {
       card.dataset.status = 'active';
       pill.className = 'status-pill active';
       pill.textContent = 'active';
+    } else if (configured) {
+      card.dataset.status = 'inactive';
+      pill.className = 'status-pill inactive';
+      pill.textContent = 'selected, LLM A stopped';
     } else {
       card.dataset.status = 'inactive';
       pill.className = 'status-pill inactive';
       pill.textContent = 'inactive';
+    }
+    if (btn && !btn.querySelector('.spinner')) {
+      btn.textContent = configured ? 'Restart' : 'Switch To';
     }
   });
 }
@@ -818,6 +829,8 @@ function resetCustomModelForm() {
   document.getElementById('new-model-path').value = '';
   document.getElementById('new-mmproj-path').value = '';
   document.getElementById('new-ctx-size').value = '32768';
+  document.getElementById('new-engine').value = 'auto';
+  document.getElementById('new-revision').value = '';
   document.getElementById('new-model-gguf-select').selectedIndex = 0;
   document.getElementById('new-mmproj-gguf-select').selectedIndex = 0;
   document.getElementById('add-model-title-text').textContent = 'Add Chat Model';
@@ -1270,13 +1283,6 @@ async function loadCustomModels() {
 function renderCustomModels() {
   const group = document.getElementById('group-custom-models');
   const container = document.getElementById('custom-models-cards');
-  const switchContainer = document.getElementById('custom-switch-btns');
-
-  // Render switch buttons in quick bar
-  switchContainer.innerHTML = customModels.map(m =>
-    `<button class="btn btn-ghost btn-sm switch-model-btn" data-variant="${m.id}" onclick="switchModel(this,'${m.id}')">Switch to ${m.display_name}</button>`
-  ).join('');
-
   if (customModels.length === 0) {
     group.style.display = 'none';
     return;
@@ -1289,17 +1295,19 @@ function renderCustomModels() {
         <span class="card-drag-handle" title="Drag to reorder card">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
         </span>
-        <span class="card-name">${m.display_name}</span>
+        <span class="card-name">${escapeHtml(m.display_name)}</span>
         <span class="status-pill inactive">inactive</span>
       </div>
-      <div class="card-desc">${m.model_name} | ctx ${m.ctx_size}</div>
-      <div class="card-port" title="${m.model_path}">${m.model_path.split('/').pop()}</div>
+      <div class="card-desc">${escapeHtml(m.model_name)} | ctx ${escapeHtml(m.ctx_size || 'unchanged')}</div>
+      <div class="card-port" title="${escapeHtml(m.model_path)}">${escapeHtml(m.model_path.split('/').pop())}</div>
       <div class="meta-list">
+        <span class="meta-chip">engine: ${escapeHtml(m.engine || 'auto')}</span>
+        ${m.revision ? `<span class="meta-chip" title="${escapeHtml(m.revision)}">rev ${escapeHtml(m.revision.slice(0, 7))}</span>` : ''}
         ${m.arg_family_label ? `<span class="meta-chip">family: ${escapeHtml(m.arg_family_label)}</span>` : ''}
         ${(m.resolved_custom_args || []).length ? `<span class="meta-chip">args: ${m.resolved_custom_args.length}</span>` : '<span class="meta-chip">args: none</span>'}
       </div>
       <div class="card-acts">
-        <button class="btn btn-success btn-sm" onclick="switchModel(this,'${m.id}')">Switch To</button>
+        <button class="btn btn-success btn-sm switch-model-btn" data-variant="${m.id}" onclick="switchModel(this,'${m.id}')">Switch To</button>
         <button class="btn btn-ghost btn-sm" onclick="editCustomModel('${m.id}')">Edit</button>
         <button class="btn btn-danger btn-sm" onclick="removeCustomModel('${m.id}')">Remove</button>
       </div>
@@ -1353,6 +1361,8 @@ async function addModel() {
       model_path: modelPath,
       mmproj_path: mmprojPath,
       ctx_size: ctxSize || '32768',
+      engine: document.getElementById('new-engine').value,
+      revision: document.getElementById('new-revision').value.trim(),
       custom_args: customArgs,
     });
     if (d.ok) {
@@ -1371,6 +1381,18 @@ async function addModel() {
       addBtn.textContent = orig;
     }
   }
+}
+
+async function saveCurrentModel(btn) {
+  btn.disabled = true;
+  try {
+    const d = await fetchJSON('/api/custom-models/from-slot', 'POST');
+    if (!d.ok) { toast('Failed: ' + (d.error || 'unknown'), 'err'); return; }
+    toast(d.existing ? `Already in the list: ${d.model.display_name}` : `Saved: ${d.model.display_name}`, 'ok');
+    await loadCustomModels();
+    await pollActiveModel();
+  } catch (e) { toast('Error: ' + e, 'err'); }
+  finally { btn.disabled = false; }
 }
 
 async function removeCustomModel(id) {
@@ -1392,7 +1414,9 @@ function editCustomModel(id) {
   document.getElementById('new-model-name').value = m.model_name;
   document.getElementById('new-model-path').value = m.model_path;
   document.getElementById('new-mmproj-path').value = m.mmproj_path || '';
-  document.getElementById('new-ctx-size').value = m.ctx_size || '32768';
+  document.getElementById('new-ctx-size').value = m.ctx_size || '';
+  document.getElementById('new-engine').value = m.engine || 'auto';
+  document.getElementById('new-revision').value = m.revision || '';
   renderCustomArgRows((m.resolved_custom_args || m.custom_args || []).length ? (m.resolved_custom_args || m.custom_args) : ['']);
   customArgsDirty = false;
   setCustomArgFamilyBadge(m.arg_family_label, m.custom_arg_source);
@@ -1417,7 +1441,9 @@ function editCustomModel(id) {
       model_name: document.getElementById('new-model-name').value.trim(),
       model_path: document.getElementById('new-model-path').value.trim(),
       mmproj_path: document.getElementById('new-mmproj-path').value.trim(),
-      ctx_size: document.getElementById('new-ctx-size').value.trim() || '32768',
+      ctx_size: document.getElementById('new-ctx-size').value.trim(),
+      engine: document.getElementById('new-engine').value,
+      revision: document.getElementById('new-revision').value.trim(),
       custom_args: getCustomArgValues(),
     };
     try {

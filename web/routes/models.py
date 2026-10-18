@@ -369,6 +369,9 @@ def api_custom_models_add():
         return jsonify(ok=False, error='model_path is required'), 400
     display_name = (data.get('display_name') or '').strip() or models.display_name_from_model_path(model_path)
     model_name = (data.get('model_name') or '').strip() or models.model_name_from_display_name(display_name)
+    engine = str(data.get('engine') or 'auto').strip()
+    if engine not in models.CUSTOM_MODEL_ENGINES:
+        return jsonify(ok=False, error=f'unknown engine: {engine}'), 400
     custom_args_supplied = 'custom_args' in data
     custom_args = models.normalize_custom_arg_entries(data.get('custom_args', []))
     try:
@@ -389,6 +392,8 @@ def api_custom_models_add():
         'model_path': model_path,
         'mmproj_path': data.get('mmproj_path', ''),
         'ctx_size': str(data.get('ctx_size', '32768')),
+        'engine': engine,
+        'revision': str(data.get('revision') or '').strip(),
         'custom_args': custom_args,
         'arg_family': family,
         'created': int(time.time()),
@@ -403,6 +408,25 @@ def api_custom_models_add():
     return jsonify(ok=True, model=models.normalize_custom_model(model))
 
 
+@bp.route('/api/custom-models/from-slot', methods=['POST'])
+def api_custom_models_from_slot():
+    """Save the primary slot's current model as a custom model, to switch back to later."""
+    env = config_env.normalize_env_keys(config_env.read_env())
+    entry = models.custom_model_from_slot(env)
+    if not entry['model_path']:
+        return jsonify(ok=False, error='LLM A has no model configured'), 400
+    catalogue = models.load_custom_models()
+    existing = next((m for m in catalogue if models.custom_model_matches_slot(m, env)), None)
+    if existing:
+        return jsonify(ok=True, model=existing, existing=True)
+    entry.update(id=str(uuid.uuid4())[:8], created=int(time.time()),
+                 arg_family=models.infer_model_arg_family(
+                     entry['display_name'], entry['model_name'], entry['model_path']))
+    catalogue.append(entry)
+    models.save_custom_models_file(catalogue)
+    return jsonify(ok=True, model=models.normalize_custom_model(entry), existing=False)
+
+
 @bp.route('/api/custom-models/<model_id>', methods=['PUT'])
 def api_custom_models_update(model_id):
     data = request.json or {}
@@ -413,11 +437,13 @@ def api_custom_models_update(model_id):
             models.validate_custom_arg_entries(custom_args)
         except ValueError as exc:
             return jsonify(ok=False, error=f'invalid custom argument: {exc}'), 400
+    if 'engine' in data and (data.get('engine') or 'auto') not in models.CUSTOM_MODEL_ENGINES:
+        return jsonify(ok=False, error=f"unknown engine: {data.get('engine')}"), 400
     catalogue = models.load_custom_models()
     for m in catalogue:
         if m['id'] == model_id:
             for k in ('display_name', 'model_name', 'model_path',
-                       'mmproj_path', 'ctx_size'):
+                       'mmproj_path', 'ctx_size', 'engine', 'revision'):
                 if k in data:
                     m[k] = data[k]
             family = models.infer_model_arg_family(

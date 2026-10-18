@@ -143,6 +143,15 @@ There are two independent large-model slots — `llm-a` on 8010 and
 code personas. They run concurrently if there is memory for both; configure each
 from the Configuration tab rather than switching between them.
 
+To swap the model LLM A serves, keep a list of models under **LLM A Models** on
+the Services tab. **Save Current Model** adds whatever LLM A runs now (model,
+projector, context, engine, Splash revision); **+ Add Model** adds another (a
+GGUF, a `.ninfer`, an MTPLX pack, or a Hugging Face reference such as
+`unsloth/Qwen3.8-27B-GGUF:Q8_0` for Splash). **Switch To** writes only those
+keys, keeps a copy of the old config as `config/llm-stack.env.bak-before-model-switch`,
+and restarts LLM A and its proxy. Sampling, memory and engine tuning stay as
+they were.
+
 Validate endpoints after the services are loaded:
 
 ```bash

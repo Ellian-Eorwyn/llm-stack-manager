@@ -596,6 +596,86 @@ def normalize_custom_model(model: dict) -> dict:
     return item
 
 
+#: Engines a custom model may name. `auto` lets the model decide, as the slot
+#: does: an MTPLX pack runs on MTPLX, a `.ninfer` on NInfer, a GGUF on
+#: llama.cpp, and a Hugging Face reference (`owner/repo:QUANT`) on Splash.
+CUSTOM_MODEL_ENGINES = ("auto", "llamacpp", "mtplx", "splash", "ninfer")
+
+_HF_MODEL_REFERENCE = re.compile(r"^[\w.-]+/[\w.-]+(:[\w.-]+)?$")
+
+
+def is_hf_model_reference(model_path: str) -> bool:
+    """`unsloth/Qwen3.8-27B-GGUF:Q8_0`, which Splash fetches itself, rather than a file."""
+    value = (model_path or "").strip()
+    return bool(_HF_MODEL_REFERENCE.match(value)) and not os.path.exists(value)
+
+
+def custom_model_engine(model: dict) -> str:
+    engine = str(model.get("engine") or "auto").strip()
+    return engine if engine in CUSTOM_MODEL_ENGINES else "auto"
+
+
+def model_switch_engine(model: dict, current: str) -> tuple[str, str | None]:
+    """The engine a custom model will run on, and the `*_ENGINE` value to write.
+
+    The second item is None when the slot's current setting already gives the
+    right engine. A model that names its engine gets it. One that does not is
+    left to `auto`, except that an explicit engine the model contradicts is
+    cleared, and a Hugging Face reference is pinned to Splash: `auto` would
+    read it as a GGUF path.
+    """
+    path = str(model.get("model_path") or "").strip()
+    current = (current or "auto").strip()
+    chosen = custom_model_engine(model)
+    if chosen == "auto" and is_hf_model_reference(path):
+        chosen = "splash"
+    if chosen != "auto":
+        return chosen, (None if current == chosen else chosen)
+    if backends.spec.is_mtplx_pack(path):
+        inferred = "mtplx"
+    elif path.endswith(".ninfer"):
+        inferred = "ninfer"
+    else:
+        inferred = "llamacpp"
+    return inferred, (None if current in ("auto", inferred) else "auto")
+
+
+def custom_model_matches_slot(model: dict, env: dict, prefix: str = "LLM_A") -> bool:
+    """Whether `model` is what the slot is configured to serve."""
+    if str(model.get("model_path") or "").strip() != str(env.get(f"{prefix}_MODEL_PATH") or "").strip():
+        return False
+    engine, _ = model_switch_engine(model, env.get(f"{prefix}_ENGINE", ""))
+    if engine == "splash":
+        return str(model.get("revision") or "").strip() == str(env.get(f"{prefix}_SPLASH_REVISION") or "").strip()
+    return True
+
+
+def custom_model_from_slot(env: dict, prefix: str = "LLM_A") -> dict:
+    """The slot's current model as a custom-model entry, so it can be switched back to."""
+    path = str(env.get(f"{prefix}_MODEL_PATH") or "").strip()
+    engine = str(env.get(f"{prefix}_ENGINE") or "auto").strip()
+    model = {
+        "display_name": str(env.get(f"{prefix}_LABEL") or "").strip() or display_name_from_model_path(path),
+        "model_name": str(env.get(f"{prefix}_MODEL_NAME") or "").strip(),
+        "model_path": path,
+        "mmproj_path": str(env.get(f"{prefix}_MMPROJ_PATH") or "").strip(),
+        "ctx_size": str(env.get(f"{prefix}_CTX_SIZE") or "").strip(),
+        "engine": engine if engine in CUSTOM_MODEL_ENGINES else "auto",
+        "revision": "",
+        "custom_args": [],
+    }
+    resolved, _ = model_switch_engine(model, engine)
+    if resolved == "splash":
+        model["revision"] = str(env.get(f"{prefix}_SPLASH_REVISION") or "").strip()
+    if resolved == "llamacpp":
+        try:
+            model["custom_args"] = normalize_custom_arg_entries(
+                json.loads(env.get(f"{prefix}_CUSTOM_ARGS_JSON") or "[]"))
+        except (TypeError, ValueError):
+            pass
+    return model
+
+
 def display_name_from_model_path(model_path: str) -> str:
     name = Path(model_path or "").name
     if name.lower().endswith(".gguf"):

@@ -193,6 +193,7 @@ async function startRestoreActiveStack(btn) {
 async function switchModel(btn, variant) {
   const orig = btn.textContent;
   const targetLabel = customModels.find(m => m.id === variant)?.display_name || variant;
+  if (!confirm(`Switch LLM A to ${targetLabel}?\n\nLLM A and its proxy restart, so a reply in progress is cut off and the model reloads.`)) return;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>';
   toast(`Switching to ${targetLabel}...`, 'info');

@@ -621,20 +621,61 @@ class CustomModelApiTests(unittest.TestCase):
 class ModelSwitchEngineTests(unittest.TestCase):
     """Switching llm-a's model takes the engine with it."""
 
-    def _switch(self, model_path: str, env: dict) -> dict:
+    def _switch(self, model_path: str, env: dict, **entry) -> dict:
         written = {}
-        catalogue = [{"id": "m", "model_path": model_path, "model_name": "m"}]
+        catalogue = [dict({"id": "m", "model_path": model_path, "model_name": "m"}, **entry)]
+        restarted = []
         with (
             manager.app.test_client() as client,
             patch.object(models, "load_custom_models", return_value=catalogue),
             patch.object(models, "resolve_custom_args_for_model", return_value=([], "")),
             patch.object(config_env, "read_env", return_value=env),
             patch.object(config_env, "update_env_values", side_effect=written.update),
-            patch.object(core.ServiceManager, "restart", return_value=(0, "")),
+            patch.object(manager, "backup_env_file", return_value=None),
+            patch.object(core.ServiceManager, "restart",
+                         side_effect=lambda name: restarted.append(name) or (0, "")),
             patch.object(core.ServiceManager, "start", return_value=(0, "")),
         ):
             self.assertEqual(client.post("/api/switch/m").status_code, 200)
+        self.restarted = restarted
         return written
+
+    def test_the_proxy_restarts_to_learn_the_new_engine(self):
+        self._switch("/models/a.gguf", {})
+        self.assertEqual(self.restarted, ["llm-a", "llm-a-proxy"])
+
+    def test_a_blank_context_keeps_the_slots(self):
+        written = self._switch("/models/a.gguf", {"LLM_A_CTX_SIZE": "262144"}, ctx_size="")
+        self.assertNotIn("LLM_A_CTX_SIZE", written)
+
+    def test_a_hugging_face_reference_runs_on_splash_with_its_revision(self):
+        written = self._switch("unsloth/Qwen3.8-27B-GGUF:Q8_0",
+                               {"LLM_A_ENGINE": "splash", "LLM_A_SPLASH_REVISION": "45d0fc0"},
+                               revision="4ca7207")
+        self.assertNotIn("LLM_A_ENGINE", written)
+        self.assertEqual(written["LLM_A_SPLASH_REVISION"], "4ca7207")
+        # llama-server flags mean nothing to Splash, and stay for the next GGUF.
+        self.assertNotIn("LLM_A_CUSTOM_ARGS_JSON", written)
+
+    def test_another_repos_pin_is_cleared(self):
+        written = self._switch("unsloth/Qwen3.8-27B-GGUF:Q8_0",
+                               {"LLM_A_ENGINE": "auto", "LLM_A_SPLASH_REVISION": "45d0fc0"})
+        self.assertEqual(written["LLM_A_ENGINE"], "splash")
+        self.assertEqual(written["LLM_A_SPLASH_REVISION"], "")
+
+    def test_a_ninfer_artifact_keeps_an_explicit_ninfer_engine(self):
+        written = self._switch("/models/q.ninfer", {"LLM_A_ENGINE": "ninfer"})
+        self.assertNotIn("LLM_A_ENGINE", written)
+        self.assertNotIn("LLM_A_CUSTOM_ARGS_JSON", written)
+
+    def test_a_gguf_after_ninfer_goes_back_to_llamacpp(self):
+        written = self._switch("/models/a.gguf", {"LLM_A_ENGINE": "ninfer"})
+        self.assertEqual(written["LLM_A_ENGINE"], "auto")
+        self.assertIn("LLM_A_CUSTOM_ARGS_JSON", written)
+
+    def test_a_named_engine_is_written(self):
+        written = self._switch("/models/a.gguf", {"LLM_A_ENGINE": "auto"}, engine="llamacpp")
+        self.assertEqual(written["LLM_A_ENGINE"], "llamacpp")
 
     def test_an_mtplx_pack_needs_no_engine_key(self):
         # `auto` reads the model, so choosing the pack is the whole switch.
@@ -655,6 +696,54 @@ class ModelSwitchEngineTests(unittest.TestCase):
 
     def test_a_llamacpp_host_gains_no_engine_key(self):
         self.assertNotIn("LLM_A_ENGINE", self._switch("/models/a.gguf", {}))
+
+
+class CurrentModelTests(unittest.TestCase):
+    """Saving LLM A's model to the list, and recognising it there."""
+
+    SPLASH = {"LLM_A_LABEL": "Qwen3.8 27B Uncensored", "LLM_A_MODEL_NAME": "qwen3.8-27b",
+              "LLM_A_MODEL_PATH": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF:Q8_0",
+              "LLM_A_MMPROJ_PATH": "", "LLM_A_CTX_SIZE": "262144",
+              "LLM_A_ENGINE": "splash", "LLM_A_SPLASH_REVISION": "45d0fc0",
+              "LLM_A_CUSTOM_ARGS_JSON": '["--jinja"]'}
+
+    def test_a_splash_slot_is_saved_with_its_engine_and_revision(self):
+        entry = models.custom_model_from_slot(self.SPLASH)
+        self.assertEqual(entry["engine"], "splash")
+        self.assertEqual(entry["revision"], "45d0fc0")
+        self.assertEqual(entry["ctx_size"], "262144")
+        self.assertEqual(entry["custom_args"], [])
+        self.assertTrue(models.custom_model_matches_slot(entry, self.SPLASH))
+        moved = dict(self.SPLASH, LLM_A_SPLASH_REVISION="4ca7207")
+        self.assertFalse(models.custom_model_matches_slot(entry, moved))
+
+    def test_saving_twice_adds_one_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            custom_models_file = pathlib.Path(tmp) / "custom-models.json"
+            with (
+                manager.app.test_client() as client,
+                patch.object(core, "CUSTOM_MODELS_FILE", custom_models_file),
+                patch.object(config_env, "read_env", return_value=dict(self.SPLASH)),
+            ):
+                first = client.post("/api/custom-models/from-slot").get_json()
+                second = client.post("/api/custom-models/from-slot").get_json()
+                saved = json.loads(custom_models_file.read_text())
+        self.assertFalse(first["existing"])
+        self.assertTrue(second["existing"])
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["display_name"], "Qwen3.8 27B Uncensored")
+
+    def test_the_configured_model_is_reported_while_the_slot_is_down(self):
+        entry = dict(models.custom_model_from_slot(self.SPLASH), id="x")
+        with (
+            manager.app.test_client() as client,
+            patch.object(models, "load_custom_models", return_value=[entry]),
+            patch.object(config_env, "read_env", return_value=dict(self.SPLASH)),
+            patch.object(manager, "get_service_status", return_value="inactive"),
+        ):
+            body = client.get("/api/active-chat-model").get_json()
+        self.assertEqual(body["configured_model"], "x")
+        self.assertIsNone(body.get("variant"))
 
 
 class SavedConfigTests(unittest.TestCase):
@@ -1773,6 +1862,7 @@ class RouteInventoryTests(unittest.TestCase):
         ("/api/backends/<slot>/lora", ("POST",), "api_backend_lora_set"),
         ("/api/custom-models", ("GET",), "api_custom_models_list"),
         ("/api/custom-models", ("POST",), "api_custom_models_add"),
+        ("/api/custom-models/from-slot", ("POST",), "api_custom_models_from_slot"),
         ("/api/custom-models/<model_id>", ("DELETE",), "api_custom_models_delete"),
         ("/api/custom-models/<model_id>", ("PUT",), "api_custom_models_update"),
         ("/api/deploy/check", ("POST",), "api_deploy_check"),

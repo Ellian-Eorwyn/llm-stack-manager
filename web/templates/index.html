@@ -1126,6 +1126,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
     <button class="btn btn-ghost btn-sm" onclick="bulkAction('stop')">Stop All</button>
     <div class="qdivider"></div>
     <button class="btn btn-primary btn-sm" onclick="toggleAddModel()">+ Add Model</button>
+    <button class="btn btn-ghost btn-sm" onclick="saveCurrentModel(this)" title="Add LLM A's current model to the model list, so you can switch back to it">Save Current Model</button>
   </div>
 
   <!-- Add model panel (hidden by default) -->
@@ -1177,7 +1178,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
         <input type="text" id="new-model-name" placeholder="auto-generated from display name">
       </div>
       <div class="field wide">
-        <label>Model GGUF</label>
+        <label>Model (GGUF, .ninfer, MTPLX pack, or a Hugging Face reference like <code>unsloth/Qwen3.8-27B-GGUF:Q8_0</code> for Splash)</label>
         <div class="path-picker">
           <select id="new-model-gguf-select" onchange="ggufSelectChanged(this, 'new-model-path')">
             <option value="">-- Select GGUF --</option>
@@ -1197,6 +1198,20 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       <div class="field">
         <label>Context Size</label>
         <input type="number" id="new-ctx-size" value="32768">
+      </div>
+      <div class="field">
+        <label>Engine</label>
+        <select id="new-engine">
+          <option value="auto">auto (from the model)</option>
+          <option value="llamacpp">llama.cpp</option>
+          <option value="mtplx">MTPLX</option>
+          <option value="splash">Splash</option>
+          <option value="ninfer">NInfer</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Revision (Splash only, optional)</label>
+        <input type="text" id="new-revision" class="mono" placeholder="Hugging Face commit to pin">
       </div>
     </div>
     <div class="custom-args-panel">
@@ -1281,7 +1296,7 @@ main { padding: 24px; max-width: 1300px; width: 100%; margin: 0 auto; height: 10
       <span class="drag-handle" title="Drag to reorder">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
       </span>
-      <span class="group-title" contenteditable="true" data-group-id="group-custom-models">Custom Models</span>
+      <span class="group-title" contenteditable="true" data-group-id="group-custom-models">LLM A Models</span>
     </div>
     <div class="svc-cards" id="custom-models-cards"></div>
   </div>

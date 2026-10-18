@@ -2366,48 +2366,74 @@ def api_switch(variant):
     shelled `systemctl` directly, so it was Linux-only regardless.
 
     It writes into the primary slot's own keys rather than the bare CHAT_*
-    family the retired generic unit read.
+    family the retired generic unit read, and only the keys that say which
+    model this is: sampling, memory and engine tuning stay as they were.
     """
     catalogue = models.load_custom_models()
     model = next((m for m in catalogue if m['id'] == variant), None)
     if not model:
         return jsonify(ok=False, error='Unknown model variant'), 400
 
+    env = config_env.read_env()
     updates = {
         'LLM_A_MODEL_PATH': model['model_path'],
-        'LLM_A_MODEL_NAME': model.get('model_name', 'chat-custom'),
-        'LLM_A_CTX_SIZE': model.get('ctx_size', '32768'),
+        'LLM_A_MODEL_NAME': model.get('model_name') or env.get('LLM_A_MODEL_NAME') or 'chat-custom',
         'LLM_A_MMPROJ_PATH': model.get('mmproj_path', ''),
-        'LLM_A_CUSTOM_ARGS_JSON': json.dumps(
-            models.resolve_custom_args_for_model(model)[0]),
     }
+    # A blank context keeps the slot's: an entry saved without one should not
+    # drop a 256K slot to some default.
+    if str(model.get('ctx_size') or '').strip():
+        updates['LLM_A_CTX_SIZE'] = str(model['ctx_size']).strip()
     if model.get('display_name'):
         updates['LLM_A_LABEL'] = model['display_name']
-    # The engine follows the model by itself (`auto`, the default): an MTPLX
-    # pack runs on MTPLX, a GGUF on llama.cpp. Only an explicit engine that the
-    # new model contradicts needs clearing -- left alone, the restart below
-    # would start llama-server on a directory, or MTPLX on a GGUF.
-    explicit = (config_env.read_env().get('LLM_A_ENGINE') or 'auto').strip()
-    needed = 'mtplx' if backends.spec.is_mtplx_pack(model['model_path']) else 'llamacpp'
-    if explicit not in ('auto', needed):
-        updates['LLM_A_ENGINE'] = 'auto'
+    # The engine follows the model unless the entry names one. An explicit
+    # engine the new model contradicts is cleared -- left alone, the restart
+    # below would start llama-server on a directory, or MTPLX on a GGUF.
+    engine, engine_value = models.model_switch_engine(model, env.get('LLM_A_ENGINE', ''))
+    if engine_value is not None:
+        updates['LLM_A_ENGINE'] = engine_value
+    # Each engine's model-identity keys. The revision pins a Hugging Face
+    # repo's commit; another repo's pin would make Splash fetch a commit that
+    # does not exist there, so it is always written, blank included.
+    if engine == 'splash':
+        updates['LLM_A_SPLASH_REVISION'] = str(model.get('revision') or '').strip()
+    if engine == 'llamacpp':
+        updates['LLM_A_CUSTOM_ARGS_JSON'] = json.dumps(
+            models.resolve_custom_args_for_model(model)[0])
+    backup_env_file('model-switch')
     config_env.update_env_values(updates)
 
     returncode, output = core.ServiceManager.restart('llm-a')
-    core.ServiceManager.start('llm-a-proxy')
+    # Restarted, not just started: the proxy adapts requests to the engine
+    # behind it, and reads which one that is when it starts.
+    core.ServiceManager.restart('llm-a-proxy')
     return jsonify(ok=(returncode == 0), output=output)
+
+
+def backup_env_file(reason: str) -> Path | None:
+    """Copy the env file to `llm-stack.env.bak-before-<reason>`, replacing the last one."""
+    if not core.CONFIG_FILE.exists():
+        return None
+    backup = core.CONFIG_FILE.with_name(f"{core.CONFIG_FILE.name}.bak-before-{reason}")
+    shutil.copy2(core.CONFIG_FILE, backup)
+    return backup
 
 
 @app.route('/api/active-chat-model')
 def api_active_chat_model():
     """Determine which chat model is currently loaded."""
-    active = active_chat_model_snapshot()
+    env = config_env.normalize_env_keys(config_env.read_env())
+    active = active_chat_model_snapshot(env)
     payload = dict(active)
-    if active.get('kind') == 'custom':
-        for m in models.load_custom_models():
-            if m.get('id') == active.get('variant'):
+    # Which custom model the slot is configured with, whether or not it is up,
+    # so the catalogue can mark it.
+    for m in models.load_custom_models():
+        if models.custom_model_matches_slot(m, env):
+            payload['configured_model'] = m['id']
+            if active.get('service'):
+                payload['variant'] = m['id']
                 payload['custom_model'] = m
-                break
+            break
     return jsonify(payload)
 
 
