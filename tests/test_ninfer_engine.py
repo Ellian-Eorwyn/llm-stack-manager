@@ -89,6 +89,19 @@ class NinferEngineTests(unittest.TestCase):
                         "--auto-prefix-grid", "--host-kv-mib"):
             self.assertNotIn(removed, argv)
 
+    def test_an_older_build_gets_the_flags_it_knows(self):
+        # Rolling back is pointing NINFER_BIN at an older build; v0.16's flags
+        # would stop that one at startup, as v0.15's stop v0.16.
+        with tempfile.TemporaryDirectory() as tmp:
+            old = pathlib.Path(tmp, "ninfer-serve")
+            old.write_text("#!/bin/sh\necho '--host-kv-mib N --max-shared-prefixes N --spec S'\n")
+            old.chmod(0o755)
+            argv = build(NINFER_BIN=str(old), LLM_A_NINFER_SPEC="dflash2")
+        self.assertEqual(flag(argv, "--host-kv-mib"), "4096")
+        self.assertIn("--auto-prefix-grid", argv)
+        self.assertNotIn("--host-context-mib", argv)
+        self.assertNotIn("--ngram-draft-tokens", argv)
+
     def test_the_slot_reasoning_level_is_the_default(self):
         self.assertEqual(flag(build(LLM_A_REASONING_EFFORT="low"), "--reasoning-effort"), "low")
         self.assertIsNone(flag(build(LLM_A_REASONING_EFFORT="none"), "--reasoning-effort"))

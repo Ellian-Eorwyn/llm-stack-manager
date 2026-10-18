@@ -27,7 +27,9 @@ memory trades.
 
 from __future__ import annotations
 
+import functools
 import os
+import subprocess
 
 import platforms
 
@@ -66,6 +68,28 @@ def binary(env: dict) -> str:
     if explicit:
         return explicit
     return os.path.join(str(env.get("STACK_DIR") or "."), DEFAULT_BIN)
+
+
+def _knows(binary: str, flag: str) -> bool:
+    """Whether this build takes `flag`. The flags changed in v0.16, and a flag
+    a build does not know stops it at startup, so the build is asked. One that
+    will not answer is taken to be the pinned release."""
+    try:
+        stamp = os.stat(binary).st_mtime_ns
+    except OSError:
+        return True
+    text = _help(binary, stamp)
+    return not text or flag in text
+
+
+@functools.lru_cache(maxsize=8)
+def _help(binary: str, stamp: int) -> str:
+    try:
+        done = subprocess.run([binary, "--help"], capture_output=True, text=True,
+                              timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (done.stdout or "") + (done.stderr or "")
 
 
 def _positive(value: str) -> int:
@@ -132,7 +156,7 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
         # from the prompt itself. Lossless like any draft. On by default where
         # NInfer's own launcher turns it on: DFlash2 at one or two lanes.
         ngram = _first(env, ("NINFER_NGRAM",), prefixes) or ("on" if lanes <= 2 else "off")
-        if spec == "dflash2" and ngram == "on":
+        if spec == "dflash2" and ngram == "on" and _knows(argv[0], "--ngram-draft-tokens"):
             argv += ["--ngram-draft-tokens", str(NGRAM_DRAFT_TOKENS)]
 
     # Overlay keeps the vision tower in host memory and borrows the card per
@@ -160,7 +184,12 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None) -> list[str]:
     # continuations, shared prefixes, the prefix grid, host KV) are gone, and
     # ninfer-serve refuses to start if it is passed one.
     host = _positive(_first(env, ("NINFER_HOST_KV_MIB",), prefixes) or "4096")
-    argv += ["--host-context-mib", str(host)]
+    if _knows(argv[0], "--host-context-mib"):
+        argv += ["--host-context-mib", str(host)]
+    else:
+        # Before v0.16: 8 private continuations, 8 shared prefixes, host KV.
+        argv += ["--max-private-continuations", "8", "--max-shared-prefixes", "8",
+                 "--auto-prefix-grid", "--host-kv-mib", str(host)]
 
     argv += custom_args(env, ARGS_KEYS, prefixes)
     argv += list(extra or [])
