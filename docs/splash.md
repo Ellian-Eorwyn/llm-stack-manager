@@ -29,7 +29,7 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
 
 ## Setting it up
 
-1. Install it (1.2.1 or newer; the Studio runs 1.3.0 since 2026-10-07):
+1. Install it (1.2.1 or newer; the Studio runs 1.3.2 since 2026-10-18):
 
    ```bash
    brew install incoai/tap/splash
@@ -208,7 +208,12 @@ conversations. The default stays at half of RAM for smaller Macs.
 
 `--max-cache-disk` moves evicted conversations to the SSD instead of dropping
 them. It is off unless `LLM_A_SPLASH_MAX_CACHE_DISK_GB` sizes it, because it
-did not pay for its writes under an agent. With 40 GiB of tier and a 48 GiB cap
+did not pay for its writes under an agent. Splash 1.3.2 turned it on by
+default (`auto`: up to 32 GiB, following free space, unused caches deleted
+after 14 days) and made it a prefix cache with faster follow-up prefill, so the
+stack now passes `--max-cache-disk 0` explicitly; `auto` in the setting hands
+the choice back to Splash. The measurements below are from 1.1, before that
+rework; 1.3.2's own writes have not been measured here. With 40 GiB of tier and a 48 GiB cap
 on 2026-09-30 (2.7M prompt tokens, mostly stress tests):
 
 - It wrote 337 GB in 2 h 40 min, about 121 KiB per prompt token: 153 GB of KV

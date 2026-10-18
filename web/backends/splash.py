@@ -49,7 +49,8 @@ or newer, the first with `--idle-release`.
 
 Splash can also move conversations it evicts to an SSD tier
 (`--max-cache-disk`, `{PREFIX}_SPLASH_MAX_CACHE_DISK_GB`). It is off unless
-set. Under an agent it wrote ~121 KiB per prompt token -- KV plus a 187 MiB
+set; since Splash 1.3.2 that takes an explicit `--max-cache-disk 0`, because
+Splash's own default became `auto` (up to 32 GiB). Under an agent it wrote ~121 KiB per prompt token -- KV plus a 187 MiB
 recurrent-state snapshot per conversation -- and read back 15% of that,
 because a compacted conversation is never resumed.
 """
@@ -124,13 +125,16 @@ def max_memory(slot: Slot, env: dict) -> str | None:
 
 
 def max_cache_disk(slot: Slot, env: dict) -> str | None:
-    """`--max-cache-disk` for the slot, or None for Splash's default: none."""
-    value = _first(env, ("SPLASH_MAX_CACHE_DISK_GB",), slot.prefixes)
+    """`--max-cache-disk` for the slot: `0` (off) unless sized, or None for
+    Splash's own `auto`."""
+    value = _first(env, ("SPLASH_MAX_CACHE_DISK_GB",), slot.prefixes).lower()
+    if value == "auto":
+        return None
     try:
         gib = int(float(value))
     except ValueError:
-        return None
-    return f"{gib}G" if gib > 0 else None
+        return "0"
+    return f"{gib}G" if gib > 0 else "0"
 
 
 def idle_release(slot: Slot, env: dict) -> str:

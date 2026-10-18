@@ -71,10 +71,12 @@ class SplashEngineTests(unittest.TestCase):
             self.assertNotIn("--max-memory", build(LLM_B_SPLASH_MAX_MEMORY_GB="auto"))
 
     def test_the_ssd_tier_is_off_unless_sized(self):
-        self.assertNotIn("--max-cache-disk", build())
+        # Off has to be said since Splash 1.3.2, whose own default is `auto`.
+        self.assertEqual(flag(build(), "--max-cache-disk"), "0")
         self.assertEqual(flag(build(LLM_B_SPLASH_MAX_CACHE_DISK_GB="40"), "--max-cache-disk"), "40G")
         for off in ("0", "off", ""):
-            self.assertNotIn("--max-cache-disk", build(LLM_B_SPLASH_MAX_CACHE_DISK_GB=off))
+            self.assertEqual(flag(build(LLM_B_SPLASH_MAX_CACHE_DISK_GB=off), "--max-cache-disk"), "0")
+        self.assertNotIn("--max-cache-disk", build(LLM_B_SPLASH_MAX_CACHE_DISK_GB="auto"))
 
     def test_prefill_stays_on_the_gpu_unless_asked(self):
         self.assertIn("--disable-ane", build())
