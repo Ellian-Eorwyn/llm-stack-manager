@@ -601,6 +601,15 @@ def normalize_custom_model(model: dict) -> dict:
 #: llama.cpp, and a Hugging Face reference (`owner/repo:QUANT`) on Splash.
 CUSTOM_MODEL_ENGINES = ("auto", "llamacpp", "mtplx", "splash", "ninfer")
 
+#: Where each engine reads a slot's extra flags, as a suffix of the slot prefix.
+#: A custom model's arguments are flags for the engine it runs on.
+ENGINE_ARGS_KEYS = {
+    "llamacpp": "CUSTOM_ARGS_JSON",
+    "mtplx": "MTPLX_ARGS_JSON",
+    "splash": "SPLASH_ARGS_JSON",
+    "ninfer": "NINFER_ARGS_JSON",
+}
+
 _HF_MODEL_REFERENCE = re.compile(r"^[\w.-]+/[\w.-]+(:[\w.-]+)?$")
 
 
@@ -667,12 +676,11 @@ def custom_model_from_slot(env: dict, prefix: str = "LLM_A") -> dict:
     resolved, _ = model_switch_engine(model, engine)
     if resolved == "splash":
         model["revision"] = str(env.get(f"{prefix}_SPLASH_REVISION") or "").strip()
-    if resolved == "llamacpp":
-        try:
-            model["custom_args"] = normalize_custom_arg_entries(
-                json.loads(env.get(f"{prefix}_CUSTOM_ARGS_JSON") or "[]"))
-        except (TypeError, ValueError):
-            pass
+    try:
+        model["custom_args"] = normalize_custom_arg_entries(
+            json.loads(env.get(f"{prefix}_{ENGINE_ARGS_KEYS[resolved]}") or "[]"))
+    except (TypeError, ValueError, KeyError):
+        pass
     return model
 
 

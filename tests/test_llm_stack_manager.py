@@ -668,6 +668,15 @@ class ModelSwitchEngineTests(unittest.TestCase):
         self.assertNotIn("LLM_A_ENGINE", written)
         self.assertNotIn("LLM_A_CUSTOM_ARGS_JSON", written)
 
+    def test_a_models_arguments_go_to_its_own_engine(self):
+        # The old NInfer pack needs --embedding-q4 to fit its context; the
+        # newer one must not get it. Each entry carries its own.
+        written = self._switch("/models/q.ninfer", {"LLM_A_ENGINE": "ninfer"},
+                               custom_args=["--embedding-q4"])
+        self.assertEqual(written["LLM_A_NINFER_ARGS_JSON"], '["--embedding-q4"]')
+        written = self._switch("/models/new.ninfer", {"LLM_A_ENGINE": "ninfer"})
+        self.assertEqual(written["LLM_A_NINFER_ARGS_JSON"], "[]")
+
     def test_a_gguf_after_ninfer_goes_back_to_llamacpp(self):
         written = self._switch("/models/a.gguf", {"LLM_A_ENGINE": "ninfer"})
         self.assertEqual(written["LLM_A_ENGINE"], "auto")
@@ -712,7 +721,7 @@ class CurrentModelTests(unittest.TestCase):
         self.assertEqual(entry["engine"], "splash")
         self.assertEqual(entry["revision"], "45d0fc0")
         self.assertEqual(entry["ctx_size"], "262144")
-        self.assertEqual(entry["custom_args"], [])
+        self.assertEqual(entry["custom_args"], [])  # SPLASH_ARGS_JSON, not llama.cpp's
         self.assertTrue(models.custom_model_matches_slot(entry, self.SPLASH))
         moved = dict(self.SPLASH, LLM_A_SPLASH_REVISION="4ca7207")
         self.assertFalse(models.custom_model_matches_slot(entry, moved))

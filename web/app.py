@@ -2409,9 +2409,14 @@ def api_switch(variant):
     # does not exist there, so it is always written, blank included.
     if engine == 'splash':
         updates['LLM_A_SPLASH_REVISION'] = str(model.get('revision') or '').strip()
+    # The entry's arguments are flags for its own engine. Only llama.cpp has
+    # per-family defaults; another engine gets the entry's own, or none.
     if engine == 'llamacpp':
         updates['LLM_A_CUSTOM_ARGS_JSON'] = json.dumps(
             models.resolve_custom_args_for_model(model)[0])
+    elif engine in models.ENGINE_ARGS_KEYS:
+        updates[f'LLM_A_{models.ENGINE_ARGS_KEYS[engine]}'] = json.dumps(
+            models.normalize_custom_arg_entries(model.get('custom_args', [])))
     backup_env_file('model-switch')
     config_env.update_env_values(updates)
 
