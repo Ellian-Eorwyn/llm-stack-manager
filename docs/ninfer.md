@@ -100,7 +100,9 @@ replies are fine. v0.11 and v0.15.1 answer the same requests correctly (tested 2
 `{"city": "Tokyo", "country": "Japan"}` in all six cases). v0.16 also refuses a
 `json_object` that carries a `schema` ("json_object format has no options"), which the chat
 proxy adds to every bare `json_object`. Hermes's helpers and the memory graph ask llms for
-JSON, so the pin stays on v0.15.1 until a release fixes it.
+JSON, so the pin stays on v0.15.1 until a release fixes it. Reported upstream as
+[ashalliants/ninfer-3090#331](https://github.com/ashalliants/ninfer-3090/issues/331), with a
+temperature-0 reproduction (11 of 12 constrained replies wrong on v0.16.0, none on v0.15.1).
 
 The launcher is ready for v0.16 all the same. It asks the binary (`--help`) which cache
 flags it takes: v0.16 replaced `--max-private-continuations 8 --max-shared-prefixes 8
