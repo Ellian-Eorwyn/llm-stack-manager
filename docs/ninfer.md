@@ -26,7 +26,7 @@ CUDA-graph decode are built for exactly that card and model.
 
 | What | Pin |
 |---|---|
-| Engine | `ashalliants/ninfer-3090` v0.16.0 @ `50a337e19f` (2026-10-14), `dependencies.json` entry `ninfer-3090` |
+| Engine | `ashalliants/ninfer-3090` v0.15.1 @ `d2dd8e70e5` (2026-10-09), `dependencies.json` entry `ninfer-3090` |
 | Model | `WarlaxZ/Qwen3.8-27B-NInfer-3090` @ `d47f2732d369acaec76dc44228f67c72b081df2f`, `qwen3_8_27b.ninfer` (saved on llms as `qwen3_8_27b-v013.ninfer`) |
 | Model size | 18,982,458,624 bytes, sha256 `7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706` |
 
@@ -85,19 +85,33 @@ The engine's own settings are in the "NVIDIA (NInfer)" section:
 | `LLM_*_NINFER_PREFILL_CUBLAS` | `off` | `on`: 1.6–1.8× prompt processing for +0.156% perplexity. |
 | `LLM_*_NINFER_KV_CAPACITY` | the context | `auto` fills the card with 1 GiB spare. |
 | `LLM_*_NINFER_HOST_KV_MIB` | 4096 | Pinned host RAM for cached conversations that no longer fit on the card (`--host-context-mib`). |
-| `LLM_*_NINFER_NGRAM` | on with `dflash2` at 1–2 lanes | N-gram copy drafting (`--ngram-draft-tokens 15`): text the reply copies from its prompt is drafted from the prompt. Lossless; the fork measured +42% decode at one lane on agent traffic. |
+| `LLM_*_NINFER_NGRAM` | on with `dflash2` at 1–2 lanes, v0.16+ | N-gram copy drafting (`--ngram-draft-tokens 15`): text the reply copies from its prompt is drafted from the prompt. Lossless; the fork measured +42% decode at one lane on agent traffic. |
 
 The defaults leave out the fork's lossy memory trades (`--embedding-q4`, `--lm-head-q6`,
 `--gdn-state-fp16`).
 
-### v0.16 changes the launcher had to follow
+### Why v0.15.1 and not v0.16.0
 
-v0.16.0 replaced the context cache, and `ninfer-serve` now stops at startup with
-`unknown argument` on any knob that sized the old one. The stack used to pass four:
-`--max-private-continuations 8 --max-shared-prefixes 8 --auto-prefix-grid --host-kv-mib N`.
-It now passes `--host-context-mib N` (same setting, same 4 GiB default). Also gone in v0.16:
-the `/slots` endpoint and the `ninfer:*` metric names (now `ninfer_*`); the `llamacpp:*`
-series are unchanged.
+v0.16.0 (2026-10-14) breaks structured output on llms. With `response_format`
+`json_object` or `json_schema` the replies are valid JSON with mangled content:
+`{".city":".Tokyo"}`, `{"city":": ","country":": "}`, values wrapped in arrays. It does so
+with DFlash2, MTP and no speculation alike, and with both 27B artifacts; unconstrained
+replies are fine. v0.11 and v0.15.1 answer the same requests correctly (tested 2026-10-18,
+`{"city": "Tokyo", "country": "Japan"}` in all six cases). v0.16 also refuses a
+`json_object` that carries a `schema` ("json_object format has no options"), which the chat
+proxy adds to every bare `json_object`. Hermes's helpers and the memory graph ask llms for
+JSON, so the pin stays on v0.15.1 until a release fixes it.
+
+The launcher is ready for v0.16 all the same. It asks the binary (`--help`) which cache
+flags it takes: v0.16 replaced `--max-private-continuations 8 --max-shared-prefixes 8
+--auto-prefix-grid --host-kv-mib N` with `--host-context-mib N`, and each release stops at
+startup on the other's. N-gram copy drafting is passed only to a build that has it (v0.16).
+v0.16 also drops the `/slots` endpoint, which gpu-lease falls back from, and renames the
+`ninfer:*` metrics to `ninfer_*`.
+
+Measured on llms with v0.15.1 and the v0.13 artifact against v0.11 with neroued's, same
+flags otherwise (DFlash2, rk8v4, one lane, thinking off, temperature 0.7): prose 113–116
+tok/s against 110, a reply that copies a 2.6K-token file back 294–296 against 280.
 
 ## What the chat proxy changes
 
@@ -118,7 +132,7 @@ Each drop is logged as `ninfer-adapt … dropped=…`.
 ## Health, gpu-lease
 
 `/health` answers 503 until the engine has loaded and 200 `{"status":"ok"}` after. v0.16
-dropped `/slots`, so `scripts/gpu-lease.py` reads `llamacpp:requests_processing` from
+drops `/slots`, so `scripts/gpu-lease.py` reads `llamacpp:requests_processing` from
 `/metrics` when `/slots` answers 404, to wait for an in-flight request, or for the reload
 after ComfyUI is done.
 
