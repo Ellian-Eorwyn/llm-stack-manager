@@ -16,6 +16,7 @@ import pathlib
 import socket
 import sqlite3
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -268,6 +269,15 @@ class _Backend:
     def port(self) -> int:
         return self.server.server_address[1]
 
+    def settled_cut_short(self, timeout: float = 5.0) -> list[bool]:
+        """`cut_short` once every request's handler has finished. A handler
+        learns the proxy hung up only when its next write fails, which can be
+        after the proxy has already answered the client."""
+        deadline = time.monotonic() + timeout
+        while len(self.cut_short) < len(self.requests) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.cut_short
+
     def close(self):
         self.server.shutdown()
         self.server.server_close()
@@ -362,7 +372,7 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(status, 200)
         events = _events(body)
         self.assertEqual(len(backend.requests), 2)
-        self.assertEqual(backend.cut_short[0], True)
+        self.assertEqual(backend.settled_cut_short()[0], True)
         self.assertAlmostEqual(backend.requests[1]["temperature"], backend.requests[0]["temperature"] + 0.1)
         self.assertEqual(_joined(events, "content"), "The answer.")
         self.assertIn(proxy.LOOP_GUARD_RETRY_MARK, _joined(events, "reasoning_content"))
@@ -399,7 +409,7 @@ class RelayTests(unittest.TestCase):
         events = _events(body)
         self.assertEqual(status, 200)
         self.assertEqual(len(backend.requests), 2)
-        self.assertEqual(backend.cut_short, [True, True])
+        self.assertEqual(backend.settled_cut_short(), [True, True])
         self.assertEqual(_finish_reasons(events), ["length"])
         self.assertEqual(events[-1], "[DONE]")
         # The looping text is the content: what the model did, and what lets
