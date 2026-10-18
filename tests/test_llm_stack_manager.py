@@ -618,6 +618,26 @@ class CustomModelApiTests(unittest.TestCase):
         self.assertEqual(body["model"]["model_name"], "qwen3.5-27b-q4_k_m")
 
 
+class CustomModelEngineArgsTests(unittest.TestCase):
+    """A NInfer entry's flags must not become llama.cpp's family default."""
+
+    def test_ninfer_flags_stay_with_their_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            presets_file = pathlib.Path(tmp) / "presets.json"
+            with (
+                manager.app.test_client() as client,
+                patch.object(core, "CUSTOM_MODELS_FILE", pathlib.Path(tmp) / "custom-models.json"),
+                patch.object(core, "CUSTOM_MODEL_ARG_PRESETS_FILE", presets_file),
+            ):
+                body = client.post("/api/custom-models", json={
+                    "model_path": "/models/qwen3_8_27b.ninfer", "display_name": "Qwen3.8 27B",
+                    "engine": "ninfer", "custom_args": ["--embedding-q4"]}).get_json()
+                client.put(f"/api/custom-models/{body['model']['id']}",
+                           json={"custom_args": ["--embedding-q4"]})
+            self.assertEqual(body["model"]["custom_args"], ["--embedding-q4"])
+            self.assertFalse(presets_file.exists())
+
+
 class ModelSwitchEngineTests(unittest.TestCase):
     """Switching llm-a's model takes the engine with it."""
 

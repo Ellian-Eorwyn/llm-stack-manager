@@ -392,7 +392,9 @@ def api_custom_models_add():
         model_name,
         model_path,
     )
-    if not custom_args_supplied and family:
+    # Per-family defaults are llama-server flags: no use to another engine.
+    llama = models.model_switch_engine({'model_path': model_path, 'engine': engine}, '')[0] == 'llamacpp'
+    if not custom_args_supplied and family and llama:
         custom_args, _ = models.resolve_custom_args_for_family(family)
     model = {
         'id': str(uuid.uuid4())[:8],
@@ -407,7 +409,7 @@ def api_custom_models_add():
         'arg_family': family,
         'created': int(time.time()),
     }
-    if family and custom_args_supplied:
+    if family and custom_args_supplied and llama:
         presets = models.load_custom_model_arg_presets()
         presets[family] = custom_args
         models.save_custom_model_arg_presets(presets)
@@ -461,13 +463,14 @@ def api_custom_models_update(model_id):
                 m.get('model_path', ''),
             )
             m['arg_family'] = family
+            llama = models.model_switch_engine(m, '')[0] == 'llamacpp'
             if custom_args_supplied:
                 m['custom_args'] = custom_args
-            elif family and not models.normalize_custom_arg_entries(m.get('custom_args', [])):
+            elif family and llama and not models.normalize_custom_arg_entries(m.get('custom_args', [])):
                 family_args, _ = models.resolve_custom_args_for_family(family)
                 if family_args:
                     m['custom_args'] = family_args
-            if family and custom_args_supplied:
+            if family and custom_args_supplied and llama:
                 presets = models.load_custom_model_arg_presets()
                 presets[family] = models.normalize_custom_arg_entries(m.get('custom_args', []))
                 models.save_custom_model_arg_presets(presets)
