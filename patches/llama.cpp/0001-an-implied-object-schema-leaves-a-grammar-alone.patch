@@ -1,0 +1,24 @@
+Subject: an implied object schema must not override the caller's grammar
+
+Upstream now turns the empty schema of a bare response_format json_object
+into {"type": "object"} (acecd5603), which fixes what this stack's earlier
+patch fixed. It does so unconditionally, though, and a schema beats a grammar
+downstream (common/chat.cpp), so a request carrying its own `grammar` plus a
+bare json_object loses the grammar. Leave the schema empty in that case, as
+the stack's patch did since its first rebuild.
+
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -1320,7 +1320,11 @@
+     }
+ 
+     // an absent or empty schema means any object
+-    if (json_schema.is_object() && json_schema.empty()) {
++    //
++    // Not when the caller supplied a grammar: a schema beats a grammar
++    // downstream, so inventing one here would silently discard what they
++    // asked for. Left empty, the schema reads as "none" and the grammar wins.
++    if (grammar.empty() && json_schema.is_object() && json_schema.empty()) {
+         json_schema["type"] = "object";
+     }
+ 

@@ -148,9 +148,9 @@ def build(slot: Slot, env: dict, extra: list[str] | None = None,
                   said=said if said is not None else [])
 
     for toggle in COMMON_TOGGLES:
-        # An offloaded slot's weights must stay pageable, which is what these
-        # two prevent; its own loading arguments take their place.
-        if memory.active and toggle.name in ("--no-mmap", "--mlock"):
+        # An offloaded slot's weights must stay pageable, which `none` and
+        # `mlock` prevent; its own loading arguments take their place.
+        if memory.active and toggle.name == "--load-mode":
             continue
         argv += toggle.resolve(env, prefixes, ctx)
     if memory.active:

@@ -36,9 +36,9 @@ The last two rows are the ones that matter for long agent sessions: the
 llama.cpp logs on this machine show requests running at ~160k tokens of
 context and ~19 tok/s.
 
-Newer llama.cpp does not close the gap, and cannot be dropped in: upstream
-removed `--no-mmap` (now `--load-mode none`), which every llama.cpp slot here
-is launched with.
+Newer llama.cpp does not close the gap. (It could not be dropped in at the
+time: upstream had removed `--no-mmap`, which every llama.cpp slot here was
+launched with. The slots pass `--load-mode` since 2026-10-18.)
 
 ## What changes when a slot moves
 

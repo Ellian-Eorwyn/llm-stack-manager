@@ -52,8 +52,8 @@
   "off",
   "--log-prefix",
   "--metrics",
-  "--no-mmap",
-  "--mlock",
+  "--load-mode",
+  "mlock",
   "--device",
   "CUDA0",
   "--kv-offload",
@@ -133,8 +133,8 @@
   "off",
   "--log-prefix",
   "--metrics",
-  "--no-mmap",
-  "--mlock",
+  "--load-mode",
+  "mlock",
   "--device",
   "CUDA0",
   "--kv-offload",
@@ -211,8 +211,8 @@
   "mean",
   "--log-prefix",
   "--metrics",
-  "--no-mmap",
-  "--mlock"
+  "--load-mode",
+  "mlock"
  ],
  "ocr": [
   "--model",

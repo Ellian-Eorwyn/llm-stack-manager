@@ -144,10 +144,22 @@ class OptionRenderingTests(unittest.TestCase):
     def test_flag_values_pass_through_for_llama_cpp_to_negate(self):
         """`to_args` swaps in the `--no-` form itself when a value reads falsey,
         so the renderer must not try to guess negative flag names."""
-        env = dict(BASE_ENV, OCR_KV_OFFLOAD="off", EMBED_NO_MMAP="true")
+        env = dict(BASE_ENV, OCR_KV_OFFLOAD="off")
         sections = _sections(renderer.render(env))
         self.assertEqual(sections["ocr"]["kv-offload"], "off")
-        self.assertEqual(sections["embed"]["no-mmap"], "true")
+
+    def test_mmap_and_mlock_become_one_load_mode(self):
+        # llama.cpp refuses a preset naming `no-mmap` or `mlock` since it
+        # dropped them, and that stops the router, not just the member.
+        sections = _sections(renderer.render(dict(BASE_ENV, EMBED_NO_MMAP="true", EMBED_MLOCK="false",
+                                                  RERANK_NO_MMAP="true", RERANK_MLOCK="true",
+                                                  TASK_NO_MMAP="false", TASK_MLOCK="false")))
+        self.assertEqual(sections["embed"]["load-mode"], "none")
+        self.assertEqual(sections["rank"]["load-mode"], "mlock")
+        self.assertNotIn("load-mode", sections["task"])
+        for section in sections.values():
+            self.assertNotIn("no-mmap", section)
+            self.assertNotIn("mlock", section)
 
     def test_each_kind_of_server_gets_the_flag_that_makes_it_that_kind(self):
         sections = _sections(renderer.render(BASE_ENV))
@@ -206,6 +218,8 @@ class TaskSettingCoverageTests(unittest.TestCase):
             # keys become one `lora-scaled` list, so neither can be a member of
             # VALUE_OPTIONS.
             "LORA_PATHS", "LORA_SCALES", "LORA_INIT_WITHOUT_APPLY",
+            # Both become one `load-mode`.
+            "NO_MMAP", "MLOCK",
         }
         declared = {
             field["key"][len("TASK_"):]

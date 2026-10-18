@@ -85,6 +85,32 @@ class Device:
 
 
 @dataclass(frozen=True)
+class LoadMode:
+    """`--load-mode`, from the slot's NO_MMAP and MLOCK settings.
+
+    llama.cpp folded `--no-mmap` and `--mlock` into this one option, kept the
+    old flags as deprecated aliases for a while (the 7e4c0a9 pin accepts both)
+    and then removed them, so a launcher still passing them stops at startup.
+    mlock implies no mmap, which is why MLOCK wins: on the old build
+    `--no-mmap --mlock` already loaded as `mlock`, the last flag given.
+    Neither set leaves llama.cpp on its own `auto` (mmap).
+    """
+
+    name: str = "--load-mode"
+
+    def mode(self, env, prefixes) -> str:
+        if (lookup(env, ("MLOCK",), prefixes) or "false").strip() == "true":
+            return "mlock"
+        if (lookup(env, ("NO_MMAP",), prefixes) or "false").strip() == "true":
+            return "none"
+        return ""
+
+    def resolve(self, env, prefixes, ctx=None):
+        mode = self.mode(env, prefixes)
+        return [self.name, mode] if mode else []
+
+
+@dataclass(frozen=True)
 class SwaFull:
     """`--swa-full`, when the model has sliding-window attention.
 

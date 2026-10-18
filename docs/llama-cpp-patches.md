@@ -26,32 +26,20 @@ will not pick one up.
 
 ## Current patches
 
-### `0001-json-object-implies-an-object-schema.patch`
+### `0001-an-implied-object-schema-leaves-a-grammar-alone.patch`
 
 `response_format: {"type": "json_object"}` with no schema — the ordinary way
-every OpenAI-compatible client asks for JSON — was silently ignored, and callers
-only found out when parsing failed.
+every OpenAI-compatible client asks for JSON — used to be silently ignored: the
+missing schema defaulted to `{}`, and every downstream check read an empty
+schema as "no constraint was asked for". This stack patched that from August;
+upstream fixed it in `acecd5603` (2026-09-12) by turning any empty schema into
+`{"type": "object"}`, which is in the v0.7.0 pin.
 
-`oaicompat_chat_params_parse` defaults the missing schema to an empty object
-(`tools/server/server-common.cpp:944`). Every downstream check then decides
-whether a response format was requested by testing that the schema is
-*non-empty* — `common/chat-auto-parser-generator.cpp:81` and `:134`,
-`common/chat.cpp:1019` and `:2431` — so `{}` is indistinguishable from "no
-constraint was asked for" and no grammar is built. The handlers that spell the
-same test as `!is_null() && is_object()` (`chat.cpp:1170`, `:1318`, `:1707`,
-`:1875`) are unaffected, which is why this reproduced on some chat formats and
-not others. A top-level `json_schema`, or `response_format` of type
-`json_schema`, produces a non-empty object and always worked.
-
-The patch defaults the schema to `{"type": "object"}` instead, which is both
-what makes the check pass and what the OpenAI contract means: the reply must be
-a JSON object.
-
-**Except when the caller supplied a `grammar`.** A schema beats a grammar
-downstream, so manufacturing one for a request that already carries a grammar
-silently discards what the caller asked for — a regression the first version of
-this patch introduced and which cost a rebuild. Leaving the schema empty in that
-case preserves the stock behaviour, where the grammar wins. Measured with
+Upstream's fix is unconditional, though, and a schema beats a grammar
+downstream, so a request carrying its own `grammar` alongside a bare
+`json_object` loses the grammar. The stack's own patch had already been bitten
+by exactly that (it cost a rebuild), and preserved the grammar. So the patch is
+now that one condition on upstream's line: `grammar.empty() &&`. Expected, with
 `grammar: 'root ::= "YES"'`:
 
 | request | reply |
@@ -60,16 +48,8 @@ case preserves the stock behaviour, where the grammar wins. Measured with
 | grammar + bare `json_object` | `YES` |
 | grammar + an explicit `schema` | a JSON object — the schema wins |
 
-That last row is stock llama.cpp behaviour, not something this patch changes: an
-explicitly supplied schema has always taken precedence over a grammar.
-
-Measured on this stack against Qwen3.6-27B at temperature 0, asking for one
-plain English sentence *while* demanding JSON:
-
-| | reply |
-| --- | --- |
-| before | `Cats are independent and affectionate pets that enjoy napping…` |
-| after | `{"sentence": "Cats are independent and playful creatures…"}` |
+The last row is stock llama.cpp behaviour: an explicitly supplied schema has
+always taken precedence over a grammar.
 
 `scripts/llm-chat-proxy.py` performs the same normalization per request
 (`_normalize_json_object_response_format`). That covers :8003/:8004/:8008/:8012

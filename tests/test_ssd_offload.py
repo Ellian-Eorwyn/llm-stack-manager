@@ -72,10 +72,11 @@ class LlamaCppOffloadTests(OffloadTestCase):
         self.assertEqual(self.build(LLM_B_MEMORY_MODE="swap-everything"), self.build())
 
     def test_offload_leaves_the_weights_pageable(self):
-        argv = self.build(LLM_B_MEMORY_MODE="ssd-offload")
-        self.assertNotIn("--no-mmap", argv)
-        self.assertNotIn("--mlock", argv)
-        self.assertIn("--no-mmap", self.build())
+        def load_modes(argv):
+            return [argv[i + 1] for i, arg in enumerate(argv) if arg == "--load-mode"]
+        self.assertFalse({"none", "mlock"} & set(load_modes(self.build(LLM_B_MEMORY_MODE="ssd-offload"))))
+        resident = self.build()
+        self.assertIn(resident[resident.index("--load-mode") + 1], ("none", "mlock"))
 
     def test_the_ngram_table_is_kept_out_of_the_metal_buffers(self):
         argv = self.build(LLM_B_MEMORY_MODE="ssd-offload")

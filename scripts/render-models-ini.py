@@ -36,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "web"))
 
 from backends import router  # noqa: E402
+from backends.options import LoadMode  # noqa: E402
 
 
 # `*_CHAT_TEMPLATE_ID` names a file under the stack's own config directory
@@ -119,8 +120,6 @@ VALUE_OPTIONS = {
 
 # env suffix -> preset key, for flags. Values pass through verbatim.
 FLAG_OPTIONS = {
-    "NO_MMAP": "no-mmap",
-    "MLOCK": "mlock",
     "METRICS": "metrics",
     "JINJA": "jinja",
     "LOG_PREFIX": "log-prefix",
@@ -335,6 +334,12 @@ def render_member(prefix: str, env: dict, warn=None) -> tuple[str, dict]:
         value = _clean(env.get(f"{prefix}_{suffix}"))
         if value:
             options[key] = value
+
+    # NO_MMAP and MLOCK are one option now, and llama.cpp refuses a preset
+    # that names a key it no longer knows, which stops the whole router.
+    load_mode = LoadMode().mode({k: _clean(v) for k, v in env.items()}, (prefix,))
+    if load_mode:
+        options["load-mode"] = load_mode
 
     # LoRA adapters. Two env keys become one option because llama.cpp takes
     # `--lora-scaled` as a comma-separated FNAME:SCALE list, so the pairing has

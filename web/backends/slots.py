@@ -53,8 +53,7 @@ COMMON_FLAGS = (
 COMMON_TOGGLES = (
     Toggle("--log-prefix", "LOG_PREFIX", when="true", default="true"),
     Toggle("--metrics",    "METRICS",    when="on",   default="on"),
-    Toggle("--no-mmap",    "NO_MMAP",    when="true", default="false"),
-    Toggle("--mlock",      "MLOCK",      when="true", default="false"),
+    options.LoadMode(),
 )
 
 #: What the memory-fit report carries for a slot holding a conversation, in

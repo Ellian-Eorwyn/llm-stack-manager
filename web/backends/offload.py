@@ -123,7 +123,7 @@ def server_supports(binary: str, flag: str) -> bool:
 
 
 def llamacpp_args(offload: Offload, binary: str, custom_has) -> list[str]:
-    """What an offloaded llama.cpp slot adds where `--no-mmap`/`--mlock` were.
+    """What an offloaded llama.cpp slot adds where its `--load-mode` was.
 
     mmap without mlock, so the pages macOS finds cold can go back to the SSD;
     the n-gram table kept out of the Metal buffers, which are wired; and, on a

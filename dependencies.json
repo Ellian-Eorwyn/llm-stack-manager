@@ -5,10 +5,10 @@
       "name": "llama.cpp",
       "type": "git-cmake",
       "repo": "https://github.com/ggml-org/llama.cpp.git",
-      "ref": "7e4c0a96880dae4fc4268ad441f8a6446bd5460a",
+      "ref": "620d2225cc436ab0b001e3200e590e3b286ef9ab",
       "path": "deps/llama.cpp",
       "patches": [
-        "patches/llama.cpp/0001-json-object-implies-an-object-schema.patch"
+        "patches/llama.cpp/0001-an-implied-object-schema-leaves-a-grammar-alone.patch"
       ],
       "build_dir": "deps/llama.cpp/build",
       "target": "llama-server",
