@@ -6,12 +6,21 @@ labelled `speaker_0`… in order of arrival); see speaker_attribution.py for how
 the two models' timelines are joined. Where voice profiles exist
 (scripts/enroll-voiceprints.py), each speaker is also compared with them and
 named when the match is clear; see speaker_identity.py.
+
+Idle unload (2026-10-19): TRANSCRIPT_IDLE_UNLOAD_SECONDS after the last request
+(the stack's setting, 300 by default; 0 or less keeps them), Parakeet, the
+diarizer and the voiceprint model are dropped and MLX's buffer cache freed. MLX
+keeps freed buffers for reuse, so after a long diarized recording the process
+held ~9.5 GB of unified memory for good, enough to put the Studio under memory
+pressure and stop Splash's prompt cache growing. The next request reloads what
+it needs; /health reports `loaded` without loading anything.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import os
 import tempfile
 import time
@@ -42,6 +51,7 @@ VOICEPRINT_PROFILES = os.environ.get("MLX_VOICEPRINT_PROFILES", "")
 # Blank: the threshold and margin the enrollment's own evaluation chose.
 VOICEPRINT_THRESHOLD = os.environ.get("MLX_VOICEPRINT_THRESHOLD", "")
 VOICEPRINT_MARGIN = os.environ.get("MLX_VOICEPRINT_MARGIN", "")
+IDLE_UNLOAD_SECONDS = float(os.environ.get("TRANSCRIPT_IDLE_UNLOAD_SECONDS") or 300)
 
 _model = None
 _diarizer = None
@@ -51,6 +61,8 @@ _load_lock = asyncio.Lock()
 _inference_lock = asyncio.Lock()
 _started_at = time.time()
 _requests = 0
+_last_used = time.monotonic()
+_unloads = 0
 
 
 def _load_model_sync():
@@ -135,6 +147,41 @@ def _diarize_sync(path: str):
         for seg in result.segments
     ]
     return segments, result.speaker_probs.tolist(), frame_seconds
+
+
+def _free_cache() -> None:
+    """Give MLX's cached buffers back to macOS; the models stay loaded."""
+    gc.collect()
+    mx.clear_cache()
+
+
+def _unload_sync() -> bool:
+    """Drop every model. The caller holds `_inference_lock`."""
+    global _model, _diarizer, _embedder, _unloads
+    if _model is None and _diarizer is None and _embedder is None:
+        return False
+    _model = _diarizer = _embedder = None
+    _free_cache()
+    _unloads += 1
+    return True
+
+
+def _mark_used() -> None:
+    global _last_used
+    _free_cache()
+    _last_used = time.monotonic()
+
+
+async def _idle_unloader():
+    if IDLE_UNLOAD_SECONDS <= 0:
+        return
+    while True:
+        await asyncio.sleep(min(60.0, IDLE_UNLOAD_SECONDS))
+        if time.monotonic() - _last_used < IDLE_UNLOAD_SECONDS or _inference_lock.locked():
+            continue
+        async with _inference_lock:
+            if time.monotonic() - _last_used >= IDLE_UNLOAD_SECONDS and _unload_sync():
+                print(f"idle {IDLE_UNLOAD_SECONDS:.0f} s: models unloaded", flush=True)
 
 
 async def _ensure_model():
@@ -260,7 +307,9 @@ def _subtitles(payload: dict, *, vtt: bool) -> str:
 async def lifespan(_: FastAPI):
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     await _ensure_model()
+    unloader = asyncio.create_task(_idle_unloader())
     yield
+    unloader.cancel()
     mx.clear_cache()
 
 
@@ -293,6 +342,8 @@ async def health():
         "loaded": _model is not None,
         "diarization": _diarization_status(),
         "requests": _requests,
+        "idle_unload_seconds": IDLE_UNLOAD_SECONDS,
+        "unloads": _unloads,
         "uptime_seconds": round(time.time() - _started_at, 3),
     }
 
@@ -375,7 +426,11 @@ async def transcribe(
         tmp_path = await _save_upload(file)
         await _ensure_model()
         async with _inference_lock:
-            payload = await asyncio.to_thread(_transcribe_sync, tmp_path, diarize, identify)
+            await _ensure_model()
+            try:
+                payload = await asyncio.to_thread(_transcribe_sync, tmp_path, diarize, identify)
+            finally:
+                _mark_used()
     except HTTPException:
         raise
     except Exception as exc:
@@ -407,7 +462,10 @@ async def diarize_only(file: UploadFile = File(...)):
         tmp_path = await _save_upload(file)
         async with _inference_lock:
             started = time.time()
-            segments, _, _ = await asyncio.to_thread(_diarize_sync, tmp_path)
+            try:
+                segments, _, _ = await asyncio.to_thread(_diarize_sync, tmp_path)
+            finally:
+                _mark_used()
     except HTTPException:
         raise
     except Exception as exc:
