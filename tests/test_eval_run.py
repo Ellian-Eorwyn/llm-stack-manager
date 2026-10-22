@@ -139,7 +139,8 @@ class ServeTests(unittest.TestCase):
             sourced_env=mock.Mock(return_value=dict(CardTests.BASE)),
             stop=self.stop, _port_owner=mock.Mock(return_value=None),
             build=mock.Mock(return_value=["llama-server", "-m", "m.gguf"]),
-            wait_healthy=mock.Mock(return_value=True))
+            wait_healthy=mock.Mock(return_value=True),
+            _cuda_host=mock.Mock(return_value=True))
         self.patches.start()
         self.more = mock.patch.object(evalrun.subprocess, "Popen", self.popen)
         self.more.start()
@@ -156,6 +157,50 @@ class ServeTests(unittest.TestCase):
         self.assertEqual(self.popen.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"], "1")
         log = next((evalrun.ROOT / "benchmarks" / "cand").glob("server-*.log"))
         self.assertTrue(log.read_text().startswith("CUDA_VISIBLE_DEVICES=1 llama-server"))
+
+    def test_a_cuda_host_refuses_a_candidate_without_a_card_before_stopping_anything(self):
+        with self.assertRaises(SystemExit) as caught:
+            evalrun.serve("llm-b", {"name": "cand", "settings": {"MODEL_PATH": "m.gguf"}},
+                          pathlib.Path("llm-stack.env"))
+        message = str(caught.exception)
+        self.assertIn('"GPU_VISIBLE_DEVICES"', message)
+        self.assertIn("LLM_B_GPU_VISIBLE_DEVICES=0", message)  # what it would have inherited
+        self.stop.assert_not_called()  # a server already up is left alone
+        self.popen.assert_not_called()
+
+    def test_without_nvidia_smi_no_card_is_needed(self):
+        evalrun._cuda_host.return_value = False
+        evalrun.serve("llm-b", {"name": "cand", "settings": {}}, pathlib.Path("llm-stack.env"))
+        self.popen.assert_called_once()
+
+    def test_an_empty_card_is_no_card(self):
+        with self.assertRaises(SystemExit):
+            evalrun.serve("llm-b", {"name": "cand", "settings": {"GPU_VISIBLE_DEVICES": " "}},
+                          pathlib.Path("llm-stack.env"))
+
+    def test_a_slot_with_no_saved_card_says_so(self):
+        evalrun.sourced_env.return_value = {}
+        with self.assertRaises(SystemExit) as caught:
+            evalrun.serve("llm-b", {"name": "cand"}, pathlib.Path("llm-stack.env"))
+        self.assertIn("every card", str(caught.exception))
+
+    def test_run_skips_it_and_plan_says_so(self):
+        candidates = pathlib.Path(self._tmp.name) / "candidates.json"
+        candidates.write_text(json.dumps({"slot": "llm-b", "candidates": [
+            {"name": "placed", "settings": {"GPU_VISIBLE_DEVICES": "1"}},
+            {"name": "unplaced", "settings": {}}]}))
+        common = ["--candidates", str(candidates), "--env-file", "llm-stack.env"]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            evalrun.main(["plan", *common])
+        plan = buf.getvalue()
+        self.assertIn("placed:\n  CUDA_VISIBLE_DEVICES=1 llama-server", plan)
+        self.assertIn("WILL NOT SERVE -- unplaced:", plan)
+        buf = io.StringIO()
+        with redirect_stdout(buf), mock.patch.object(evalrun.subprocess, "run"):
+            evalrun.main(["run", "--only", "unplaced", "--suites", "speed", *common])
+        self.assertIn("skipped: unplaced: this host has NVIDIA GPUs", buf.getvalue())
+        self.popen.assert_not_called()
 
 
 if __name__ == "__main__":

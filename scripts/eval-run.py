@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -245,10 +246,29 @@ def shown(argv: list[str], env: dict[str, str]) -> str:
     return " ".join(([f"CUDA_VISIBLE_DEVICES={cards}"] if cards else []) + argv)
 
 
+def _cuda_host() -> bool:
+    return shutil.which("nvidia-smi") is not None
+
+
+def check_placement(slot_name: str, candidate: dict, env: dict[str, str]) -> None:
+    """On a CUDA host a candidate names its card. Otherwise it takes the slot's
+    saved one from the env file, which on a two-card host is often the card
+    the always-on models share, and loads beside them without a word."""
+    if not _cuda_host() or str((candidate.get("settings") or {}).get("GPU_VISIBLE_DEVICES", "")).strip():
+        return
+    slot = SLOTS[slot_name]
+    saved = lookup(env, ("GPU_VISIBLE_DEVICES",), slot.prefixes)
+    inherits = (f"would take {slot.prefix}_GPU_VISIBLE_DEVICES={saved} from the env file" if saved
+                else "would see every card")
+    raise SystemExit(f"{candidate['name']}: this host has NVIDIA GPUs and the candidate names none; "
+                     f"add \"GPU_VISIBLE_DEVICES\": \"<card>\" to its settings (it {inherits})")
+
+
 def serve(slot_name: str, candidate: dict, env_file: pathlib.Path) -> str:
     """Start one candidate, detached; return its base URL once healthy."""
-    stop()
     env = candidate_env(slot_name, candidate, sourced_env(env_file))
+    check_placement(slot_name, candidate, env)  # before anything is stopped
+    stop()
     port = env[PORTS[slot_name][0]]
     owner = _port_owner(port)
     if owner:
@@ -309,6 +329,11 @@ def main(argv: list[str] | None = None) -> int:
         base = sourced_env(env_file)
         for candidate in candidates:
             env = candidate_env(slot_name, candidate, base)
+            try:
+                check_placement(slot_name, candidate, env)
+            except SystemExit as exc:
+                print(f"WILL NOT SERVE -- {exc}\n")
+                continue
             try:
                 argv = build(slot_name, candidate, env)
                 print(f"{candidate['name']}:\n  " + shown(argv, env) + "\n")

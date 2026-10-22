@@ -53,6 +53,14 @@ model gets the same questions, run after run.
    - Relative paths are relative to the stack.
    - Keep the incumbent, `qwen3.8-27b-mtplx-speed`, in the file, so there is
      always a baseline.
+   - **On a CUDA host** (one where `nvidia-smi` exists) every candidate names
+     its card in `settings`, e.g. `"GPU_VISIBLE_DEVICES": "1"`. Without it the
+     candidate would take the slot's saved card from the env file, which on a
+     two-card host is often the one the always-on models (task model,
+     embeddings, speech) share, and load beside them. So `serve` and `run`
+     refuse such a candidate, before stopping anything, with a message naming
+     the setting and the card it would have taken; `plan` lists it as
+     `WILL NOT SERVE`. A Mac needs nothing.
 
 2. **Check what would run.** This builds every launch command with the stack's
    own command builder and starts nothing:
