@@ -115,9 +115,17 @@ echo "  done."
 
 echo ""
 echo "[2/2] Starting default core services..."
+# One unit that won't start must not leave every unit after it down. On 2026-10-22
+# playwright-server (no longer installed on llms) failed, `set -e` ended the script
+# there, and voice-tts stayed down after that morning's reboot. Start the rest,
+# name what failed, and fail the unit at the end so the failure still shows.
+FAILED_SERVICES=()
 for svc in "${DEFAULT_SERVICES[@]}"; do
     echo "  starting ${svc}..."
-    svc_start "${svc}"
+    if ! svc_start "${svc}"; then
+        echo "  FAILED to start ${svc}; starting the rest." >&2
+        FAILED_SERVICES+=("${svc}")
+    fi
 done
 echo "  done."
 
@@ -135,3 +143,8 @@ echo "  http://localhost:8007/v1  - task model"
 echo "  http://localhost:8009/v1  - OCR (start ocr service when needed)"
 echo ""
 echo "Active default chat backend: ${DEFAULT_CHAT_BACKEND}"
+if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
+    echo "" >&2
+    echo "Did not start: ${FAILED_SERVICES[*]} (see above)." >&2
+    exit 1
+fi
