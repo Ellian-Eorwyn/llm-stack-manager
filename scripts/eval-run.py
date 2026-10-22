@@ -44,6 +44,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "web"))
 
 from backends.slots import SLOTS  # noqa: E402
+from backends.spec import lookup  # noqa: E402
 
 STATE = ROOT / "benchmarks" / ".eval-server.json"
 SUITES = {
@@ -110,6 +111,13 @@ def candidate_env(slot_name: str, candidate: dict, base: dict[str, str]) -> dict
         env[f"{slot.prefix}_{key}"] = _resolve(str(value))
     for key, value in (candidate.get("env") or {}).items():
         env[key] = str(value)
+    # start-backend.sh gives llama.cpp and NInfer the slot's cards this way, and
+    # MAIN_GPU and NInfer's `--device 0` count from there. Launched without it,
+    # a candidate sees every card. A candidate's own `env` still wins.
+    visible = lookup(env, ("GPU_VISIBLE_DEVICES",), slot.prefixes)
+    if (visible and "CUDA_VISIBLE_DEVICES" not in (candidate.get("env") or {})
+            and str(env.get("LLM_ABSOLUTE_GPU_INDICES") or "off").strip() != "on"):
+        env["CUDA_VISIBLE_DEVICES"] = visible
     if env.get(f"{slot.prefix}_MEMORY_MODE") == "ssd-offload":
         env.pop("GGML_METAL_RESIDENCY_KEEP_ALIVE_S", None)
     else:
@@ -231,6 +239,12 @@ def build(slot_name: str, candidate: dict, env: dict[str, str]) -> list[str]:
     return [a for a in built.stdout.decode().split("\0") if a]
 
 
+def shown(argv: list[str], env: dict[str, str]) -> str:
+    """The command as it runs, with the cards it is given."""
+    cards = env.get("CUDA_VISIBLE_DEVICES")
+    return " ".join(([f"CUDA_VISIBLE_DEVICES={cards}"] if cards else []) + argv)
+
+
 def serve(slot_name: str, candidate: dict, env_file: pathlib.Path) -> str:
     """Start one candidate, detached; return its base URL once healthy."""
     stop()
@@ -244,10 +258,11 @@ def serve(slot_name: str, candidate: dict, env_file: pathlib.Path) -> str:
     logs = ROOT / "benchmarks" / candidate["name"]
     logs.mkdir(parents=True, exist_ok=True)
     log = open(logs / f"server-{time.strftime('%Y%m%d-%H%M%S')}.log", "w")
-    log.write(" ".join(argv) + "\n\n")
+    log.write(shown(argv, env) + "\n\n")
     log.flush()
     process = subprocess.Popen(argv, env=env, stdout=log, stderr=subprocess.STDOUT,
                                start_new_session=True)
+    log.close()  # the server has its own copy
     url = f"http://127.0.0.1:{port}"
     STATE.write_text(json.dumps({"pid": process.pid, "candidate": candidate["name"],
                                  "url": url, "slot": slot_name}))
@@ -293,9 +308,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "plan":
         base = sourced_env(env_file)
         for candidate in candidates:
+            env = candidate_env(slot_name, candidate, base)
             try:
-                argv = build(slot_name, candidate, candidate_env(slot_name, candidate, base))
-                print(f"{candidate['name']}:\n  " + " ".join(argv) + "\n")
+                argv = build(slot_name, candidate, env)
+                print(f"{candidate['name']}:\n  " + shown(argv, env) + "\n")
             except SystemExit as exc:
                 print(f"{candidate['name']}: CANNOT BUILD -- {exc}\n")
         return 0

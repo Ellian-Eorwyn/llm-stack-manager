@@ -89,5 +89,74 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(json.loads(buf.getvalue())["candidate"], "cand")
 
 
+class CardTests(unittest.TestCase):
+    """The slot's GPU_VISIBLE_DEVICES reaches the process, as start-backend.sh does it."""
+
+    #: A two-card host's env file: LLM B's saved card is GPU 0.
+    BASE = {"LLM_B_GPU_VISIBLE_DEVICES": "0"}
+
+    def env(self, settings=None, extra=None, base=None):
+        candidate = {"name": "cand", "settings": settings or {}, "env": extra or {}}
+        return evalrun.candidate_env("llm-b", candidate, dict(self.BASE if base is None else base))
+
+    def test_the_candidates_card_is_the_visible_one(self):
+        env = self.env({"GPU_VISIBLE_DEVICES": "1"})
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "1")
+        self.assertEqual(env["LLM_B_GPU_VISIBLE_DEVICES"], "1")
+
+    def test_without_one_the_slots_card_is_used_as_the_launcher_would(self):
+        self.assertEqual(self.env()["CUDA_VISIBLE_DEVICES"], "0")
+        self.assertEqual(self.env(base={"CHAT2_GPU_VISIBLE_DEVICES": "0"})["CUDA_VISIBLE_DEVICES"], "0")
+
+    def test_nothing_set_leaves_the_environment_alone(self):
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", self.env(base={}))
+
+    def test_absolute_indices_are_not_renumbered(self):
+        env = self.env({"GPU_VISIBLE_DEVICES": "1"}, base={**self.BASE, "LLM_ABSOLUTE_GPU_INDICES": "on"})
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", env)
+
+    def test_a_candidates_own_env_wins(self):
+        env = self.env({"GPU_VISIBLE_DEVICES": "1"}, extra={"CUDA_VISIBLE_DEVICES": "1,0"})
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "1,0")
+
+    def test_shown_names_the_cards(self):
+        self.assertEqual(evalrun.shown(["llama-server", "-m", "m.gguf"], {"CUDA_VISIBLE_DEVICES": "1"}),
+                         "CUDA_VISIBLE_DEVICES=1 llama-server -m m.gguf")
+        self.assertEqual(evalrun.shown(["mtplx", "serve"], {}), "mtplx serve")
+
+
+class ServeTests(unittest.TestCase):
+    """serve() up to the launch, with the launch itself a mock."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = pathlib.Path(self._tmp.name)
+        (tmp / "benchmarks").mkdir()
+        self.popen = mock.Mock(return_value=mock.Mock(pid=4242))
+        self.stop = mock.Mock()
+        self.patches = mock.patch.multiple(
+            evalrun, ROOT=tmp, STATE=tmp / "benchmarks" / ".eval-server.json",
+            sourced_env=mock.Mock(return_value=dict(CardTests.BASE)),
+            stop=self.stop, _port_owner=mock.Mock(return_value=None),
+            build=mock.Mock(return_value=["llama-server", "-m", "m.gguf"]),
+            wait_healthy=mock.Mock(return_value=True))
+        self.patches.start()
+        self.more = mock.patch.object(evalrun.subprocess, "Popen", self.popen)
+        self.more.start()
+
+    def tearDown(self):
+        self.more.stop()
+        self.patches.stop()
+        self._tmp.cleanup()
+
+    def test_the_card_reaches_the_server_and_its_log(self):
+        url = evalrun.serve("llm-b", {"name": "cand", "settings": {"GPU_VISIBLE_DEVICES": "1"}},
+                            pathlib.Path("llm-stack.env"))
+        self.assertEqual(url, "http://127.0.0.1:8020")
+        self.assertEqual(self.popen.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"], "1")
+        log = next((evalrun.ROOT / "benchmarks" / "cand").glob("server-*.log"))
+        self.assertTrue(log.read_text().startswith("CUDA_VISIBLE_DEVICES=1 llama-server"))
+
+
 if __name__ == "__main__":
     unittest.main()

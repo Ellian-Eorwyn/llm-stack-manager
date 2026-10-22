@@ -62,7 +62,11 @@ model gets the same questions, run after run.
    ```
 
    An MTPLX pack should show `mtplx serve`, and a GGUF `llama-server`. A path
-   that did not resolve shows up here rather than two hours in.
+   that did not resolve shows up here rather than two hours in. Where the slot
+   names cards, the line starts with the `CUDA_VISIBLE_DEVICES` the candidate
+   gets: the slot's `GPU_VISIBLE_DEVICES`, exported the way
+   `scripts/start-backend.sh` does it (not with `LLM_ABSOLUTE_GPU_INDICES=on`;
+   a `CUDA_VISIBLE_DEVICES` in the candidate's `env` wins).
 
 3. **Free the slot.** The runner borrows LLM B's port (8020) and refuses if
    something it did not start is listening there. A large model needs the
