@@ -4,6 +4,7 @@
     scripts/eval-run.py run  --candidates config/eval-candidates.json
     scripts/eval-run.py run  --only flash-next-3bit-g64 --suites speed,quality
     scripts/eval-run.py serve flash-next-3bit-g64     # start one, leave it up
+    scripts/eval-run.py status                        # what serve left running, as JSON
     scripts/eval-run.py stop
     scripts/eval-run.py plan                          # print each launch command, start nothing
     scripts/eval-report.py                            # compare everything run so far
@@ -197,6 +198,19 @@ def _is_ready(url: str) -> bool:
         return False
 
 
+def status() -> tuple[dict, int]:
+    """What `serve` left running, for a tool that drives it from outside, and
+    the exit status: 0 serving and ready, 1 not running, 2 running but not
+    ready (still loading, or latched unavailable)."""
+    state = _state()
+    pid = state.get("pid")
+    url = state.get("url")
+    alive = bool(pid) and _alive(pid)
+    ready = alive and bool(url) and _is_ready(url)
+    out = {"candidate": state.get("candidate"), "pid": pid, "alive": alive, "ready": ready, "url": url}
+    return out, 0 if ready else 2 if alive else 1
+
+
 def wait_healthy(url: str, pid: int, timeout: float = 900) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -258,11 +272,16 @@ def main(argv: list[str] | None = None) -> int:
         elif name == "serve":
             p.add_argument("name")
     sub.add_parser("stop")
+    sub.add_parser("status", help="JSON; exit 0 ready, 1 not running, 2 running but not ready")
     args = parser.parse_args(argv)
 
     if args.action == "stop":
         stop()
         return 0
+    if args.action == "status":
+        out, code = status()
+        print(json.dumps(out))
+        return code
 
     slot_name, candidates = load_candidates(pathlib.Path(args.candidates))
     data_root = sourced_env(pathlib.Path(args.env_file)).get("STACK_DIR")

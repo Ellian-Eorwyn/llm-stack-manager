@@ -87,6 +87,38 @@ model gets the same questions, run after run.
 
    Results are under `benchmarks/<model>/`. They are not committed.
 
+## Serving one candidate for another tool
+
+A harness of your own can borrow the runner's launching and leave the suites
+out:
+
+```bash
+scripts/eval-run.py serve my-new-model
+```
+
+```bash
+scripts/eval-run.py status
+```
+
+```bash
+scripts/eval-run.py stop
+```
+
+- `serve` starts the candidate detached, waits until it answers `/ready` (or
+  `/health` where there is no `/ready`), prints its base URL and returns. The
+  server keeps running after the command exits. Its pid, name and URL go to
+  `benchmarks/.eval-server.json`, and its log to
+  `benchmarks/<candidate>/server-<time>.log`.
+- `status` reads that file and prints one JSON object,
+  `{"candidate", "pid", "alive", "ready", "url"}`. The exit status says the
+  same thing: 0 when the server runs and answers, 1 when nothing the runner
+  started is running, 2 when it runs but does not answer yet (still loading,
+  or latched unavailable). `alive` is about the recorded pid only: something
+  else listening on the port does not count.
+- `stop` ends the server, then whatever is still listening on its port, and
+  removes the file. It does nothing, successfully, when nothing is served, so
+  it is safe to run from a cleanup that may come second.
+
 ## The suites
 
 ### Speed (`scripts/bench-offload.py`)
