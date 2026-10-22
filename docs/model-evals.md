@@ -130,6 +130,11 @@ scripts/eval-run.py stop
 - `stop` ends the server, then whatever is still listening on its port, and
   removes the file. It does nothing, successfully, when nothing is served, so
   it is safe to run from a cleanup that may come second.
+- On a card borrowed with `scripts/gpu-lease.py`, give the lease
+  `eval-run.py stop` as its `--on-release` command, so a release (the
+  watchdog's too, if the harness dies) takes the candidate off the card
+  before the slot's own model comes back. `docs/gpu-lease.md` has the
+  details.
 
 ## The suites
 

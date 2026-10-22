@@ -3,9 +3,10 @@
 gpu-lease.py — lend the chat backend's GPU to ComfyUI for one job, then give it back.
 
     gpu-lease.py acquire [--holder NAME] [--max-minutes N] [--idle-minutes N] [--force]
+                         [--on-release CMD]
     gpu-lease.py acquire --sticky [--force]      (ComfyUI mode: held until released)
     gpu-lease.py touch [--max-minutes N]
-    gpu-lease.py release [--reason TEXT] [--holder NAME]
+    gpu-lease.py release [--reason TEXT] [--holder NAME] [--skip-on-release]
     gpu-lease.py status
     gpu-lease.py watch          (the watchdog; systemd runs it, not you)
     gpu-lease.py heal           (the backend healer; a systemd timer runs it each minute)
@@ -59,6 +60,13 @@ locally again. ComfyUI never touches GPU 0. Output is one JSON object; the
 exit status is non-zero when something is left wrong, with the reason in
 "error".
 
+A holder that puts something of its own on the card (a model served outside
+the stack, say) passes `--on-release CMD` to take it off again. The lease
+keeps the command, and every release runs it first, the watchdog's too, so a
+holder that died still gets cleaned up before the 27B starts. While it fails
+or times out the backend is not started and the lease stays, for the
+watchdog to try again; `release --skip-on-release` gives up on it.
+
 `heal` restarts a backend that is running but has stopped serving. NInfer
 latches itself "unavailable" (/health 503, process alive, so systemd's
 Restart= never fires) after a worker failure it cannot recover from — on
@@ -107,6 +115,7 @@ DRAIN_TIMEOUT = float(os.environ.get("GPU_LEASE_DRAIN_SECONDS", "600"))
 COMFY_READY_TIMEOUT = float(os.environ.get("GPU_LEASE_COMFY_READY_SECONDS", "300"))
 COMFY_QUEUE_TIMEOUT = float(os.environ.get("GPU_LEASE_COMFY_QUEUE_SECONDS", "300"))
 BACKEND_READY_TIMEOUT = float(os.environ.get("GPU_LEASE_BACKEND_READY_SECONDS", "300"))
+ON_RELEASE_TIMEOUT = float(os.environ.get("GPU_LEASE_ON_RELEASE_SECONDS", "180"))
 POLL = float(os.environ.get("GPU_LEASE_POLL_SECONDS", "2"))
 WATCH_POLL = float(os.environ.get("GPU_LEASE_WATCH_SECONDS", "60"))
 FIXED_GRACE = 600  # a fixed lease's watchdog waits this long past `expires`
@@ -135,8 +144,8 @@ def sleep(seconds: float):
     time.sleep(seconds)
 
 
-def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+def run(cmd: list[str], check: bool = True, timeout: float = 120) -> subprocess.CompletedProcess:
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if check and proc.returncode != 0:
         raise LeaseError(f"{' '.join(cmd)} failed: {(proc.stderr or proc.stdout).strip()[:300]}")
     return proc
@@ -429,7 +438,7 @@ def releases_at(lease: dict, activity: float, t: datetime) -> float | None:
 # --- commands -------------------------------------------------------------------
 
 def acquire(holder: str, max_minutes: int | None, force: bool, idle_minutes: int | None = None,
-            sticky: bool = False) -> dict:
+            sticky: bool = False, on_release: str | None = None) -> dict:
     t0 = time.monotonic()
     started = now()
     if max_minutes is None:
@@ -463,6 +472,8 @@ def acquire(holder: str, max_minutes: int | None, force: bool, idle_minutes: int
         # release it in its `finally`, under the second one.
         existing["idle_minutes"] = idle_minutes
         existing["forced"] = bool(existing.get("forced") or force)
+        if on_release:
+            existing["on_release"] = on_release
         return {**touch(max_minutes, lease=existing), "renewed": True}
     if in_quiet_window(started) and not force:
         raise LeaseError(f"inside the quiet window {QUIET_WINDOW}; overnight jobs use the 27B (use --force to override)")
@@ -490,6 +501,8 @@ def acquire(holder: str, max_minutes: int | None, force: bool, idle_minutes: int
         "backend_unit": BACKEND_UNIT,
         "device": LENT_DEVICE,
     }
+    if on_release:
+        lease["on_release"] = on_release
     write_lease(lease)  # the proxy falls back from here on
     try:
         wait_until(lambda: backend_busy() is not True, DRAIN_TIMEOUT, "the 27B to finish its current request")
@@ -506,7 +519,27 @@ def acquire(holder: str, max_minutes: int | None, force: bool, idle_minutes: int
     return {"ok": True, **lease}
 
 
-def release(reason: str, holder: str | None = None) -> dict:
+def run_on_release(lease: dict) -> dict:
+    """The holder's cleanup command, bounded by ON_RELEASE_TIMEOUT and logged."""
+    cmd = lease["on_release"]
+    t0 = time.monotonic()
+    try:
+        proc = run(["/bin/sh", "-c", cmd], check=False, timeout=ON_RELEASE_TIMEOUT)
+        code = proc.returncode
+        failure = f"exited {code}: {(proc.stderr or proc.stdout or '').strip()[-300:]}"
+    except subprocess.TimeoutExpired:
+        code, failure = None, f"timed out after {int(ON_RELEASE_TIMEOUT)} s"
+    except OSError as exc:
+        code, failure = None, str(exc)
+    result = {"ok": code == 0, "command": cmd, "exit": code, "seconds": round(time.monotonic() - t0, 1)}
+    if code != 0:
+        result["error"] = f"on-release command {failure}"
+    log_event({"event": "on-release", "at": now().isoformat(timespec="seconds"),
+               "holder": lease.get("holder"), **result})
+    return result
+
+
+def release(reason: str, holder: str | None = None, skip_on_release: bool = False) -> dict:
     t0 = time.monotonic()
     lease = read_lease()
     if holder and lease and lease.get("sticky") and lease.get("holder") != holder:
@@ -516,6 +549,15 @@ def release(reason: str, holder: str | None = None) -> dict:
                 "why": "ComfyUI mode is on (sticky lease); release without --holder to turn it off",
                 "held": lease}
     errors = []
+    # The holder's own cleanup comes first, whoever releases: a holder that
+    # died left whatever it put on the card there, and the backend started
+    # beside it would fail to load and keep the lease (and the fallback) on.
+    cleanup = None
+    if lease and lease.get("on_release") and not skip_on_release:
+        cleanup = run_on_release(lease)
+        if not cleanup["ok"]:
+            errors.append(f"{cleanup['error']}; {BACKEND_UNIT} not started while GPU {LENT_DEVICE} "
+                          "may still be in use (release --skip-on-release to start it anyway)")
     # Let a running job finish, then stop whatever is left.
     try:
         wait_until(lambda: not comfy_queue_len(), COMFY_QUEUE_TIMEOUT, "ComfyUI's queue to empty")
@@ -536,17 +578,20 @@ def release(reason: str, holder: str | None = None) -> dict:
         move_comfy(LENT_DEVICE)  # ComfyUI stays on GPU 1; restart only if it drifted
     except LeaseError as exc:
         errors.append(str(exc))
-    try:
-        run(["sudo", "-n", "systemctl", "start", BACKEND_UNIT])
-        wait_until(backend_healthy, BACKEND_READY_TIMEOUT, f"{BACKEND_UNIT} to answer /health")
-    except LeaseError as exc:
-        errors.append(str(exc))
+    if cleanup is None or cleanup["ok"]:
+        try:
+            run(["sudo", "-n", "systemctl", "start", BACKEND_UNIT])
+            wait_until(backend_healthy, BACKEND_READY_TIMEOUT, f"{BACKEND_UNIT} to answer /health")
+        except LeaseError as exc:
+            errors.append(str(exc))
     # The lease file goes only once the backend answers: until then the proxy
     # keeps serving from the fallback instead of returning 503s.
     if backend_healthy():
         LEASE_FILE.unlink(missing_ok=True)
-    if not reason.startswith("watchdog"):
-        clear_watchdog()  # (the watchdog itself just exits)
+    if not reason.startswith("watchdog") and not LEASE_FILE.exists():
+        # (the watchdog itself just exits). A release that left the lease
+        # keeps the watchdog, which tries again when the lease is due.
+        clear_watchdog()
     result = {
         "ok": not errors,
         "reason": reason,
@@ -555,6 +600,8 @@ def release(reason: str, holder: str | None = None) -> dict:
         "backend_healthy": backend_healthy(),
         "lease_file": LEASE_FILE.exists(),
     }
+    if cleanup is not None:
+        result["on_release"] = cleanup
     if errors:
         result["error"] = "; ".join(errors)
     log_event({"event": "release", "at": now().isoformat(timespec="seconds"), **result})
@@ -712,12 +759,17 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--sticky", action="store_true",
                    help="ComfyUI mode: hold GPU 1 until a release without --holder (no end, no idle limit)")
     a.add_argument("--force", action="store_true", help="ignore the quiet window")
+    a.add_argument("--on-release", default=None, metavar="CMD",
+                   help="a shell command every release runs first, the watchdog's too: the holder's "
+                        f"cleanup (absolute paths; {int(ON_RELEASE_TIMEOUT)} s at most; must be safe to repeat)")
     t = sub.add_parser("touch", help="mark activity now; keeps an idle lease from ending")
     t.add_argument("--max-minutes", type=int, default=None, help="also move the end out to now + N")
     r = sub.add_parser("release")
     r.add_argument("--reason", default="done")
     r.add_argument("--holder", default=None,
                    help="the releasing job's holder; a sticky lease (ComfyUI mode) held by another is kept")
+    r.add_argument("--skip-on-release", action="store_true",
+                   help="do not run the lease's --on-release command (one that keeps failing)")
     sub.add_parser("status")
     sub.add_parser("watch", help="the watchdog loop (systemd runs it)")
     sub.add_parser("heal", help="restart a backend that runs but no longer serves (a timer runs it)")
@@ -744,11 +796,12 @@ def main(argv: list[str] | None = None) -> int:
         with locked():
             if args.cmd == "acquire":
                 holder = STICKY_HOLDER if args.sticky and args.holder == "comfyui" else args.holder
-                result = acquire(holder, args.max_minutes, args.force, args.idle_minutes, args.sticky)
+                result = acquire(holder, args.max_minutes, args.force, args.idle_minutes, args.sticky,
+                                 args.on_release)
             elif args.cmd == "touch":
                 result = touch(args.max_minutes)
             else:
-                result = release(args.reason, args.holder)
+                result = release(args.reason, args.holder, args.skip_on_release)
     except LeaseError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 1

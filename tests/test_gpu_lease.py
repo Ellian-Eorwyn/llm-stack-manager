@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -37,14 +38,20 @@ class FakeLlms:
         self.history: list[float] = []  # epoch seconds of finished ComfyUI jobs
         self.watchdog_up = False
         self.commands: list[list[str]] = []
+        self.timeouts: list[float] = []
         self.fail: dict[str, str] = {}
+        self.hang: set[str] = set()  # commands that run past their timeout
         self.backend_latched = False  # NInfer's "unavailable": running, /health 503
         self.backend_since = NOON.timestamp() - 3600  # when the unit last (re)started
         self.restart_heals = True
 
-    def run(self, cmd, check=True):
+    def run(self, cmd, check=True, timeout=120):
         self.commands.append(cmd)
+        self.timeouts.append(timeout)
         joined = " ".join(cmd)
+        for needle in self.hang:
+            if needle in joined:
+                raise subprocess.TimeoutExpired(cmd, timeout)
         for needle, err in self.fail.items():
             if needle in joined:
                 if check:
@@ -261,6 +268,118 @@ class LeaseTests(FakeLlmsCase):
         with mock.patch.object(lease, "now", lambda: NOON + timedelta(minutes=31)):
             self.assertTrue(lease.status()["expired"])
         self.assertFalse(lease.status()["expired"])
+
+    def test_a_failed_release_keeps_the_watchdog_for_a_retry(self):
+        lease.acquire("test", 30, False)
+        self.fake.fail["systemctl start llm-a"] = "unit failed"
+        self.assertFalse(lease.release("done")["ok"])
+        self.assertTrue(self.fake.watchdog_up)  # nobody else would try again
+        del self.fake.fail["systemctl start llm-a"]
+        self.assertTrue(lease.release("done")["ok"])
+        self.assertFalse(self.fake.watchdog_up)
+
+
+class OnReleaseTests(FakeLlmsCase):
+    """--on-release: the holder's cleanup, run by every release before the backend starts."""
+
+    CLEANUP = "/opt/stack/scripts/eval-run.py stop"
+
+    def setUp(self):
+        super().setUp()
+        self.clock = Clock(NOON)
+        self.more = mock.patch.multiple(lease, now=self.clock.now, sleep=self.clock.sleep, WATCH_POLL=60)
+        self.more.start()
+
+    def tearDown(self):
+        self.more.stop()
+        super().tearDown()
+
+    def ran(self) -> list[str]:
+        """The commands that matter here, in order."""
+        wanted = (["/bin/sh", "-c", self.CLEANUP], ["sudo", "-n", "systemctl", "start", "llm-a"])
+        return [" ".join(c) for c in self.fake.commands if c in wanted]
+
+    def test_release_runs_it_before_the_backend_starts(self):
+        lease.acquire("bench", 30, True, on_release=self.CLEANUP)
+        self.assertEqual(lease.read_lease()["on_release"], self.CLEANUP)
+        result = lease.release("done", holder="bench")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.ran(), [f"/bin/sh -c {self.CLEANUP}", "sudo -n systemctl start llm-a"])
+        self.assertEqual(result["on_release"]["exit"], 0)
+        i = self.fake.commands.index(["/bin/sh", "-c", self.CLEANUP])
+        self.assertEqual(self.fake.timeouts[i], lease.ON_RELEASE_TIMEOUT)
+        events = [json.loads(l) for l in lease.LOG_FILE.read_text().splitlines()]
+        self.assertEqual([e["event"] for e in events], ["acquire", "on-release", "release"])
+        self.assertEqual(events[1]["holder"], "bench")
+        self.assertFalse(lease.LEASE_FILE.exists())
+
+    def test_the_watchdog_runs_it_for_a_holder_that_died(self):
+        lease.acquire("bench", 30, True, on_release=self.CLEANUP)
+        self.assertEqual(lease.watch(), 0)
+        self.assertEqual(self.ran(), [f"/bin/sh -c {self.CLEANUP}", "sudo -n systemctl start llm-a"])
+        self.assertTrue(self.fake.backend_up)
+        self.assertFalse(lease.LEASE_FILE.exists())
+
+    def test_a_failing_cleanup_keeps_the_backend_off_until_it_succeeds(self):
+        lease.acquire("bench", 30, True, on_release=self.CLEANUP)
+        self.fake.fail["eval-run.py stop"] = "port 8020 still in use"
+        result = lease.release("done", holder="bench")
+        self.assertFalse(result["ok"])
+        self.assertIn("on-release command exited 1: port 8020 still in use", result["error"])
+        self.assertIn("llm-a not started", result["error"])
+        self.assertEqual(self.ran(), [f"/bin/sh -c {self.CLEANUP}"])
+        self.assertFalse(self.fake.backend_up)
+        self.assertTrue(lease.LEASE_FILE.exists())  # the proxy keeps the fallback
+        self.assertTrue(self.fake.watchdog_up)
+        # The watchdog tries again once the lease is due; by then it works.
+        del self.fake.fail["eval-run.py stop"]
+        self.assertEqual(lease.watch(), 0)
+        self.assertTrue(self.fake.backend_up)
+        self.assertFalse(lease.LEASE_FILE.exists())
+
+    def test_a_cleanup_that_hangs_times_out(self):
+        lease.acquire("bench", 30, True, on_release=self.CLEANUP)
+        self.fake.hang.add("eval-run.py stop")
+        result = lease.release("done")
+        self.assertFalse(result["ok"])
+        self.assertIn(f"timed out after {int(lease.ON_RELEASE_TIMEOUT)} s", result["error"])
+        self.assertIsNone(result["on_release"]["exit"])
+        self.assertFalse(self.fake.backend_up)
+
+    def test_skip_on_release_gives_up_on_it(self):
+        lease.acquire("bench", 30, True, on_release=self.CLEANUP)
+        self.fake.fail["eval-run.py stop"] = "No such file or directory"
+        self.assertFalse(lease.release("done")["ok"])
+        self.fake.commands.clear()
+        result = lease.release("done", skip_on_release=True)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.ran(), ["sudo -n systemctl start llm-a"])
+        self.assertNotIn("on_release", result)
+
+    def test_a_lease_without_one_runs_nothing_extra(self):
+        lease.acquire("comfyui-edit", 30, False)
+        self.assertNotIn("on_release", lease.read_lease())
+        result = lease.release("done")
+        self.assertNotIn("on_release", result)
+        self.assertFalse(any(c[0] == "/bin/sh" for c in self.fake.commands))
+
+    def test_a_failed_acquire_cleans_up_too(self):
+        self.fake.backend_busy_polls = 10**6
+        with self.assertRaises(lease.LeaseError):
+            lease.acquire("bench", 30, True, on_release=self.CLEANUP)
+        self.assertEqual(self.ran(), [f"/bin/sh -c {self.CLEANUP}", "sudo -n systemctl start llm-a"])
+
+    def test_main_routes_the_flags(self):
+        out = []
+        with mock.patch("builtins.print", lambda s: out.append(json.loads(s))):
+            self.assertEqual(lease.main(["acquire", "--holder", "bench", "--force",
+                                         "--on-release", self.CLEANUP]), 0)
+            self.fake.fail["eval-run.py stop"] = "boom"
+            self.assertEqual(lease.main(["release", "--holder", "bench"]), 1)
+            self.assertEqual(lease.main(["release", "--holder", "bench", "--skip-on-release"]), 0)
+        self.assertEqual(out[0]["on_release"], self.CLEANUP)
+        self.assertIn("boom", out[1]["error"])
+        self.assertTrue(out[2]["ok"])
 
 
 

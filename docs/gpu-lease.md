@@ -8,10 +8,10 @@ generation job therefore evicts the 27B from GPU 1 for a few minutes with
 normal flow.
 
 ```
-gpu-lease.py acquire [--holder NAME] [--max-minutes N] [--idle-minutes N] [--force]
+gpu-lease.py acquire [--holder NAME] [--max-minutes N] [--idle-minutes N] [--force] [--on-release CMD]
 gpu-lease.py acquire --sticky [--force]
 gpu-lease.py touch [--max-minutes N]
-gpu-lease.py release [--reason TEXT] [--holder NAME]
+gpu-lease.py release [--reason TEXT] [--holder NAME] [--skip-on-release]
 gpu-lease.py status
 ```
 
@@ -31,7 +31,47 @@ Each prints one JSON object. The exit status is non-zero, with the reason in
    is on GPU 1, starts `llm-a` and waits for `/health`. Only then does it
    remove the lease file, so the proxy keeps using the fallback while the 27B
    loads. The next generation pays a one-time model load (~25 s), not a
-   ComfyUI restart.
+   ComfyUI restart. If the lease has an `--on-release` command, `release` runs
+   it before all of this (below).
+
+## A holder's own cleanup: `--on-release`
+
+A holder that puts something of its own on GPU 1, such as a model served
+outside the stack with `scripts/eval-run.py serve`, must take it off before
+the 27B comes back. Otherwise the 27B fails to load beside it, never answers
+`/health`, and the lease file (and with it the fallback) stays for good. If
+the holder dies, its `finally` never runs, and the watchdog's release would
+start the 27B on a full card. So the holder hands the lease its cleanup:
+
+```
+gpu-lease.py acquire --holder bench --max-minutes 420 --force \
+    --on-release "/usr/bin/python3 /path/to/llm-stack/scripts/eval-run.py stop"
+```
+
+- The lease file keeps the command (`on_release`), and `status` shows it.
+- Every release runs it first, whoever releases: the holder's own, the
+  watchdog's, and the one after a failed `acquire`. It runs as
+  `/bin/sh -c CMD`, as the lease's user, on the lease's host, with at most
+  `GPU_LEASE_ON_RELEASE_SECONDS` (default 180) to finish. The watchdog runs
+  under systemd with a short `PATH`, so give absolute paths.
+- It must be safe to run more than once, and when there is nothing to clean
+  up. A holder that cleaned up itself still has it run once more at release.
+  (`eval-run.py stop` does nothing, successfully, when nothing is served.)
+- Each run is an `on-release` event in `~/.local/state/gpu-lease.jsonl` (the
+  command, its exit status, how long it took), and the release's result
+  carries it as `on_release`.
+- **While it fails** (a non-zero exit, or the timeout) the backend is not
+  started: the card may still be in use. The release reports `ok: false`, with
+  the command's last output in `error`. The lease stays, so the proxy keeps
+  using the fallback. The watchdog stays too, and tries the whole release
+  again when the lease is due (a fixed lease: 10 minutes after `expires`),
+  then every five minutes.
+- **To give up on it** (a command that can never succeed), clean the card by
+  hand, then `gpu-lease.py release --skip-on-release`.
+
+It belongs to the lease the `acquire` creates (or, for an idle lease, renews).
+An `acquire` that shares ComfyUI mode's sticky lease, or finds it already on,
+does not add it.
 
 ## Three kinds of lease
 
@@ -75,7 +115,9 @@ check, the watchdog takes the newest of:
 (`GPU_LEASE_WATCH_SECONDS`) and releases when the lease is due. It exits when
 the lease is gone. `Restart=on-failure` brings it back after a crash, and a
 release that left something wrong (the 27B didn't answer) exits 1, so it is
-retried five minutes later. A release by anyone else stops it.
+retried five minutes later. A release by anyone else stops it, unless that
+release left the lease in place (the 27B didn't answer, or an `--on-release`
+command failed): then the watchdog stays, to try again when the lease is due.
 `systemctl --user status gpu1-lease-watchdog` shows it.
 
 **`touch`** marks activity now (and with `--max-minutes N` moves the end to at
@@ -94,7 +136,7 @@ of an idle one.
 - The manager's recorded expectation for `llm-a` is left alone. A reboot
   mid-lease clears the tmpfs lease file, and `llm-stack-restore` brings the 27B
   back.
-- A log line per acquire, touch and release goes to
+- A log line per acquire, touch, `on-release` command and release goes to
   `~/.local/state/gpu-lease.jsonl`. A watchdog release's `reason` says why:
   `watchdog: ComfyUI idle 60 min`, `watchdog: hard ceiling` or
   `watchdog: past its end`.
@@ -186,4 +228,5 @@ ExecStart=/home/ellie/AI/ComfyUI/run-comfyui.sh --listen 100.124.56.11 --port 81
 `GPU_LEASE_BACKEND_UNIT`, `GPU_LEASE_BACKEND_URL`, `GPU_LEASE_COMFY_UNIT`,
 `GPU_LEASE_COMFY_URL`, `GPU_LEASE_DEVICE`, `GPU_LEASE_QUIET`,
 `GPU_LEASE_QUIET_IDLE_MINUTES`, `GPU_LEASE_HEAL_MAX_PER_HOUR`, and the timeouts and intervals
-(`GPU_LEASE_*_SECONDS`).
+(`GPU_LEASE_*_SECONDS`, among them `GPU_LEASE_ON_RELEASE_SECONDS` for an
+`--on-release` command).
