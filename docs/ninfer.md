@@ -27,6 +27,7 @@ CUDA-graph decode are built for exactly that card and model.
 | What | Pin |
 |---|---|
 | Engine | `ashalliants/ninfer-3090` v0.15.1 @ `d2dd8e70e5` (2026-10-09), `dependencies.json` entry `ninfer-3090` |
+| Engine on llms | v0.16.2 @ `8426065f` (2026-10-24), built by hand in `deps/ninfer-3090-v0162` and chosen with `NINFER_BIN`; blank `NINFER_BIN` is the v0.15.1 rollback |
 | Model | `WarlaxZ/Qwen3.8-27B-NInfer-3090` @ `d47f2732d369acaec76dc44228f67c72b081df2f`, `qwen3_8_27b.ninfer` (saved on llms as `qwen3_8_27b-v013.ninfer`) |
 | Model size | 18,982,458,624 bytes, sha256 `7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706` |
 
@@ -90,7 +91,7 @@ The engine's own settings are in the "NVIDIA (NInfer)" section:
 The defaults leave out the fork's lossy memory trades (`--embedding-q4`, `--lm-head-q6`,
 `--gdn-state-fp16`).
 
-### Why v0.15.1 and not v0.16.0
+### v0.16.0's structured output, fixed in v0.16.1
 
 v0.16.0 (2026-10-14) breaks structured output on llms. With `response_format`
 `json_object` or `json_schema` the replies are valid JSON with mangled content:
@@ -103,6 +104,16 @@ proxy adds to every bare `json_object`. Hermes's helpers and the memory graph as
 JSON, so the pin stays on v0.15.1 until a release fixes it. Reported upstream as
 [ashalliants/ninfer-3090#331](https://github.com/ashalliants/ninfer-3090/issues/331), with a
 temperature-0 reproduction (11 of 12 constrained replies wrong on v0.16.0, none on v0.15.1).
+
+v0.16.1 fixed both (#335): v0.16.0 had compiled the JSON grammar without whitespace, which
+pushed the model off its own tokens. The constrained reply now keeps the model's layout,
+indentation included, and `json_object` takes `"schema":{"type":"object"}`. Tested on
+2026-10-24 with v0.16.2: in all five configurations (both artifacts, DFlash2 and none,
+v0.15.1 as baseline) every constrained reply was the unconstrained text with the same token
+count, and the same on the live slot with n-gram drafting. The test kit is
+`ninfer-work/run-331.sh` on llms. `json_object` with any narrower schema is still refused,
+so the proxy sends that as `json_schema` (below). Prose on the live slot: 103 tok/s against
+105 on v0.15.1 (thinking off, temperature 0, 600 tokens).
 
 The launcher is ready for v0.16 all the same. It asks the binary (`--help`) which cache
 flags it takes: v0.16 replaced `--max-private-continuations 8 --max-shared-prefixes 8
@@ -125,7 +136,9 @@ NInfer refuses what it cannot honour instead of ignoring it. For an NInfer slot 
   - drops a non-neutral `repetition_penalty`, nonzero `logit_bias` and requested log
     probabilities;
   - caps `top_k` at 20;
-  - turns `tool_choice: "required"` into `"auto"`.
+  - turns `tool_choice: "required"` into `"auto"`;
+  - sends a `json_object` carrying a schema other than `{"type":"object"}` as `json_schema`,
+    which v0.16 requires and v0.15.1 also takes.
 - On Responses, keeps only the top-level fields that route accepts. The reasoning level moves to
   `reasoning.effort`, and thinking-off becomes `"none"`.
 
