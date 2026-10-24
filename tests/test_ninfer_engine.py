@@ -179,6 +179,19 @@ class NinferProxyTests(unittest.TestCase):
         self.assertEqual(payload, {"reasoning_effort": "none",
                                    "chat_template_kwargs": {"enable_thinking": False}})
 
+    def test_a_json_object_with_a_real_schema_becomes_json_schema(self):
+        schema = {"type": "object", "properties": {"city": {"type": "string"}}}
+        payload = {"response_format": {"type": "json_object", "schema": schema}}
+        self.proxy._adapt_for_ninfer(payload, "chat", True)
+        self.assertEqual(payload["response_format"], {
+            "type": "json_schema", "json_schema": {"name": "response", "schema": schema}})
+
+    def test_a_json_object_ninfer_takes_is_left_alone(self):
+        for fmt in ({"type": "json_object"}, {"type": "json_object", "schema": {"type": "object"}}):
+            payload = {"response_format": dict(fmt)}
+            self.proxy._adapt_for_ninfer(payload, "chat", True)
+            self.assertEqual(payload["response_format"], fmt)
+
     def test_responses_get_only_the_fields_they_accept(self):
         payload = {"model": "think", "input": "hi", "reasoning_effort": "low", "top_k": 20,
                    "min_p": 0.0, "repeat_penalty": 1.0, "reasoning_format": "deepseek",

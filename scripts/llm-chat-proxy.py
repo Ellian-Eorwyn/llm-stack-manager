@@ -2226,6 +2226,15 @@ def _adapt_for_ninfer(payload: dict[str, Any], kind: str | None, is_generation: 
         top_k = payload.get("top_k")
         if isinstance(top_k, (int, float)) and not 0 <= top_k <= 20:
             payload["top_k"] = 20 if top_k > 20 else 0
+        # Since v0.16 `json_object` takes no schema but `{"type": "object"}`
+        # (ninfer-3090#331); a narrower one is the same request as json_schema.
+        fmt = payload.get("response_format")
+        if (isinstance(fmt, dict) and fmt.get("type") == "json_object"
+                and isinstance(fmt.get("schema"), dict) and fmt["schema"] != {"type": "object"}):
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "response", "schema": fmt["schema"]},
+            }
     if payload.get("tool_choice") == "required":
         payload["tool_choice"] = "auto"
         dropped.append("tool_choice=required")
