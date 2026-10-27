@@ -226,6 +226,19 @@ A normal heavy day (~800K prompt tokens) would write ~100 GB. That is small
 against an SSD's rated endurance, but it bought little. The tier writes its
 files as `$TMPDIR/splash-cache-*`.
 
+**1.3.2 on trial** (from 2026-10-26): `LLM_A_SPLASH_MAX_CACHE_DISK_GB=32` and
+`LLM_A_SPLASH_ARGS_JSON='["--max-cache-disk-writes 100G"]'`. `/status` `disk`
+shows the tier: `limit_bytes` 32 GiB, `written_bytes`, `read_bytes`,
+`kv_demotions`, `kv_restores`, `writes_gated`, and `cache.kv_disk_hit_tokens`.
+`write_budget_bytes` is not the daily cap: it read 25 GiB at the start under a
+100G cap and 0 (`writes_gated: budget`) after 59 GiB had been written in about
+7 h, so the budget seems to refill through the day; Splash does not document
+it. Read the cap from the process arguments. The first night was agent eval
+turns, nearly all fresh conversations: 59 GiB written, 17,790 KV demotions,
+921 blocks restored (29,472 prompt tokens not read again). A tier like this
+pays when a conversation returns after its context was pushed out of memory,
+which an eval of one-shot turns rarely does; judge it on ordinary days.
+
 Splash reports its plan and live use on `/status` (`memory_plan.budget`,
 `memory_actual`) and `/metrics` (`splash_memory_current_bytes`,
 `splash_state_evictions_total`). Since 1.2 the weights are ordinary Metal
