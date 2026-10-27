@@ -85,7 +85,7 @@ class FallbackChainTests(unittest.TestCase):
         # services may still need the shared wildcard listener.
         for platform in (as_linux, as_darwin):
             with platform():
-                for slot in ("embed", "task"):
+                for slot in ("embed", "rerank", "task"):
                     with self.subTest(platform=platform.__name__, slot=slot):
                         key = f"{slot.upper()}_HOST"
                         self.assertEqual(flags(backends.build_command(slot, BASE))["--host"],

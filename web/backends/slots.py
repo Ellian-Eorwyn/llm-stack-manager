@@ -238,6 +238,9 @@ SLOTS = {
         probe_host_keys=("!RERANK_BACKEND_HOST",),
         prefix="RERANK",
         model_keys=("!RERANKER_MODEL_PATH",),
+        # Tailscale Serve owns the tailnet address on 8006, as on 8005 and 8007,
+        # so the unit needs RERANK_HOST=127.0.0.1 too, not only the router front.
+        host_keys=("HOST", "!LISTEN_HOST"),
         # Not "rerank": the router's INI section name overwrites the child's
         # --alias, and callers send "rank". See docs/model-router.md.
         alias_default="rank",
