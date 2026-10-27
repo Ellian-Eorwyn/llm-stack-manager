@@ -373,6 +373,227 @@ def _note_fallback(active: bool, reason: str = ""):
         _log("fallback off: backend serving again")
 
 
+# Routing long prompts to the fallback while Splash is short of memory
+# (docs/splash.md, "Routing under memory pressure"). Once the Mac runs short,
+# Splash's memory governor refuses to grow its cache and evicts kept
+# conversations instead, so a long agent conversation is prefilled from scratch
+# turn after turn. While that lasts, a long prompt goes to the fallback machine
+# if it is idle and the prompt fits its context, and the rest of that
+# conversation follows it there, where its cache now is. `shadow` decides and
+# logs but serves everything here; `off` (the default) reads nothing.
+CHAT_FALLBACK_ON_GOVERNOR = os.environ.get("CHAT_FALLBACK_ON_GOVERNOR", "off").strip().lower()
+if CHAT_FALLBACK_ON_GOVERNOR not in {"off", "shadow", "on"}:
+    CHAT_FALLBACK_ON_GOVERNOR = "off"
+# Splash's /status; blank is this proxy's own backend.
+CHAT_FALLBACK_GOVERNOR_STATUS_URL = os.environ.get("CHAT_FALLBACK_GOVERNOR_STATUS_URL", "").strip()
+# The fallback backend's own /metrics, read to route only to an idle machine.
+# Blank: nothing is routed (and the log says why).
+CHAT_FALLBACK_METRICS_URL = os.environ.get("CHAT_FALLBACK_METRICS_URL", "").strip()
+# Enter after growth has been refused this long; leave after it is allowed this long.
+CHAT_FALLBACK_GOVERNOR_ENTER_SEC = float(os.environ.get("CHAT_FALLBACK_GOVERNOR_ENTER_SEC", "30"))
+CHAT_FALLBACK_GOVERNOR_LEAVE_SEC = float(os.environ.get("CHAT_FALLBACK_GOVERNOR_LEAVE_SEC", "300"))
+# Prompt size, estimated as characters / 3: only a long prompt is worth moving,
+# and it must leave room in the fallback's context for its reply and a margin.
+CHAT_FALLBACK_GOVERNOR_MIN_TOKENS = int(os.environ.get("CHAT_FALLBACK_GOVERNOR_MIN_TOKENS", "24576"))
+CHAT_FALLBACK_CTX_TOKENS = int(os.environ.get("CHAT_FALLBACK_CTX_TOKENS", "131072"))
+CHAT_FALLBACK_CTX_MARGIN_TOKENS = int(os.environ.get("CHAT_FALLBACK_CTX_MARGIN_TOKENS", "8192"))
+# A routed conversation (its system prompt and first user message) stays on the
+# fallback while it keeps coming back within this many seconds.
+CHAT_FALLBACK_STICKY_SEC = float(os.environ.get("CHAT_FALLBACK_STICKY_SEC", "1800"))
+# One JSON line per decision, in <dir>/<YYYY-MM>.jsonl.
+CHAT_FALLBACK_ROUTING_LOG_DIR = os.path.expanduser(
+    os.environ.get("CHAT_FALLBACK_ROUTING_LOG_DIR", "").strip() or "~/.hermes/state/proxy-routing"
+)
+_PROBE_TTL_SEC = 2.0
+_PROBE_TIMEOUT_SEC = 1.0
+_ROUTE_LOCK = threading.Lock()
+_ROUTE_STATE: dict[str, Any] = {"pressure": False, "denied_since": None, "allowed_since": None}
+_PROBE_CACHE: dict[str, tuple[float, Any]] = {}
+_STICKY: dict[str, float] = {}
+_ROUTE_LOG_ERRORS = {"logged": False}
+_monotonic = time.monotonic  # the tests' clock
+
+
+def _probe(url: str, parse) -> Any:  # noqa: ANN001
+    """GET `url` and parse it, cached for _PROBE_TTL_SEC; None if it fails."""
+    now = _monotonic()
+    with _ROUTE_LOCK:
+        hit = _PROBE_CACHE.get(url)
+        if hit is not None and now - hit[0] < _PROBE_TTL_SEC:
+            return hit[1]
+    try:
+        with urllib.request.urlopen(url, timeout=_PROBE_TIMEOUT_SEC) as resp:
+            value = parse(resp.read())
+    except (OSError, ValueError, urllib.error.URLError):
+        value = None
+    with _ROUTE_LOCK:
+        _PROBE_CACHE[url] = (now, value)
+    return value
+
+
+def _growth_allowed(raw: bytes) -> bool | None:
+    status = json.loads(raw)
+    governor = status.get("memory_governor") if isinstance(status, dict) else None
+    allowed = governor.get("growth_allowed") if isinstance(governor, dict) else None
+    return allowed if isinstance(allowed, bool) else None
+
+
+def _requests_in_flight(raw: bytes) -> float | None:
+    """Running plus waiting requests from Prometheus text: NInfer, else llama.cpp."""
+    values: dict[str, float] = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if len(parts) < 2 or line.startswith("#"):
+            continue
+        try:
+            values[parts[0].split("{", 1)[0]] = float(parts[1])
+        except ValueError:
+            continue
+    for running, waiting in (("ninfer_requests_running", "ninfer_requests_waiting"),
+                             ("ninfer:requests_running", "ninfer:requests_waiting"),
+                             ("llamacpp:requests_processing", "llamacpp:requests_deferred")):
+        if running in values:
+            return values[running] + values.get(waiting, 0.0)
+    return None
+
+
+def _governor_pressure() -> bool | None:
+    """Whether the route is on: growth refused for ENTER_SEC, until allowed for LEAVE_SEC.
+
+    Sampled when requests arrive, not polled, so the gaps between requests count
+    as the state last seen. None when /status cannot be read.
+    """
+    url = CHAT_FALLBACK_GOVERNOR_STATUS_URL or f"http://{BACKEND_HOST}:{BACKEND_PORT}/status"
+    allowed = _probe(url, _growth_allowed)
+    if allowed is None:
+        return None
+    now = _monotonic()
+    change = ""
+    with _ROUTE_LOCK:
+        st = _ROUTE_STATE
+        if allowed:
+            st["denied_since"] = None
+            if st["allowed_since"] is None:
+                st["allowed_since"] = now
+            if st["pressure"] and now - st["allowed_since"] >= CHAT_FALLBACK_GOVERNOR_LEAVE_SEC:
+                st["pressure"], change = False, "off"
+        else:
+            st["allowed_since"] = None
+            if st["denied_since"] is None:
+                st["denied_since"] = now
+            if not st["pressure"] and now - st["denied_since"] >= CHAT_FALLBACK_GOVERNOR_ENTER_SEC:
+                st["pressure"], change = True, "on"
+        pressure = st["pressure"]
+    if change == "on":
+        _log(f"governor-route on ({CHAT_FALLBACK_ON_GOVERNOR}): Splash has refused memory growth for "
+             f"{CHAT_FALLBACK_GOVERNOR_ENTER_SEC:.0f} s; long prompts go to {CHAT_FALLBACK_URL}")
+    elif change == "off":
+        _log(f"governor-route off: growth allowed for {CHAT_FALLBACK_GOVERNOR_LEAVE_SEC:.0f} s")
+    return pressure
+
+
+def _conversation_key(payload: dict[str, Any], kind: str | None) -> str | None:
+    """A conversation's identity: its leading system prompt and first user message."""
+    head: list[Any] = [payload.get("instructions")] if kind == "responses" else []
+    for message in _payload_messages(payload, kind):
+        if message.get("role") in {"system", "developer"}:
+            head.append(message.get("content"))
+        elif message.get("role") == "user":
+            head.append(message.get("content"))
+            return hashlib.sha256(json.dumps(head, sort_keys=True).encode()).hexdigest()[:16]
+    return None
+
+
+def _requested_max_tokens(payload: dict[str, Any]) -> int:
+    for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+        value = payload.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return 0
+
+
+def _governor_route(client_body: bytes, kind: str | None) -> dict[str, Any] | None:
+    """Decide whether this generation request goes to the fallback; None when off.
+
+    The decision is a dict for the routing log, with `route` and the `reason`
+    for it: the first check that failed, or why it routes. Every refusal leaves
+    the request to this proxy's own backend.
+    """
+    if CHAT_FALLBACK_ON_GOVERNOR == "off":
+        return None
+    pressure = _governor_pressure()
+    chars = len(client_body.decode("utf-8", "replace"))
+    decision: dict[str, Any] = {
+        "time": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "mode": CHAT_FALLBACK_ON_GOVERNOR,
+        "kind": kind,
+        "chars": chars,
+        "est_tokens": chars // 3,
+        "governor": {None: "unreadable", True: "pressure", False: "normal"}[pressure],
+        "route": False,
+    }
+
+    def refuse(reason: str) -> dict[str, Any]:
+        decision["reason"] = reason
+        return decision
+
+    if decision["est_tokens"] < CHAT_FALLBACK_GOVERNOR_MIN_TOKENS:
+        return refuse("small")
+    payload = _safe_json_loads(client_body)
+    if payload is None:
+        return refuse("unparsable")
+    max_tokens = _requested_max_tokens(payload)
+    limit = CHAT_FALLBACK_CTX_TOKENS - max_tokens - CHAT_FALLBACK_CTX_MARGIN_TOKENS
+    key = _conversation_key(payload, kind)
+    now = _monotonic()
+    with _ROUTE_LOCK:
+        expiry = _STICKY.get(key) if key else None
+        sticky = expiry is not None and expiry > now
+        if expiry is not None and not sticky:
+            _STICKY.pop(key, None)
+    decision.update(max_tokens=max_tokens, limit_tokens=limit, conversation=key, sticky=sticky)
+    if decision["est_tokens"] > limit:
+        if sticky:  # it has outgrown the fallback, so it stays here from now on
+            with _ROUTE_LOCK:
+                _STICKY.pop(key, None)
+        return refuse("too large for the fallback")
+    if not sticky:
+        if pressure is None:
+            return refuse("governor unreadable")
+        if not pressure:
+            return refuse("no memory pressure")
+    if _lease_active():
+        return refuse("lease")
+    if not CHAT_FALLBACK_METRICS_URL:
+        return refuse("no fallback metrics url")
+    in_flight = _probe(CHAT_FALLBACK_METRICS_URL, _requests_in_flight)
+    if in_flight is None:
+        return refuse("fallback metrics unreadable")
+    if in_flight > 0:
+        return refuse("fallback busy")
+    if key:
+        with _ROUTE_LOCK:
+            _STICKY[key] = now + CHAT_FALLBACK_STICKY_SEC
+            if len(_STICKY) > 256:
+                for stale in [k for k, t in _STICKY.items() if t <= now]:
+                    _STICKY.pop(stale, None)
+    decision["route"] = True
+    decision["reason"] = "sticky" if sticky else "memory pressure"
+    return decision
+
+
+def _log_route(decision: dict[str, Any]):
+    path = os.path.join(CHAT_FALLBACK_ROUTING_LOG_DIR, time.strftime("%Y-%m") + ".jsonl")
+    try:
+        os.makedirs(CHAT_FALLBACK_ROUTING_LOG_DIR, exist_ok=True)
+        with _ROUTE_LOCK, open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(decision) + "\n")
+    except OSError as exc:
+        if not _ROUTE_LOG_ERRORS["logged"]:
+            _ROUTE_LOG_ERRORS["logged"] = True
+            _log(f"governor-route: cannot write {path}: {exc}")
+
+
 # The other side of a fallback: when set, a client that is not on this machine
 # must send `Authorization: Bearer <token>`. Local clients never need it. This is
 # what lets a proxy listen on its tailnet address for the other machine's
@@ -2409,6 +2630,24 @@ def make_handler(
             if can_fall_back and _lease_active():
                 self._forward_to_fallback(method, client_body, "backend lent out")
                 return
+            if (is_generation_request and self.headers.get(FALLBACK_HOP_HEADER) is not None
+                    and _lease_active()):
+                # Another proxy's request, while this backend is lent out or about
+                # to be: answer at once, so it is served where it came from.
+                self._backend_unavailable(BACKEND_HOST, BACKEND_PORT, "It is lent out (gpu-lease).")
+                return
+            decision = _governor_route(client_body, kind) if can_fall_back else None
+            if decision is not None:
+                decision["port"] = self._port_label
+                decision["served_by"] = "local"
+                if decision["route"] and CHAT_FALLBACK_ON_GOVERNOR == "on":
+                    if self._forward_to_fallback(method, client_body, decision["reason"], soft=True):
+                        decision["served_by"] = "fallback"
+                    else:
+                        decision["fallback_failed"] = True
+                _log_route(decision)
+                if decision["served_by"] == "fallback":
+                    return
 
             payload = _safe_json_loads(body) if (is_generation_request or is_embeddings_request) else None
             request_user_text = ""
@@ -2694,12 +2933,19 @@ def make_handler(
                 else:
                     self._backend_unavailable(upstream_host, upstream_port, str(exc))
 
-        def _forward_to_fallback(self, method: str, client_body: bytes, reason: str):
+        def _forward_to_fallback(self, method: str, client_body: bytes, reason: str, *, soft: bool = False) -> bool:
             """Send the client's own request to the fallback proxy and relay its answer.
 
             The client's body goes, not this proxy's rewrite of it: the fallback
             proxy applies its own persona for the alias, as it would for a direct
             client. The answer is relayed byte for byte with one header added.
+
+            A soft forward is one this proxy's own backend could have served
+            (routing under memory pressure). It leaves the fallback state alone,
+            and when the fallback fails, or answers anything but 2xx, before a
+            byte has reached the client, it returns False and sends nothing, so
+            the caller serves the request here. Otherwise the request has been
+            answered, one way or the other, and it returns True.
             """
             target = _fallback_target()
             assert target is not None
@@ -2720,8 +2966,10 @@ def make_handler(
             raw_request = (
                 request_line + "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n"
             ).encode("utf-8") + client_body
-            _note_fallback(True, reason)
+            if not soft:
+                _note_fallback(True, reason)
             wrote_any = False
+            client_gone = False
             try:
                 with socket.create_connection((host, port), timeout=CHAT_FALLBACK_CONNECT_TIMEOUT_SEC) as sock:
                     sock.settimeout(BACKEND_READ_TIMEOUT_SEC)
@@ -2738,20 +2986,30 @@ def make_handler(
                             if idx == -1:
                                 continue
                             seen_header = True
+                            if soft:
+                                status_code, _ = _parse_status_and_headers(bytes(head[:idx]))
+                                if not 200 <= status_code < 300:
+                                    _log(f"governor-route: {CHAT_FALLBACK_URL} answered {status_code}; served here")
+                                    return False
                             chunk = _with_served_by(bytes(head[:idx])) + bytes(head[idx:])
                         try:
                             self.wfile.write(chunk)
                             self.wfile.flush()
                             wrote_any = True
                         except (BrokenPipeError, ConnectionResetError):
+                            client_gone = True
                             break
             except OSError as exc:
+                if not wrote_any and soft:
+                    _log(f"governor-route: {CHAT_FALLBACK_URL} failed ({exc}); served here")
+                    return False
                 if not wrote_any:
                     self._backend_unavailable(
                         BACKEND_HOST,
                         BACKEND_PORT,
                         f"{reason}; the fallback {CHAT_FALLBACK_URL} failed too: {exc}",
                     )
+            return wrote_any or client_gone or not soft
 
         def _gateway_error(self, status_code: int, err_type: str, message: str):
             msg = json.dumps({"error": {"message": message, "type": err_type}}).encode("utf-8")

@@ -234,6 +234,84 @@ buffers rather than mapped cache files, and the manager's memory panel and
 cache, `~/Library/Caches/Splash/weights` (55 GB on the Studio), is no longer
 read and can be deleted.
 
+### Routing under memory pressure
+
+When the Mac is short of memory, Splash's memory governor refuses to grow
+(`/status` `memory_governor.growth_allowed: false`) and evicts kept
+conversations instead. A long agent conversation is then prefilled from scratch
+turn after turn. While that lasts, the chat proxy can send long prompts to its
+fallback (`CHAT_FALLBACK_URL`, the other machine's proxy) instead, as long as
+that machine is idle and the prompt fits its context. It is off unless
+`CHAT_FALLBACK_ON_GOVERNOR` says otherwise:
+
+- `off` (the default): nothing is read and nothing is logged.
+- `shadow`: every decision is made and logged, and every request is served
+  here. This is how to see how often it would route before letting it.
+- `on`: routed requests go to the fallback.
+
+**When it is on.** The proxy reads `/status` when a generation request arrives
+(at most every 2 s; there is no polling). It enters once growth has been refused
+for `CHAT_FALLBACK_GOVERNOR_ENTER_SEC` (30) and leaves once it has been allowed
+for `CHAT_FALLBACK_GOVERNOR_LEAVE_SEC` (300). The time between two requests
+counts as the state last seen. One line in the proxy's log marks each switch:
+
+```
+governor-route on (shadow): Splash has refused memory growth for 30 s; long prompts go to http://…:8012
+governor-route off: growth allowed for 300 s
+```
+
+**Which requests.** Each check below refuses with its reason, in this order, and
+a refused request is served here as usual:
+
+| Reason | The check |
+|---|---|
+| `small` | The prompt (characters of the request body / 3) is under `CHAT_FALLBACK_GOVERNOR_MIN_TOKENS` (24,576). |
+| `too large for the fallback` | It is over `CHAT_FALLBACK_CTX_TOKENS` (131,072) − the request's `max_tokens` − `CHAT_FALLBACK_CTX_MARGIN_TOKENS` (8,192). |
+| `governor unreadable`, `no memory pressure` | `/status` can't be read, or the route is not on (and the conversation is not sticky). |
+| `lease` | A GPU lease is held here (`CHAT_FALLBACK_LEASE_FILE`). |
+| `no fallback metrics url`, `fallback metrics unreadable`, `fallback busy` | `CHAT_FALLBACK_METRICS_URL` is unset or unreadable, or shows a request running or waiting (`ninfer_requests_running` + `_waiting`, or llama.cpp's `requests_processing` + `_deferred`; read at most every 2 s). It must be the fallback backend's own `/metrics`: its proxy does not relay it. |
+
+A request that passes is routed with the reason `memory pressure`.
+
+**Sticky.** A routed conversation stays on the fallback, where its cache now
+is, while it comes back within `CHAT_FALLBACK_STICKY_SEC` (1,800; each routed
+request renews it), even after the pressure ends: reason `sticky`. It is known
+by a hash of its leading system messages and its first user message. A sticky
+conversation still needs an idle fallback and room in its context; once it
+outgrows the fallback it stays here for good.
+
+**Forwarding** goes through the fallback path (`X-LLM-Served-By: fallback`,
+`X-LLM-Fallback-Hop: 1`), with one difference: if the fallback can't be
+reached, or answers anything but 2xx before a byte has reached the client, the
+request is served here after all (`governor-route: … served here` in the log).
+It never turns a request this machine could serve into an error. On the other
+side, a proxy that receives a forwarded request while its own backend is lent
+out answers 503 at once, so a lease that has begun but not yet stopped the
+backend does not take the request.
+
+**The log.** Every decision is one JSON line in
+`CHAT_FALLBACK_ROUTING_LOG_DIR/<YYYY-MM>.jsonl` (default
+`~/.hermes/state/proxy-routing`), written after the reply. No message text is
+kept, only sizes and a 16-character hash:
+
+```json
+{"time": "2026-10-27T01:12:09-07:00", "mode": "shadow", "kind": "chat", "chars": 98412, "est_tokens": 32804,
+ "governor": "pressure", "route": true, "max_tokens": 16384, "limit_tokens": 106496,
+ "conversation": "3f9c0a1b2c4d5e6f", "sticky": false, "reason": "memory pressure", "port": "think",
+ "served_by": "local"}
+```
+
+`served_by` is `fallback` or `local`; `fallback_failed: true` marks a routed
+request that came back here. How often shadow would have routed:
+
+```bash
+jq -r 'select(.route) | .reason' ~/.hermes/state/proxy-routing/$(date +%Y-%m).jsonl | sort | uniq -c
+```
+
+**Before turning it on,** check the fallback reuses a long prefix, or every
+routed turn pays a full prefill there instead: `scripts/ninfer_prefix_test.py`
+(docs/ninfer.md, "Prefix reuse").
+
 ## Stalls
 
 With Splash serving an agent, the Mac froze for 1–30 s after nearly every

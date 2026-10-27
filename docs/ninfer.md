@@ -151,6 +151,33 @@ drops `/slots`, so `scripts/gpu-lease.py` reads `llamacpp:requests_processing` f
 `/metrics` when `/slots` answers 404, to wait for an in-flight request, or for the reload
 after ComfyUI is done.
 
+## Prefix reuse
+
+An agent resends its whole conversation every turn, so what matters is whether the next
+turn prefills only what is new. `/metrics` says: `ninfer_prompt_tokens_total` counts every
+prompt token and `ninfer_prompt_tokens_cached_total` the ones served from cache. The
+llama.cpp-compatible `llamacpp:prompt_tokens_total` beside them counts only the tokens
+prefilled, so the two must not be added together.
+
+`scripts/ninfer_prefix_test.py` measures it. It sends one synthetic agent request of about 36k tokens
+(system prompt, 25 tool schemas, a research session of tool calls and long results; a fresh
+nonce each run), then the same conversation with its reply and one more turn, and prints JSON:
+both TTFTs, the cached tokens of each, and PASS when the second request's cached tokens are at
+least 90% of the prefix and its TTFT is under 10 s. It goes through a proxy with the
+fallback-hop header (`--url`, default `http://127.0.0.1:8012`) and reads the backend's own
+`/metrics` (`--metrics-url`, default `http://127.0.0.1:8010/metrics`). It skips (exit 2)
+while the backend is busy. `--interleave N` sends N short, unrelated conversations between
+the two, so the first one's state has to leave the card and come back from the host cache
+(`--host-context-mib`, `LLM_*_NINFER_HOST_KV_MIB`), as it must when agent turns are
+interleaved with other jobs; `--shape replace` swaps the last user turn instead of adding one.
+
+First run on llms, 2026-10-26, v0.16.2, host cache 4,096 MiB, no interleaving: the second
+request reused 35,706 of 35,715 prefix tokens, and TTFT fell from 26.5 s to 0.21 s. The
+template puts the tool schemas first, so even the cold request found 2,110 tokens cached. The
+host cache was full (4.11 of 4.29 GB) and each request added more
+`ninfer_host_context_shortage_failures_total`, so a conversation whose state has left the
+card's two state slots cannot come back; `--interleave 2` is the test for that.
+
 ## Measured on llms
 
 Measured 2026-09-29 on llms, GPU1 (RTX 3090, driver 615.71, CUDA 13.3), with
