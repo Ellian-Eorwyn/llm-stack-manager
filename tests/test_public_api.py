@@ -5,6 +5,7 @@ import json
 import pathlib
 import sys
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 
@@ -1021,6 +1022,102 @@ class ControlApiAppTests(unittest.TestCase):
             manager.start_control_api({"enabled": True, "host": "100.64.0.1",
                                        "port": 8079, "token": self.TOKEN})
         make_server.assert_called_once()
+
+
+def _werkzeug_refuses(err: int, text: str):
+    """What werkzeug's make_server does on a failed bind: print, then sys.exit(1)
+    from inside the except block, so the SystemExit's context is the OSError."""
+    def make_server(*_args, **_kwargs):
+        try:
+            raise OSError(err, text)
+        except OSError:
+            sys.exit(1)
+    return make_server
+
+
+class ListenerRetryTests(unittest.TestCase):
+    """A listener whose address is not there yet keeps trying, and says why.
+
+    On llms the state and control APIs bind the Tailscale address. At the boots
+    of 2026-10-13 and 10-22 the manager started a second before tailscaled had
+    it; both binds failed with EADDRNOTAVAIL, were reported as "address already
+    in use", and never came back until the manager was restarted by hand.
+    """
+
+    def _run(self, make_server, probe_results, max_attempts=10):
+        printed, listening = [], []
+        threads = []
+        sleeps = []
+
+        class FakeThread:
+            def __init__(self, target=None, name=None, daemon=None):
+                self.target, self.name = target, name
+                threads.append(self)
+
+            def start(self):
+                pass
+
+        probes = iter(probe_results)
+        with patch("werkzeug.serving.make_server", side_effect=make_server), \
+             patch.object(manager.threading, "Thread", FakeThread), \
+             patch.object(manager, "_address_bindable", side_effect=lambda h, p: next(probes)), \
+             patch("builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))):
+            first = manager.serve_listener("llm-api", "100.124.56.11", 8078, object(),
+                                           lambda: listening.append(True),
+                                           sleep=sleeps.append, max_attempts=max_attempts)
+            for thread in list(threads):
+                if thread.name == "llm-api-bind":
+                    thread.target()
+        return first, printed, listening, threads, sleeps
+
+    def test_a_missing_address_is_named_and_retried_until_it_binds(self):
+        server = unittest.mock.MagicMock()
+        calls = []
+
+        def make_server(*args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                return _werkzeug_refuses(99, "Cannot assign requested address")()
+            return server
+
+        first, printed, listening, threads, sleeps = self._run(
+            make_server, ["Cannot assign requested address", None])
+        self.assertFalse(first)
+        self.assertIn("Cannot assign requested address", printed[0])
+        self.assertNotIn("already in use", " ".join(printed))
+        self.assertEqual(sleeps, [5, 5])
+        self.assertEqual(len(calls), 2, "werkzeug is only called once the probe says it will bind")
+        self.assertEqual(listening, [True])
+        self.assertIn("Bound 100.124.56.11:8078 on try 3", printed[-1])
+        self.assertIn("llm-api", [t.name for t in threads])  # the serving thread
+
+    def test_retrying_is_quiet_until_the_reason_changes(self):
+        first, printed, listening, _, _ = self._run(
+            _werkzeug_refuses(99, "Cannot assign requested address"),
+            ["Cannot assign requested address"] * 3 + ["Address already in use"] * 5,
+            max_attempts=9)
+        self.assertFalse(first)
+        self.assertEqual(listening, [])
+        self.assertEqual(len(printed), 2, printed)
+        self.assertIn("Address already in use", printed[1])
+
+    def test_a_taken_port_says_so(self):
+        _, printed, _, _, _ = self._run(_werkzeug_refuses(98, "Address already in use"), [],
+                                        max_attempts=1)
+        self.assertIn("(Address already in use)", printed[0])
+
+    def test_a_first_bind_that_works_starts_no_retry_thread(self):
+        first, printed, listening, threads, _ = self._run(
+            lambda *a, **k: unittest.mock.MagicMock(), [])
+        self.assertTrue(first)
+        self.assertEqual(listening, [True])
+        self.assertEqual([t.name for t in threads], ["llm-api"])
+        self.assertEqual(printed, [])
+
+    def test_the_probe_reports_a_missing_address(self):
+        # 192.0.2.1 is TEST-NET-1: never assigned to this host.
+        self.assertIsNotNone(manager._address_bindable("192.0.2.1", 0))
+        self.assertIsNone(manager._address_bindable("127.0.0.1", 0))
 
 
 class ControlApiBehaviourTests(unittest.TestCase):

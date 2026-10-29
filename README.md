@@ -306,6 +306,9 @@ and serves an endpoint that returns every API key in your env file, so it is not
 something to expose. The routes that write anything are not registered on 8078
 at all, which is what makes it safe to reach from another machine.
 `LLM_API_TOKEN` is optional and off by default.
+If the address is not there yet when the manager starts (a Tailscale address at
+boot), the state and control APIs log the real reason and try again every 5 s
+until it binds; the manager itself starts either way.
 
 ```bash
 curl -s localhost:8078/api/v1/schema   | jq .          # what it serves

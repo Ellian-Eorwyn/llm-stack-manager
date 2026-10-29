@@ -3092,6 +3092,95 @@ def create_control_api_app() -> Flask:
     return control_app
 
 
+#: How often a listener that could not bind tries again. At boot the state and
+#: control APIs can be configured on a Tailscale address that does not exist yet
+#: (llms, 2026-10-13 and 10-22: the manager started a second before tailscaled had
+#: it), and a listener that gives up there stays down until someone restarts the
+#: manager by hand. One bind attempt every few seconds costs nothing.
+BIND_RETRY_SECONDS = 5
+
+
+def _bind_failure(exc: BaseException) -> str:
+    """The real reason a bind failed, in words.
+
+    werkzeug catches the `OSError`, prints its strerror and calls `sys.exit(1)`
+    from inside the `except` block, so the `SystemExit` carries the `OSError` as
+    its context. Reading it from there is what tells "Cannot assign requested
+    address" (not up yet) from "Address already in use" (taken).
+    """
+    cause = exc if isinstance(exc, OSError) else exc.__context__
+    if isinstance(cause, OSError):
+        return cause.strerror or str(cause)
+    return 'werkzeug refused the bind'
+
+
+def _address_bindable(host: str, port: int) -> str | None:
+    """Try the bind with a bare socket: None if it would work, else the reason.
+
+    Retries probe this way rather than through werkzeug, which prints a line to
+    stderr on every failure; a missing address would otherwise write one to the
+    journal every few seconds. Same SO_REUSEADDR as werkzeug's server, so a
+    socket in TIME_WAIT does not read as taken here and free there.
+    """
+    family = socket.AF_INET6 if ':' in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, port))
+    except OSError as exc:
+        return exc.strerror or str(exc)
+    return None
+
+
+def serve_listener(label: str, host: str, port: int, listener_app: Flask,
+                   on_listening, *, retry_seconds: float = BIND_RETRY_SECONDS,
+                   sleep=time.sleep, max_attempts: int | None = None) -> bool:
+    """Serve one of the extra listeners on a daemon thread, retrying until it binds.
+
+    Returns whether the first attempt bound. If it did not, the real reason is
+    printed once, and a daemon thread tries again every `retry_seconds` until the
+    bind works, printing again only when the reason changes. The manager itself
+    is never affected: a failed bind raises `SystemExit` from werkzeug, which is
+    caught here rather than taking the UI down over a secondary port.
+    `max_attempts` exists for tests; the manager passes none.
+    """
+    from werkzeug.serving import make_server
+
+    def attempt() -> tuple[bool, str]:
+        try:
+            server = make_server(host, port, listener_app, threaded=True)
+        except (OSError, SystemExit) as exc:
+            return False, _bind_failure(exc)
+        threading.Thread(target=server.serve_forever, name=label, daemon=True).start()
+        on_listening()
+        return True, ''
+
+    bound, reason = attempt()
+    if bound:
+        return True
+    print(f'[{label}] Could not bind {host}:{port} ({reason}); the manager is unaffected. '
+          f'Trying again every {retry_seconds:g} s.', flush=True)
+
+    def keep_trying() -> None:
+        tries, last = 1, reason
+        while max_attempts is None or tries < max_attempts:
+            sleep(retry_seconds)
+            tries += 1
+            why = _address_bindable(host, port)
+            if why is None:
+                ok, why = attempt()
+                if ok:
+                    print(f'[{label}] Bound {host}:{port} on try {tries}.', flush=True)
+                    return
+            if why != last:
+                print(f'[{label}] Still cannot bind {host}:{port} ({why}); still trying.',
+                      flush=True)
+                last = why
+
+    threading.Thread(target=keep_trying, name=f'{label}-bind', daemon=True).start()
+    return False
+
+
 def start_control_api(settings: dict) -> None:
     """Serve the control API on its own port, on a daemon thread.
 
@@ -3108,24 +3197,15 @@ def start_control_api(settings: dict) -> None:
         print(f'[llm-control] {refusal} Not listening.', flush=True)
         return
 
-    from werkzeug.serving import make_server
-
     host, port = settings['host'], settings['port']
-    try:
-        server = make_server(host, port, create_control_api_app(), threaded=True)
-    # Same guard as the state API, and for the same reason: werkzeug calls
-    # sys.exit(1) on a port collision, which must not take the manager down.
-    except (OSError, SystemExit) as exc:
-        detail = exc if isinstance(exc, OSError) else 'address already in use'
-        print(f'[llm-control] Could not bind {host}:{port} ({detail}); '
-              f'the manager is unaffected and the control API is not listening.', flush=True)
-        return
 
-    threading.Thread(target=server.serve_forever, name='llm-control', daemon=True).start()
-    print(f'[llm-control] Control API on http://{host}:{port}/api/control/v1/schema', flush=True)
-    if not settings.get('token'):
-        print('[llm-control] LLM_CONTROL_TOKEN is unset; every request will be refused.',
-              flush=True)
+    def on_listening() -> None:
+        print(f'[llm-control] Control API on http://{host}:{port}/api/control/v1/schema', flush=True)
+        if not settings.get('token'):
+            print('[llm-control] LLM_CONTROL_TOKEN is unset; every request will be refused.',
+                  flush=True)
+
+    serve_listener('llm-control', host, port, create_control_api_app(), on_listening)
 
 
 def start_state_api(settings: dict) -> None:
@@ -3139,31 +3219,21 @@ def start_state_api(settings: dict) -> None:
         print('[llm-api] LLM_API_ENABLED is off; the state API is not listening.', flush=True)
         return
 
-    from werkzeug.serving import make_server
-
     host, port = settings['host'], settings['port']
-    try:
-        server = make_server(host, port, create_state_api_app(), threaded=True)
-    # `SystemExit` is not paranoia: werkzeug prints its own message and calls
-    # `sys.exit(1)` when the address is in use, which would take the manager's
-    # UI down over a port collision on a secondary feature. This is the more
-    # important of the two servers and must survive the other failing to bind.
-    except (OSError, SystemExit) as exc:
-        detail = exc if isinstance(exc, OSError) else 'address already in use'
-        print(f'[llm-api] Could not bind {host}:{port} ({detail}); '
-              f'the manager is unaffected and the state API is not listening.', flush=True)
-        return
 
-    threading.Thread(target=server.serve_forever, name='llm-api', daemon=True).start()
-    print(f'[llm-api] Read-only state API on http://{host}:{port}/api/v1/snapshot', flush=True)
-    if settings.get('token'):
-        print('[llm-api] A token is set; requests must send Authorization: Bearer <token>.', flush=True)
-    if settings.get('bind_warning'):
-        print(f'[llm-api] WARNING: {settings["bind_warning"]}', flush=True)
-    if settings.get('webhook_url'):
-        # The broadcaster only runs while something needs it, and a webhook is
-        # a reason to run with no client connected.
-        STATE_API_BROADCASTER.ensure_running()
+    def on_listening() -> None:
+        print(f'[llm-api] Read-only state API on http://{host}:{port}/api/v1/snapshot', flush=True)
+        if settings.get('token'):
+            print('[llm-api] A token is set; requests must send Authorization: Bearer <token>.',
+                  flush=True)
+        if settings.get('bind_warning'):
+            print(f'[llm-api] WARNING: {settings["bind_warning"]}', flush=True)
+        if settings.get('webhook_url'):
+            # The broadcaster only runs while something needs it, and a webhook is
+            # a reason to run with no client connected.
+            STATE_API_BROADCASTER.ensure_running()
+
+    serve_listener('llm-api', host, port, create_state_api_app(), on_listening)
 
 
 if __name__ == '__main__':
