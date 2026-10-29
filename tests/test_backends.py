@@ -108,7 +108,7 @@ class SlotIdentityTests(unittest.TestCase):
         line is unchanged, which is what keeps the golden files valid."""
         env = dict(BASE, TASK_MODEL_PATH="/models/task.gguf")
         with as_linux():
-            for slot in ("embed", "task"):
+            for slot in ("embed", "rerank", "task"):
                 self.assertNotIn("--sleep-idle-seconds", backends.build_command(slot, env))
                 prefix = SLOTS[slot].prefix
                 argv = backends.build_command(slot, dict(env, **{f"{prefix}_SLEEP_IDLE_SECONDS": "900"}))

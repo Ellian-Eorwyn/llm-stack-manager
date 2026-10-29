@@ -125,9 +125,10 @@ one reply instead of the ~10 s of a cold start. Measure it on the page: "Last re
 - A wake that fails exits the process; systemd restarts it cold.
 - The `speak` log line carries `"woke": true` for a request that reloaded the model.
 
-The embedding and task models do the same through llama.cpp's `--sleep-idle-seconds`
-(`EMBED_SLEEP_IDLE_SECONDS`, `TASK_SLEEP_IDLE_SECONDS`, 900 here). Asleep, a llama-server keeps ~0.3 GB
-(its CUDA context); measured 10-09, the 4B embedding model woke in 1.2 s. The manager's telemetry
+The embedding, task and (since 10-29) reranker models do the same through llama.cpp's
+`--sleep-idle-seconds` (`EMBED_SLEEP_IDLE_SECONDS`, `TASK_SLEEP_IDLE_SECONDS`, `RERANK_SLEEP_IDLE_SECONDS`,
+900 here). Asleep, a llama-server keeps ~0.3 GB (its CUDA context); measured 10-09, the 4B embedding
+model woke in 1.2 s. Awake, the 0.6B reranker holds 1.9 GB on GPU 0. The manager's telemetry
 reads only `/props` from a slot with idle unload on (it reports `is_sleeping` without waking it).
 `/slots`, `/metrics` and `/lora-adapters` each queue a task, which restarts the idle timer, and the
 page polls every 5 s: with it open, embed and task never slept until the manager stopped asking. Their

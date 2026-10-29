@@ -250,7 +250,8 @@ SLOTS = {
         omit=_AUX_OMIT,
         literals=("--reranking",),
         preflight_fields=_AUX_PREFLIGHT,
-        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj()),
+        tail=(Toggle("--jinja", "JINJA", when="on", default="off"), options.MMProj(),
+              _SLEEP_IDLE),
     ),
     "task": Slot(
         name="task",
