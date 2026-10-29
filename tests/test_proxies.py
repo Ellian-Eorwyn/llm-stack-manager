@@ -118,6 +118,11 @@ class ProxyIdentityTests(unittest.TestCase):
         self.assertEqual(on["MEMORY_GATEWAY_ENABLED"], "on")
         self.assertEqual(on["MEMORY_INJECTION_MODE"], "system")
 
+    def test_a_per_proxy_listen_host_wins_for_that_proxy_alone(self):
+        env = env_with(LISTEN_HOST="0.0.0.0", LLM_B_LISTEN_HOST="127.0.0.1")
+        self.assertEqual(proxies.resolve(proxies.PROXIES["llm-a-proxy"], env)["LISTEN_HOST"], "0.0.0.0")
+        self.assertEqual(proxies.resolve(proxies.PROXIES["llm-b-proxy"], env)["LISTEN_HOST"], "127.0.0.1")
+
     def test_only_llm_a_stands_aside_for_a_gpu_lease(self):
         """gpu-lease.py stops llm-a and nothing else. On llms, LLM B is a 27B on
         GPU 0 and must keep serving while ComfyUI has GPU 1."""

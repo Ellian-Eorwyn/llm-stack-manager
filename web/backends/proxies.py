@@ -215,6 +215,12 @@ def resolve(proxy: Proxy, env: dict) -> dict[str, str]:
         value = pick(key)
         if value is not None:
             out[key] = value
+    # Where this proxy binds, in front of the shared LISTEN_HOST. On llms,
+    # Tailscale Serve holds LLM B's ports on the tailnet address and hands them
+    # to 127.0.0.1, so that proxy binds loopback while LLM A's binds 0.0.0.0.
+    listen = pick(f"{proxy.prefix}_LISTEN_HOST")
+    if listen is not None:
+        out["LISTEN_HOST"] = listen
 
     if not proxy.follows_gpu_lease:
         # start-proxy.sh exports the whole env file, a shared
