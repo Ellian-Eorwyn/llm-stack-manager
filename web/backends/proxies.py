@@ -56,6 +56,10 @@ class Proxy:
     #: Whether this proxy runs the memory gateway. Only one may: the gateway
     #: binds its own listener, and a second one collides on the port.
     memory_gateway: bool = False
+    #: Whether this proxy stands aside while GPU 1 is lent out. gpu-lease.py
+    #: stops `llm-a` and nothing else, so only llm-a's proxy reads the lease
+    #: file; another slot's backend keeps serving through a lease.
+    follows_gpu_lease: bool = False
     label: str = ""
     component: str = ""
 
@@ -128,6 +132,7 @@ PROXIES = {
         aggregate_port_key="AGGREGATE_PORT",
         aggregate_port_default="8012",
         memory_gateway=True,
+        follows_gpu_lease=True,
     ),
     "llm-b-proxy": Proxy(
         name="llm-b-proxy",
@@ -210,6 +215,11 @@ def resolve(proxy: Proxy, env: dict) -> dict[str, str]:
         value = pick(key)
         if value is not None:
             out[key] = value
+
+    if not proxy.follows_gpu_lease:
+        # start-proxy.sh exports the whole env file, a shared
+        # CHAT_FALLBACK_LEASE_FILE included; this is evaluated after it.
+        out["CHAT_FALLBACK_LEASE_FILE"] = "off"
 
     if proxy.memory_gateway:
         for key in MEMORY_KEYS:

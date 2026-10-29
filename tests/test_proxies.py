@@ -118,6 +118,13 @@ class ProxyIdentityTests(unittest.TestCase):
         self.assertEqual(on["MEMORY_GATEWAY_ENABLED"], "on")
         self.assertEqual(on["MEMORY_INJECTION_MODE"], "system")
 
+    def test_only_llm_a_stands_aside_for_a_gpu_lease(self):
+        """gpu-lease.py stops llm-a and nothing else. On llms, LLM B is a 27B on
+        GPU 0 and must keep serving while ComfyUI has GPU 1."""
+        env = env_with(CHAT_FALLBACK_LEASE_FILE="/run/user/1000/gpu1-lease.json")
+        self.assertNotIn("CHAT_FALLBACK_LEASE_FILE", proxies.resolve(proxies.PROXIES["llm-a-proxy"], env))
+        self.assertEqual(proxies.resolve(proxies.PROXIES["llm-b-proxy"], env)["CHAT_FALLBACK_LEASE_FILE"], "off")
+
 
 class RegistryShapeTests(unittest.TestCase):
 

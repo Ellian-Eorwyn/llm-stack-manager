@@ -163,6 +163,11 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers.get(proxy.SERVED_BY_HEADER), "fallback")
 
+    def test_a_lease_file_of_off_means_no_lease(self):
+        self.assertEqual(proxy._lease_file("off"), "")
+        self.assertEqual(proxy._lease_file(" /x/lease.json "), "/x/lease.json")
+        self.assertTrue(proxy._lease_file("").endswith("/gpu1-lease.json"))
+
     def test_lease_file_skips_a_healthy_backend(self):
         backend = self._use_backend(text="from backend")
         pathlib.Path(self.lease_file).write_text("{}")

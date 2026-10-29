@@ -335,9 +335,15 @@ CHAT_FALLBACK_TOKEN = os.environ.get("CHAT_FALLBACK_TOKEN", "").strip()
 CHAT_FALLBACK_CONNECT_TIMEOUT_SEC = _parse_timeout_env("CHAT_FALLBACK_CONNECT_TIMEOUT_SEC", "10")
 # While this file exists the backend is lent out: go straight to the fallback.
 # /run/user is tmpfs, so a reboot clears a lease that was never released.
-CHAT_FALLBACK_LEASE_FILE = os.environ.get("CHAT_FALLBACK_LEASE_FILE", "").strip() or (
-    f"/run/user/{os.getuid()}/gpu1-lease.json" if hasattr(os, "getuid") else ""
-)
+# `off`: this proxy's backend is not the one a lease stops (web/backends/proxies.py).
+def _lease_file(raw: str) -> str:
+    raw = raw.strip()
+    if raw == "off":
+        return ""
+    return raw or (f"/run/user/{os.getuid()}/gpu1-lease.json" if hasattr(os, "getuid") else "")
+
+
+CHAT_FALLBACK_LEASE_FILE = _lease_file(os.environ.get("CHAT_FALLBACK_LEASE_FILE", ""))
 FALLBACK_HOP_HEADER = "X-LLM-Fallback-Hop"
 SERVED_BY_HEADER = "X-LLM-Served-By"
 _FALLBACK_STATE = {"active": False}
