@@ -126,6 +126,56 @@ Measured on llms with v0.15.1 and the v0.13 artifact against v0.11 with neroued'
 flags otherwise (DFlash2, rk8v4, one lane, thinking off, temperature 0.7): prose 113–116
 tok/s against 110, a reply that copies a 2.6K-token file back 294–296 against 280.
 
+## A second 27B on GPU 0 (2026-10-29)
+
+llms runs the 27B twice: LLM A on GPU 1 and LLM B on GPU 0. Same artifact, same build, same flags
+except the port (8020), the model id (`chat-dense-b`) and a 4 GiB host cache
+(`LLM_B_NINFER_HOST_KV_MIB=4096`; two of LLM A's 24 GiB would not fit llms's 62 GB). To make room
+the embedding and reranker models moved to the Studio and the 9B task model was retired.
+
+| GPU 0, GiB | Before | Now |
+|---|---:|---:|
+| Frigate | 0.5 | 0.5 |
+| Embedding 4B, awake / asleep | 4.3 / 0.3 | on the Studio |
+| Reranker 0.6B, awake / asleep | 1.9 / 0.3 | on the Studio |
+| Task 9B, awake / asleep | ~9.5 / 0.3 | retired |
+| 27B, 131,072 context | — | 21.1 (1.93 free) |
+
+- **Task calls** (`llms:8007`, model `task`) reach LLM B's no-think port: `NOTHINK2_PORT=8007`.
+  Hermes's config did not change. Titles come back in 0.14–0.32 s; JSON mode and streaming work as
+  on LLM A.
+- **LLM B's proxy:** think 8103, chat 8007, code 8108, aggregate 8112 (`think`/`chat`/`code`, as on
+  8012). It binds 127.0.0.1 (`LLM_B_LISTEN_HOST`) because Tailscale Serve already publishes those
+  ports on the tailnet address.
+- **A ComfyUI lease leaves it alone.** Only llm-a-proxy follows the GPU 1 lease
+  (`follows_gpu_lease` in `web/backends/proxies.py`). LLM B falls back to the Studio only when its
+  own backend is down.
+- **Embeddings and reranking come from the Studio:** the same Qwen3-Embedding-4B Q6_K file
+  (sha256 `7e7693eb…`) and 0.6B reranker, with llms's settings (q8_0 KV, 2048 batches, 4 rerank
+  slots, 900 s idle unload). `llms:8005` and `llms:8006` still answer, so no caller changed:
+  `systemd/llm-forward.service` is an nginx instance of its own on llms that passes
+  127.0.0.1:8005/8006 to the Studio and rewrites `Host`, which the Studio's Tailscale Serve routes
+  by. Studio vectors match llms's at cosine 0.99988 or better; Lens's probe check reads 0.9999.
+- **What that costs the Studio:** an idle embedder costs no measurable speed and 3.8 GiB. A busy one
+  (bulk, back to back, 4,272 tok/s) took Splash's decode from 76 to 44 tok/s short and from 70 to
+  41 at 16K, and its prefill down 13%. Embedding ran ~12M tokens a day on 10-28 and 10-29.
+- **voice-tts no longer fits on GPU 0** (5.7 GB awake). It is stopped and disabled.
+
+Measured 2026-10-29 with `scripts/bench-offload.py`, 400 tokens, thinking off, tok/s:
+
+| | LLM B alone | LLM B, LLM A busy | LLM A, same window |
+|---|---:|---:|---:|
+| Prose, short | 94.9 | 88.9 | 88.9 |
+| Prose, 16K | 103.1 | 97.9 | 95.0 |
+| Code, short | 296.5 | 286.9 | 296.0 |
+| Code, 16K | 277.7 | 277.0 | 279.5 |
+| Prefill, 16K | 1,762 | 1,751 | 1,788 |
+
+To undo it on llms: stop `llm-b-proxy` and `llm-b` from the manager, restore
+`config/llm-stack.env.bak-before-llm-b-ninfer-20261029`, run `sudo systemctl disable --now
+llm-forward`, and start `embed`, `rerank` and `task`. On the Studio, stop `embed` and `rerank`
+(its previous settings are in `config/llm-stack.env.bak-before-embed-rerank-move-20261029`).
+
 ## What the chat proxy changes
 
 NInfer refuses what it cannot honour instead of ignoring it. For an NInfer slot the proxy

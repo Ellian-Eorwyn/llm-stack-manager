@@ -11,7 +11,8 @@ with replies spoken as the model writes them.
 - **Voices:** deep, earth, lama, spark, ellie (clones). It started on the preset speaker `sohee` (Ellie's
   pick from the preset audition, `~/Documents/Hermes Media/Voice Audition/2026-10-06/` on the Studio).
 - **Where:** llms GPU 0, beside the embeddings and the 9B task model. It uses about 5.7 GB, so GPU 0
-  holds about 19.7 of its 24.6 GB. GPU 0 was chosen over the Studio: the Studio was faster (127 ms against
+  held about 19.7 of its 24.6 GB. **Since 2026-10-29 it does not fit there:** GPU 0 holds a second 27B
+  (`llm-b`, 1.9 GB free), and voice-tts is stopped and disabled (docs/ninfer.md). GPU 0 was chosen over the Studio: the Studio was faster (127 ms against
   ~250 ms first audio), but llms sees less traffic.
 - **API:** `scripts/voice-tts-server.py` serves an OpenAI-style speech API on `100.124.56.11:8016`
   (tailnet only, no auth, like the other llms services).

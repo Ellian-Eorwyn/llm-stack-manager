@@ -1,8 +1,8 @@
 # Lending the chat GPU to ComfyUI
 
 On llms, ComfyUI lives on GPU 1 permanently (its unit's default), idling at a
-couple hundred MB beside the 27B (`llm-a`). GPU 0 is shared by the task model,
-embeddings and the OCR router, and has no room for most generation models. A
+couple hundred MB beside the 27B (`llm-a`). GPU 0 holds a second 27B (`llm-b`,
+since 2026-10-29; see docs/ninfer.md) and has no room for a generation model. A
 generation job therefore evicts the 27B from GPU 1 for a few minutes with
 `scripts/gpu-lease.py` — ComfyUI itself never moves (or restarts) in the
 normal flow.
@@ -20,8 +20,8 @@ Each prints one JSON object. The exit status is non-zero, with the reason in
 
 ## What happens
 
-1. `acquire` writes `/run/user/<uid>/gpu1-lease.json`. From then on the proxy
-   sends new generation requests to `CHAT_FALLBACK_URL` (the Studio's proxy),
+1. `acquire` writes `/run/user/<uid>/gpu1-lease.json`. From then on LLM A's proxy
+   (only it: `follows_gpu_lease`; LLM B on GPU 0 keeps serving) sends new generation requests to `CHAT_FALLBACK_URL` (the Studio's proxy),
    marked `X-LLM-Served-By: fallback`. It waits for the 27B's in-flight request
    (`/slots`), stops `llm-a` with `systemctl`, and moves ComfyUI onto GPU 1 —
    which it is already on, so normally no restart. It also starts the
