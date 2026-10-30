@@ -45,9 +45,10 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
      reference, not a file path. It downloads into the ordinary Hugging Face
      cache on first start.
    - `LLM_A_SPLASH_REVISION`: optional, pins that repo's commit.
-   - `LLM_A_SPLASH_KV_FORMAT=bf16`: the default here. Splash's own default,
-     int8, keeps about twice the tokens in the same cap; on the Studio it
-     scored the same as bf16 on the bench (see [KV format](#kv-format-bf16-or-int8)).
+   - `LLM_A_SPLASH_KV_FORMAT`: `bf16` when unset; the Studio sets `int8` since
+     2026-10-30. Splash's own default, int8, keeps about twice the tokens in
+     the same cap, and on the Studio it scored the same as bf16 on the bench
+     (see [KV format](#kv-format-bf16-or-int8)).
 3. Restart the slot and its proxy.
 
 ## How settings carry over
@@ -203,7 +204,8 @@ Everything Splash allocates (weights, KV, state) stays locked into RAM until
 the idle release (see [Stalls](#stalls)), and locked memory cannot be
 compressed or swapped. At 48 GiB, 55 GiB of the Studio's 96 was wired. The Studio's config sets 56
 (`LLM_A_SPLASH_MAX_MEMORY_GB`), for about 64 GiB wired and ~410K tokens of
-conversations. The default stays at half of RAM for smaller Macs.
+bf16 conversations, ~810K with int8 (the Studio's format since 2026-10-30).
+The default stays at half of RAM for smaller Macs.
 
 ### KV format: bf16 or int8
 
