@@ -287,6 +287,40 @@ layer, and a second pass then handles the other 992 at about 10 a minute. Judge 
 
 Serve it with the stock artifact's `--device-state-slots 0`, as in "Two lanes".
 
+## Converting on the GPU
+
+The same recipe took 17 minutes on GPU 1 (1,019 and 1,023 s with two running at once), about nine times faster than on
+the CPU. `tools.convert` defaults to CUDA, but the convert venv has CPU torch, so run it with ComfyUI's python, which has
+CUDA torch, numpy, safetensors and gguf: nothing needs installing. Each conversion used about 400 MiB of VRAM. They ran
+with the 27B stopped under a lease (`gpu-lease.py acquire --holder ninfer-convert --max-minutes 120`), and running beside
+the 27B is untested.
+
+```
+# from deps/ninfer-3090-v0162, with M and R as above
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 /home/ellie/AI/venv/bin/python -m tools.convert \
+  --model $M/hf/<source> --recipe qwen3_8_27b \
+  --source imatrix=$R/qwen3_8_27b.imatrix.safetensors --source dflash2=$M/hf/Qwen3.8-27B-DFlash2 \
+  --components text,vision,mtp,dflash2 --proposal --name <name> \
+  --resource tokenizer.json=$R/tokenizer.json --resource tokenizer_config.json=$R/tokenizer_config.json \
+  --device cuda --out $M/<file>-v013.ninfer
+```
+
+A model that ships no vision tower needs one if the slot serves with `--vision`. Hemmingway-1.5's source folder is a
+merge: its own text shards by symlink, the stock tower's 333 `model.visual.*` tensors in a separate file, and a config and
+index that name both (`models/hf/hemmingway_merged.py` on llms).
+
+## Fine-tunes: the drafter and the thinking close
+
+- **The DFlash2 drafter is trained on stock weights.** It suits a model close to stock (Hemmingway-1.5, 70.9% of drafts
+  accepted) and not one far from it (Turbo Fusion, 17.1%, against 82.5% on its own MTP). Check
+  `ninfer_spec_decode_accepted_tokens_total` over `…_draft_tokens_total` on `/metrics`, and set `NINFER_SPEC=mtp` for a
+  model far from stock. MTP also leaves about 1.8 GB more of the card free.
+- **Strict tool mode needs the exact close.** With `tool_constraints: "basic"`, the default, only `\n</think>\n\n` ends
+  thinking, and the grammar refuses a stop before it. Turbo Fusion sometimes opens its reply with `</think>`, or writes
+  one line break after it. The server then counts everything after as thinking, refuses the stop, and the model writes
+  tool calls until the output limit, with nothing returned as a call. Send `tool_constraints: "auto"` for such a model.
+  There's no server flag for it. v0.17.1 has the same rule.
+
 ## What the chat proxy changes
 
 NInfer refuses what it cannot honour instead of ignoring it. For an NInfer slot the proxy
