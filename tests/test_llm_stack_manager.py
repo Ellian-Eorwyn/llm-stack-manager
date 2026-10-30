@@ -1844,6 +1844,31 @@ class EnvDeprecationTests(unittest.TestCase):
         self.assertIn("# tuning", written)
         self.assertIn("CHAT_BACKEND_PORT=8010", written)
 
+    def test_a_value_with_quotes_survives_any_number_of_saves(self):
+        """Read and write undo each other. Before they did, each save of
+        `["--device-state-slots","0"]` added a layer of backslashes: the second
+        one gave the unit `[\\"--device...`, which isn't JSON, and llms GPU 1
+        lost the argument and no longer fit (2026-10-30)."""
+        value = '["--device-state-slots","0"]'
+        self.config_file.write_text(f"LLM_A_NINFER_ARGS_JSON='{value}'\nLLM_A_LABEL=old\n")
+        with self._patches()[0]:
+            self.assertEqual(config_env.read_env_raw()["LLM_A_NINFER_ARGS_JSON"], value)
+            for _ in range(3):
+                config_env.update_env_values({"LLM_A_NINFER_ARGS_JSON": config_env.read_env_raw()["LLM_A_NINFER_ARGS_JSON"]})
+                self.assertEqual(config_env.read_env_raw()["LLM_A_NINFER_ARGS_JSON"], value)
+            self.assertIn('LLM_A_NINFER_ARGS_JSON="[\\"--device-state-slots\\",\\"0\\"]"', self.config_file.read_text())
+
+    def test_a_backslash_stays_itself_through_a_save(self):
+        self.config_file.write_text("LLM_A_LABEL=old\n")
+        with self._patches()[0]:
+            config_env.update_env_values({"LLM_A_LABEL": 'a\\1 "b" c\\'})
+            self.assertEqual(config_env.read_env_raw()["LLM_A_LABEL"], 'a\\1 "b" c\\')
+
+    def test_single_quotes_keep_a_backslash_as_it_is(self):
+        self.config_file.write_text("LLM_A_LABEL='a\\\\b'\n")
+        with self._patches()[0]:
+            self.assertEqual(config_env.read_env_raw()["LLM_A_LABEL"], "a\\\\b")
+
     def test_read_env_raw_shows_the_file_without_backfill(self):
         self.config_file.write_text("CHAT_DENSE_MODEL_PATH=/models/a.gguf\n")
         with self._patches()[0]:

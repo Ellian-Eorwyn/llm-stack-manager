@@ -541,6 +541,17 @@ def normalize_env_keys(env: dict) -> dict:
     normalized.setdefault("ASR_CUSTOM_ARGS_JSON", "[]")
     return normalized
 
+def _unquote_env_value(value: str) -> str:
+    """What the line means: the inverse of `_quote_env_value`, and what
+    systemd's `EnvironmentFile` and the shell read from the same line. Without
+    it a value holding a quote comes back escaped, and saving that again adds
+    another layer, until the units get arguments that are no longer JSON."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        inner = value[1:-1]
+        return re.sub(r'\\(["\\])', r'\1', inner) if value[0] == '"' else inner
+    return value
+
+
 def read_env_raw() -> dict:
     """Exactly the keys the env file carries, with no backfill or defaults.
 
@@ -555,10 +566,7 @@ def read_env_raw() -> dict:
                 stripped = line.strip()
                 if stripped and not stripped.startswith('#') and '=' in stripped:
                     key, _, value = stripped.partition('=')
-                    value = value.strip()
-                    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                        value = value[1:-1]
-                    env[key.strip()] = value
+                    env[key.strip()] = _unquote_env_value(value.strip())
     except FileNotFoundError:
         pass
     return env
@@ -596,7 +604,9 @@ def update_env_values(updates: dict):
             pattern = re.compile(r'^' + re.escape(alias) + r'=.*$', re.MULTILINE)
             if pattern.search(content):
                 if not replaced:
-                    content = pattern.sub(f'{key}={rendered}', content, count=1)
+                    # A function, so `rendered` stays literal: a replacement
+                    # string would have its backslashes read as `re` escapes.
+                    content = pattern.sub(lambda _: f'{key}={rendered}', content, count=1)
                     replaced = True
                 else:
                     content = pattern.sub('', content)
