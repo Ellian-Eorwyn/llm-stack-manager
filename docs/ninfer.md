@@ -255,6 +255,38 @@ To undo it on llms: restore `config/llm-stack.env.bak-before-two-lanes-20261029`
 `N_PARALLEL` back to 1 and both `NINFER_ARGS_JSON` to `"[]"`), then restart `llm-b` and `llm-a` from
 the manager.
 
+## The uncensored 27B (2026-10-30)
+
+`models/qwen3_8_27b_uncensored-v013.ninfer` is JonathanColetti's `Qwen3.8-27B-Uncensored` converted with the same
+recipe as the stock v0.13 artifact. An older conversion doesn't fit GPU 1 beside ComfyUI, and v0.13 artifacts refuse
+`--embedding-q4` and `--lm-head-q6`, so the fix is to reconvert. The result is 768 bytes smaller than the stock
+artifact, and boots with the same runtime (5.64 GiB) and the same 1.87 GiB free.
+
+The `qwen3_8_27b` recipe needs an importance matrix, and two packages the convert venv lacked. The imatrix is
+Unsloth's, made on the stock weights; the tokenizer and preprocessor files are the official repo's, because the
+abliterated repo's `tokenizer.json` has an older regex (no `\p{M}`) that NInfer refuses.
+
+```
+# from deps/ninfer-3090-v0162, with M=<models folder> and R=$M/hf/qwen38-official-resources
+../ninfer-convert-venv/bin/python -m pip install safetensors gguf
+curl -fsSL -o $R/imatrix_unsloth.gguf \
+  https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/imatrix_unsloth.gguf
+../ninfer-convert-venv/bin/python -m tools.convert.imatrix --gguf $R/imatrix_unsloth.gguf \
+  --config $M/hf/Qwen3.8-27B-Uncensored/config.json --out $R/qwen3_8_27b.imatrix.safetensors
+nice -n 10 ionice -c3 ../ninfer-convert-venv/bin/python -m tools.convert \
+  --model $M/hf/Qwen3.8-27B-Uncensored --recipe qwen3_8_27b \
+  --source imatrix=$R/qwen3_8_27b.imatrix.safetensors --source dflash2=$M/hf/Qwen3.8-27B-DFlash2 \
+  --components text,vision,mtp,dflash2 --proposal --name qwen3.8-27b-uncensored \
+  --resource tokenizer.json=$R/tokenizer.json --resource tokenizer_config.json=$R/tokenizer_config.json \
+  --device cpu --out $M/qwen3_8_27b_uncensored-v013.ninfer
+```
+
+It took 2 h 36 min on six CPU cores (9,364 s) while both 27Bs served, using under 0.5 GB of RAM. The older recipe took
+about 6 minutes; `grouped_search` searches each group of weights in a first pass of 192 parameters, about 1.3 minutes a
+layer, and a second pass then handles the other 992 at about 10 a minute. Judge the time from both passes.
+
+Serve it with the stock artifact's `--device-state-slots 0`, as in "Two lanes".
+
 ## What the chat proxy changes
 
 NInfer refuses what it cannot honour instead of ignoring it. For an NInfer slot the proxy
