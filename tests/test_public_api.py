@@ -338,6 +338,12 @@ class ProcessModelArgsTests(unittest.TestCase):
     def test_a_command_line_without_them_yields_empties(self):
         self.assertEqual(manager.process_model_args("/usr/bin/blender --background"), ("", ""))
 
+    def test_process_model_args_reads_ninfer_serve(self):
+        cmdline = ("/deps/ninfer/apps/ninfer-serve /models/qwen3_8_27b-v013.ninfer --host 127.0.0.1 --port 8010 "
+                   "--model-id chat-dense --device 0")
+        self.assertEqual(manager.process_model_args(cmdline), ("/models/qwen3_8_27b-v013.ninfer", "chat-dense"))
+        self.assertEqual(manager.process_model_args("/bin/tool --model-id chat-dense"), ("", ""))
+
     def test_a_trailing_flag_with_no_value_does_not_raise(self):
         self.assertEqual(manager.process_model_args("llama-server --model"), ("", ""))
 

@@ -450,11 +450,12 @@ def process_unit(pid: int) -> str:
 
 
 def process_model_args(cmdline: str) -> tuple[str, str]:
-    """(model path, alias) from a llama-server command line.
+    """(model path, alias) from a llama-server or ninfer-serve command line.
 
     The router's children are distinguished only by these: same binary, same
     unit, different model. Without them every model the router holds would land
-    in one indistinguishable block.
+    in one indistinguishable block. ninfer-serve has no --model: its model is
+    the first argument, so the path is what names it (--model-id is its alias).
     """
     parts = cmdline.split()
     model = alias = ""
@@ -463,6 +464,11 @@ def process_model_args(cmdline: str) -> tuple[str, str]:
             model = value
         elif flag == "--alias" and not alias:
             alias = value
+    if not model and len(parts) > 1 and parts[1].endswith(".ninfer"):
+        model = parts[1]
+        for flag, value in zip(parts, parts[1:]):
+            if flag == "--model-id" and not alias:
+                alias = value
     return model, alias
 
 
