@@ -176,6 +176,85 @@ To undo it on llms: stop `llm-b-proxy` and `llm-b` from the manager, restore
 llm-forward`, and start `embed`, `rerank` and `task`. On the Studio, stop `embed` and `rerank`
 (its previous settings are in `config/llm-stack.env.bak-before-embed-rerank-move-20261029`).
 
+## Two lanes (2026-10-29)
+
+Both 27Bs take two requests at once, so Hermes's quick calls (titles, approvals and MCP on
+`llms:8007`) run beside a batch job instead of queueing behind it.
+
+```
+LLM_A_N_PARALLEL=2                                      # --max-concurrency 2
+LLM_A_NINFER_ARGS_JSON='["--device-state-slots","0"]'
+LLM_B_N_PARALLEL=2
+LLM_B_NINFER_ARGS_JSON='["--device-state-slots","0"]'
+```
+
+What a second lane is in NInfer (its `docs/serving.md`):
+
+- **The context isn't divided.** `--max-context` stays the per-request ceiling (131,072) and the KV
+  pool is shared, so a lone request still gets the whole window. Only two long requests at once can
+  fill the pool; then one pauses into host memory and resumes. The manager's context panel and the
+  state API still divide by the lane count, as for llama.cpp (65,536 "per slot", 262,144 total, and
+  an `n_ctx_per_slot` drift entry). That is display only.
+- **No extra throughput.** Speculation runs only while one request decodes; while both decode the
+  rounds are plain. N-gram copy drafting stays on (NInfer's launcher default at one or two lanes). So
+  batch pools keep one worker per server, and the second lane is for interactive calls.
+- **Device states.** `--device-state-slots`, the StateImages beyond one per lane, defaults to the
+  lane count. At 0 the card holds two, one per lane: as many as one lane plus one extra did before.
+  Retained conversations wait in the host cache.
+
+Memory, from the boot `capacity` line and `nvidia-smi`:
+
+| | runtime | free at boot | `nvidia-smi` free | process |
+|---|---:|---:|---:|---:|
+| LLM B, one lane, 1 extra state | 4.70 GiB | 1.93 GiB | 1,991 MiB | 21,614 MiB |
+| LLM B, two lanes, 1 extra state | 5.82 GiB | 1.64 GiB | 1,681 MiB | — |
+| LLM B, two lanes, no extra state | 5.64 GiB | 1.84 GiB | 1,884 MiB | 21,726 MiB |
+| LLM A, one lane, 1 extra state | 4.70 GiB | 1.98 GiB | 2,025 MiB | 21,616 MiB |
+| LLM A, two lanes, no extra state | 5.64 GiB | 1.87 GiB | 1,915 MiB | 21,724 MiB |
+
+- The extra state cost 203 MiB on GPU 0, more than the 147 MiB NInfer's notes give for one
+  StateImage, and left 1,681 MiB free. The wildlife scan needs 1,800 MiB free on GPU 0 to start
+  (Hermes `50de5b9`; it peaked at 1,432 MiB), so LLM B runs without it, at 1,884 MiB free. During a
+  two-lane run GPU 0's free memory moved between 1,855 and 1,902 MiB; that was the desktop's
+  processes, and NInfer's own allocation didn't change.
+- GPU 1: ComfyUI idles at 458 MiB beside LLM A. After the 10-26 lease releases LLM A booted with
+  2.01–2.02 GiB free, as on any boot, so ComfyUI gives its memory back and the two-lane 27B (110 MiB
+  more) still fits after a lease.
+
+Measured 2026-10-29:
+
+- **A title beside a long call.** A streaming `:8112` call (model `chat`, 8,135 tokens in 84.9 s) and
+  four title calls to `:8007` (model `task`), 20 s apart: each came back in 0.49–0.54 s while the
+  long one streamed, and the log shows `running 2`. On LLM A, `:8012` (6,305 tokens in 63.5 s) beside
+  `:8004`: 0.46–0.52 s. Both went through the chat proxies, so the proxies pass both lanes through.
+- **One stream** (`scripts/bench-offload.py`, 400 tokens, thinking off, tok/s; prose three runs each,
+  lowest–highest):
+
+  | | LLM A, one lane | LLM A, two lanes | LLM B, two lanes |
+  |---|---:|---:|---:|
+  | Prose, short | 92.7–105.7 | 96.2–102.7 | 88.5–95.8 |
+  | Prose, 16K | 84.9–94.3 | 91.0–95.3 | 91.5–96.7 |
+  | Code, short | 297.3 | 297.2 | 294.4 |
+  | Code, 16K | 279.2 | 278.5 | 275.3 |
+  | Prefill, 16K | 1,761–1,788 | 1,741–1,763 | 1,731–1,750 |
+
+  Within noise, except prefill: about 1.5% slower at 16K, and a 185-token prompt reads 737 → 608
+  tok/s, about 50 ms more to the first token.
+- **Prefix reuse** (`scripts/ninfer_prefix_test.py --interleave 2`) passes on both. LLM B reused
+  35,706 of 35,715 tokens (TTFT 29.1 → 0.27 s), LLM A 35,707 (27.1 → 0.29 s). LLM A's first run read
+  FAIL only because its 24-token reply was a tool call cut at the limit, so the stream carried no
+  text to time; the server logged TTFT 291 ms with 99.8% cached. LLM B's 4 GiB host cache stays full
+  (`ninfer_host_context_shortage_failures_total` 5 → 13 over the test), as LLM A's was at 4 GiB.
+- **Hermes's doctor:** `llms-task` and `llms-model` pass.
+
+gpu-lease still drains LLM A correctly. `backend_busy()` reads `llamacpp:requests_processing`, which
+counts both lanes, so `acquire` waits (up to `GPU_LEASE_DRAIN_SECONDS`, 600) until neither is
+generating; the proxy has sent new requests to the Studio since the lease file was written.
+
+To undo it on llms: restore `config/llm-stack.env.bak-before-two-lanes-20261029` (or set both
+`N_PARALLEL` back to 1 and both `NINFER_ARGS_JSON` to `"[]"`), then restart `llm-b` and `llm-a` from
+the manager.
+
 ## What the chat proxy changes
 
 NInfer refuses what it cannot honour instead of ignoring it. For an NInfer slot the proxy
