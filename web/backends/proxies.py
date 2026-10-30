@@ -190,6 +190,9 @@ def resolve(proxy: Proxy, env: dict) -> dict[str, str]:
     # different switch from the others, and the proxy has to send it.
     from .slots import SLOTS
     out["CHAT_BACKEND_ENGINE"] = SLOTS[proxy.slot].engine(env) if proxy.slot in SLOTS else ""
+    # The one exception to the rule above: a model's request settings change
+    # while this proxy runs, so it reads them from the config file by this prefix.
+    out["CHAT_BACKEND_CONFIG_PREFIX"] = proxy.prefix
     if proxy.slot in SLOTS:
         from .spec import lookup
         slot = SLOTS[proxy.slot]

@@ -43,6 +43,8 @@ BACKEND_ENGINE = os.environ.get("CHAT_BACKEND_ENGINE", "").strip()
 #: The name the backend itself serves. Splash and NInfer refuse any other,
 #: where llama.cpp and MTPLX answer whatever a request calls them.
 BACKEND_MODEL = os.environ.get("CHAT_BACKEND_MODEL", "").strip()
+#: This slot's prefix in config/llm-stack.env, for `_ninfer_model_settings`.
+BACKEND_CONFIG_PREFIX = os.environ.get("CHAT_BACKEND_CONFIG_PREFIX", "").strip()
 THINK_PORT = int(os.environ.get("THINK_PORT", "8003"))
 NOTHINK_PORT = int(os.environ.get("NOTHINK_PORT", "8004"))
 CODE_PORT = int(os.environ.get("CODE_PORT", "8008"))
@@ -2397,6 +2399,59 @@ _NINFER_RESPONSES_FIELDS = frozenset({
     "tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user",
 })
 
+#: What a model can need on every request, and the values each setting takes
+#: (docs/ninfer.md, "Fine-tunes"). NInfer has no server flag for these.
+_NINFER_MODEL_SETTINGS = {
+    "NINFER_TOOL_CONSTRAINTS": frozenset({"auto", "basic"}),
+    "NINFER_THINK_EFFORT": frozenset({"low", "medium", "high", "xhigh"}),
+}
+_NINFER_SETTINGS_READ: tuple[int | None, dict[str, str]] = (None, {})
+
+
+def _ninfer_model_settings() -> dict[str, str]:
+    """This slot's settings for the model it runs now.
+
+    Read from the config file when it changes, not from the environment: a
+    model switch restarts the backend and leaves this proxy running, and a lease
+    can bring a new model back long after the keys were written.
+    """
+    global _NINFER_SETTINGS_READ
+    if not (STACK_DIR and BACKEND_CONFIG_PREFIX):
+        return {}
+    path = os.path.join(STACK_DIR, "config", "llm-stack.env")
+    try:
+        stamp = os.stat(path).st_mtime_ns
+        if stamp == _NINFER_SETTINGS_READ[0]:
+            return _NINFER_SETTINGS_READ[1]
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return {}
+    values: dict[str, str] = {}
+    for line in lines:
+        key, _, value = line.partition("=")
+        for name, allowed in _NINFER_MODEL_SETTINGS.items():
+            if key.strip() == f"{BACKEND_CONFIG_PREFIX}_{name}":
+                value = value.strip().strip("\"'")
+                if value in allowed:
+                    values[name] = value
+                else:
+                    values.pop(name, None)
+    _NINFER_SETTINGS_READ = (stamp, values)
+    return values
+
+
+def _raise_thinking_effort(payload: dict[str, Any], effort: str):
+    """Set the level of a request that thinks, whatever level it came with. A
+    request with thinking off stays off."""
+    kwargs = payload.get("chat_template_kwargs")
+    kwargs = kwargs if isinstance(kwargs, dict) else {}
+    if kwargs.get("enable_thinking") is False or payload.get("reasoning_effort") == "none":
+        return
+    payload["reasoning_effort"] = effort
+    if "reasoning_effort" in kwargs:
+        kwargs["reasoning_effort"] = effort
+
 
 def _adapt_for_ninfer(payload: dict[str, Any], kind: str | None, is_generation: bool):
     """Reshape a request for NInfer, which refuses what it cannot honour
@@ -2407,12 +2462,20 @@ def _adapt_for_ninfer(payload: dict[str, Any], kind: str | None, is_generation: 
     probabilities and `tool_choice: "required"`, none of which it can provide;
     a client that asked for them gets the nearest thing it can do rather than
     a 400 -- tools stay offered, sampling stays as sent -- and the proxy log
-    says what was dropped. `top_k` is capped at 20, its top-k window.
+    says what was dropped. `top_k` is capped at 20, its top-k window. The model
+    in the slot can add its own settings (`_ninfer_model_settings`).
     """
     if BACKEND_MODEL and "model" in payload:
         payload["model"] = BACKEND_MODEL
     if not is_generation:
         return
+    settings = _ninfer_model_settings()
+    if settings.get("NINFER_THINK_EFFORT"):
+        _raise_thinking_effort(payload, settings["NINFER_THINK_EFFORT"])
+    # Chat Completions only: the Responses route refuses the field.
+    if (kind == "chat" and settings.get("NINFER_TOOL_CONSTRAINTS") and payload.get("tools")
+            and "tool_constraints" not in payload):
+        payload["tool_constraints"] = settings["NINFER_TOOL_CONSTRAINTS"]
     dropped: list[str] = []
     if kind == "responses":
         # Responses carries the level under `reasoning`, and the thinking

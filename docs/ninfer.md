@@ -87,6 +87,8 @@ The engine's own settings are in the "NVIDIA (NInfer)" section:
 | `LLM_*_NINFER_KV_CAPACITY` | the context | `auto` fills the card with 1 GiB spare. |
 | `LLM_*_NINFER_HOST_KV_MIB` | 4096 | Pinned host RAM for cached conversations that no longer fit on the card (`--host-context-mib`). |
 | `LLM_*_NINFER_NGRAM` | on with `dflash2` at 1–2 lanes, v0.16+ | N-gram copy drafting (`--ngram-draft-tokens 15`): text the reply copies from its prompt is drafted from the prompt. Lossless; the fork measured +42% decode at one lane on agent traffic. |
+| `LLM_*_NINFER_TOOL_CONSTRAINTS` | blank | The proxy sends this as `tool_constraints` on Chat Completions with tools. Read on the next request, with no restart. See "Fine-tunes". |
+| `LLM_*_NINFER_THINK_EFFORT` | blank | Every request that thinks runs at this level, whatever level it asked for. Read on the next request, with no restart. |
 
 The defaults leave out the fork's lossy memory trades (`--embedding-q4`, `--lm-head-q6`,
 `--gdn-state-fp16`).
@@ -318,8 +320,14 @@ index that name both (`models/hf/hemmingway_merged.py` on llms).
 - **Strict tool mode needs the exact close.** With `tool_constraints: "basic"`, the default, only `\n</think>\n\n` ends
   thinking, and the grammar refuses a stop before it. Turbo Fusion sometimes opens its reply with `</think>`, or writes
   one line break after it. The server then counts everything after as thinking, refuses the stop, and the model writes
-  tool calls until the output limit, with nothing returned as a call. Send `tool_constraints: "auto"` for such a model.
-  There's no server flag for it. v0.17.1 has the same rule.
+  tool calls until the output limit, with nothing returned as a call. Set `LLM_*_NINFER_TOOL_CONSTRAINTS=auto` for such
+  a model. It's a request field with no server flag, so the proxy sends it, and v0.17.1 has the same rule. The Responses
+  route refuses the field (`unknown_parameter`), so a Responses client still gets the strict grammar.
+- **A fine-tune can need more effort.** Turbo Fusion thinks little at any level and takes the first plausible answer:
+  `LLM_*_NINFER_THINK_EFFORT=xhigh` took its chains from 8 of 10 to 10 of 10 at little cost.
+- **Request settings are read live.** The proxy re-reads both keys from `config/llm-stack.env` when the file changes, so
+  they follow a model switch, a lease's return or an edit here without a proxy restart. A request that bypasses the proxy
+  (a direct `:8010`) doesn't get them.
 
 ## What the chat proxy changes
 
@@ -333,9 +341,13 @@ NInfer refuses what it cannot honour instead of ignoring it. For an NInfer slot 
   - caps `top_k` at 20;
   - turns `tool_choice: "required"` into `"auto"`;
   - sends a `json_object` carrying a schema other than `{"type":"object"}` as `json_schema`,
-    which v0.16 requires and v0.15.1 also takes.
+    which v0.16 requires and v0.15.1 also takes;
+  - adds `tool_constraints` to a request with tools when `LLM_*_NINFER_TOOL_CONSTRAINTS` is set
+    and the request didn't name its own.
 - On Responses, keeps only the top-level fields that route accepts. The reasoning level moves to
   `reasoning.effort`, and thinking-off becomes `"none"`.
+- On both, `LLM_*_NINFER_THINK_EFFORT` replaces the level of a request that thinks. A request with
+  thinking off stays off.
 
 Each drop is logged as `ninfer-adapt … dropped=…`.
 

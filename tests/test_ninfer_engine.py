@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import sys
 import tempfile
@@ -210,6 +211,89 @@ class NinferProxyTests(unittest.TestCase):
         payload = {"model": "think", "top_k": 99}
         self.proxy._adapt_for_ninfer(payload, "models", False)
         self.assertEqual(payload, {"model": "chat-dense", "top_k": 99})
+
+
+class NinferModelSettingsTests(unittest.TestCase):
+    """A model's own request settings, read from the config file while the proxy runs."""
+
+    def setUp(self):
+        self.proxy = _load_proxy()
+        self.proxy.BACKEND_ENGINE = "ninfer"
+        self.proxy.BACKEND_MODEL = "chat-dense"
+        self.stack = tempfile.TemporaryDirectory()
+        self.addCleanup(self.stack.cleanup)
+        (pathlib.Path(self.stack.name) / "config").mkdir()
+        self.proxy.STACK_DIR = self.stack.name
+        self.proxy.BACKEND_CONFIG_PREFIX = "LLM_A"
+
+    def config(self, text, stamp=1):
+        path = pathlib.Path(self.stack.name) / "config" / "llm-stack.env"
+        path.write_text(text)
+        os.utime(path, ns=(stamp, stamp))
+
+    def adapt(self, payload, kind="chat"):
+        self.proxy._adapt_for_ninfer(payload, kind, True)
+        return payload
+
+    def test_a_model_with_no_settings_is_sent_as_before(self):
+        self.config("LLM_A_NINFER_SPEC=dflash2\nLLM_A_NINFER_TOOL_CONSTRAINTS=\nLLM_A_NINFER_THINK_EFFORT=\n")
+        payload = self.adapt({"tools": [{}], "reasoning_effort": "medium"})
+        self.assertEqual(payload, {"tools": [{}], "reasoning_effort": "medium"})
+
+    def test_tool_constraints_go_only_on_a_chat_request_with_tools(self):
+        self.config('LLM_A_NINFER_TOOL_CONSTRAINTS="auto"\n')
+        self.assertEqual(self.adapt({"tools": [{}]})["tool_constraints"], "auto")
+        self.assertNotIn("tool_constraints", self.adapt({"messages": []}))
+        self.assertNotIn("tool_constraints", self.adapt({"input": "hi", "tools": [{}]}, "responses"))
+
+    def test_a_request_that_names_its_constraints_keeps_them(self):
+        self.config("LLM_A_NINFER_TOOL_CONSTRAINTS=auto\n")
+        payload = self.adapt({"tools": [{}], "tool_constraints": "basic"})
+        self.assertEqual(payload["tool_constraints"], "basic")
+
+    def test_the_effort_replaces_a_thinking_requests_level_in_both_places(self):
+        self.config("LLM_A_NINFER_THINK_EFFORT=xhigh\n")
+        payload = self.adapt({"reasoning_effort": "medium",
+                              "chat_template_kwargs": {"enable_thinking": True, "reasoning_effort": "medium"}})
+        self.assertEqual(payload["reasoning_effort"], "xhigh")
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "xhigh")
+
+    def test_the_effort_reaches_a_responses_request(self):
+        self.config("LLM_A_NINFER_THINK_EFFORT=xhigh\n")
+        payload = self.adapt({"input": "hi", "chat_template_kwargs": {"enable_thinking": True}}, "responses")
+        self.assertEqual(payload["reasoning"], {"effort": "xhigh"})
+
+    def test_thinking_stays_off_when_a_request_turned_it_off(self):
+        self.config("LLM_A_NINFER_THINK_EFFORT=xhigh\n")
+        off = self.adapt({"chat_template_kwargs": {"enable_thinking": False}})
+        self.assertNotIn("reasoning_effort", off)
+        self.assertEqual(self.adapt({"reasoning_effort": "none"})["reasoning_effort"], "none")
+
+    def test_a_change_in_the_file_applies_to_the_next_request(self):
+        self.config("LLM_A_NINFER_TOOL_CONSTRAINTS=auto\n", stamp=1)
+        self.assertIn("tool_constraints", self.adapt({"tools": [{}]}))
+        self.config("LLM_A_NINFER_TOOL_CONSTRAINTS=\n", stamp=2)
+        self.assertNotIn("tool_constraints", self.adapt({"tools": [{}]}))
+
+    def test_only_this_slots_keys_count(self):
+        self.config("LLM_B_NINFER_TOOL_CONSTRAINTS=auto\n# LLM_A_NINFER_THINK_EFFORT=xhigh\n")
+        self.assertEqual(self.proxy._ninfer_model_settings(), {})
+
+    def test_a_value_ninfer_would_refuse_is_ignored(self):
+        self.config("LLM_A_NINFER_TOOL_CONSTRAINTS=loose\nLLM_A_NINFER_THINK_EFFORT=none\n")
+        self.assertEqual(self.proxy._ninfer_model_settings(), {})
+
+    def test_no_config_file_means_no_settings(self):
+        self.assertEqual(self.proxy._ninfer_model_settings(), {})
+
+    def test_both_keys_can_be_saved(self):
+        keys = {f["key"] for f in config_fields.CONFIG_FIELDS}
+        self.assertTrue({"LLM_A_NINFER_TOOL_CONSTRAINTS", "LLM_B_NINFER_THINK_EFFORT"} <= keys)
+
+    def test_each_proxy_knows_its_prefix(self):
+        from backends.proxies import PROXIES, resolve
+        self.assertEqual(resolve(PROXIES["llm-a-proxy"], {})["CHAT_BACKEND_CONFIG_PREFIX"], "LLM_A")
+        self.assertEqual(resolve(PROXIES["llm-b-proxy"], {})["CHAT_BACKEND_CONFIG_PREFIX"], "LLM_B")
 
 
 if __name__ == "__main__":
