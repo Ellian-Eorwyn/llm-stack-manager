@@ -46,7 +46,8 @@ Both columns run Qwen3.8-27B at 8-bit, with thinking off and the same prompts
      cache on first start.
    - `LLM_A_SPLASH_REVISION`: optional, pins that repo's commit.
    - `LLM_A_SPLASH_KV_FORMAT=bf16`: the default here. Splash's own default,
-     int8, is not lossless.
+     int8, keeps about twice the tokens in the same cap; on the Studio it
+     scored the same as bf16 on the bench (see [KV format](#kv-format-bf16-or-int8)).
 3. Restart the slot and its proxy.
 
 ## How settings carry over
@@ -204,6 +205,30 @@ compressed or swapped. At 48 GiB, 55 GiB of the Studio's 96 was wired. The Studi
 (`LLM_A_SPLASH_MAX_MEMORY_GB`), for about 64 GiB wired and ~410K tokens of
 conversations. The default stays at half of RAM for smaller Macs.
 
+### KV format: bf16 or int8
+
+`--kv-format int8` stores the KV cache at half the size of bf16, so the same
+cap keeps about twice the conversations. On the Studio (27B Q8_0, cap 56 GiB,
+Splash 1.3.2, 2026-10-30) `kv_capacity_tokens` was 811,008 against 410,720.
+
+- **Quality:** a hermes-bench subset (context recall to 200K, multi-step
+  chains, follow-the-page, say-not-there, gather; temperature 0) scored the
+  same on the 211 items both runs had: one item flipped, within noise.
+- **Speed**, fresh prompts sent alone with 256 tokens of output:
+
+  | Prompt | bf16 prefill / generation tok/s | int8 prefill / generation tok/s |
+  |---|---|---|
+  | 2K | 1,800 / 100 | 1,800 / 99 |
+  | 17K | 1,817 / 91 | 1,846 / 93 |
+  | 66K | 1,428 / 68.5 | 1,482 / 73.2 |
+  | 129K | 1,098 / 62.0 | 1,171 / 68.6 |
+
+  Generation includes the drafter, so it depends on the text as well as the
+  format.
+
+The format is fixed at start: changing it means a restart, which drops every
+kept conversation.
+
 ### The SSD tier
 
 `--max-cache-disk` moves evicted conversations to the SSD instead of dropping
@@ -226,7 +251,11 @@ A normal heavy day (~800K prompt tokens) would write ~100 GB. That is small
 against an SSD's rated endurance, but it bought little. The tier writes its
 files as `$TMPDIR/splash-cache-*`.
 
-**1.3.2 on trial** (from 2026-10-26): `LLM_A_SPLASH_MAX_CACHE_DISK_GB=32` and
+**1.3.2 on trial, 2026-10-26 to 10-30, then off again:** the first day served
+0.26% of reused tokens from the SSD for ~95 GiB written, and by the fourth the
+tier was full and gated by its write budget, so evicted conversations were
+lost anyway; int8 KV would keep about twice as many in memory. The trial's
+settings were `LLM_A_SPLASH_MAX_CACHE_DISK_GB=32` and
 `LLM_A_SPLASH_ARGS_JSON='["--max-cache-disk-writes 100G"]'`. `/status` `disk`
 shows the tier: `limit_bytes` 32 GiB, `written_bytes`, `read_bytes`,
 `kv_demotions`, `kv_restores`, `writes_gated`, and `cache.kv_disk_hit_tokens`.
